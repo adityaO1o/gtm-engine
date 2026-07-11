@@ -3,6 +3,7 @@
 import { Router } from "express";
 import { leads, engagements } from "../db/mongo.js";
 import { poolSize } from "../lib/proxies.js";
+import { config } from "../config.js";
 
 export const apiRouter = Router();
 
@@ -52,4 +53,14 @@ apiRouter.get("/leads/:linkedin_url/timeline", async (req, res) => {
   const url = decodeURIComponent(req.params.linkedin_url);
   const rows = await engagements().find({ linkedin_url: url }).sort({ created_at: -1 }).toArray();
   res.json({ rows });
+});
+
+// POST /api/reset — wipe all leads + engagements (guarded by the ingest token). For clearing test data.
+apiRouter.post("/reset", async (req, res) => {
+  if ((req.headers["x-ingest-token"] || "") !== config.ingestToken) {
+    return res.status(401).json({ ok: false });
+  }
+  const a = await leads().deleteMany({});
+  const b = await engagements().deleteMany({});
+  res.json({ ok: true, leadsDeleted: a.deletedCount, engagementsDeleted: b.deletedCount });
 });
