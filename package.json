@@ -1,0 +1,21 @@
+{
+  "name": "gtm-engine",
+  "version": "1.0.0",
+  "description": "InboxKit GTM enrichment engine — resolves LinkedIn engagers to verified emails, scores intent, syncs to SendKit. Called by Trigify per engager.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "validate-proxies": "node src/lib/proxies.js --validate"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "express": "^4.21.2",
+    "https-proxy-agent": "^7.0.6",
+    "mongodb": "^6.12.0"
+  }
+}

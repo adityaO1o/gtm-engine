@@ -1,0 +1,9 @@
+node_modules/
+.env
+proxies.txt
+*.log
+.DS_Store
+
+server.pid
+dbg.mjs
+smoke.mjs

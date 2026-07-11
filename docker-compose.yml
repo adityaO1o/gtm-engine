@@ -1,0 +1,32 @@
+# Deploy on Dokploy as a Compose service.
+# Set the env vars (INGEST_TOKEN, PROSPEO_KEY, ENRICH_KEY, SENDKIT_KEY, PROXIES)
+# in Dokploy's Environment tab — do NOT commit them.
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: gtm
+      INGEST_TOKEN: ${INGEST_TOKEN}
+      PROSPEO_KEY: ${PROSPEO_KEY}
+      ENRICH_KEY: ${ENRICH_KEY}
+      SENDKIT_KEY: ${SENDKIT_KEY}
+      PROXIES: ${PROXIES}
+      PROXY_TIMEOUT_MS: 20000
+      SCRAPE_RETRIES: 4
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - gtm_mongo:/data/db
+
+volumes:
+  gtm_mongo:
