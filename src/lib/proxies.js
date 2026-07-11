@@ -23,8 +23,10 @@ function loadProxies() {
     const p = path.join(__dirname, "../../proxies.txt");
     if (fs.existsSync(p)) raw = fs.readFileSync(p, "utf8");
   }
+  // Split on newlines, commas or whitespace — so PROXIES can be a single-line env var
+  // (Dokploy env vars don't handle multi-line values well) or a multi-line proxies.txt.
   const list = raw
-    .split(/\r?\n/)
+    .split(/[\s,]+/)
     .map((l) => l.trim())
     .filter((l) => l && l.startsWith("http"));
   return [...new Set(list)];
