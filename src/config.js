@@ -13,6 +13,10 @@ export const config = {
   // Shared secret Trigify must send as x-ingest-token so randoms can't hit /enrich
   ingestToken: req("INGEST_TOKEN", "change-me"),
 
+  // Dashboard + /api/* basic-auth. If unset, the dashboard stays OPEN (with a loud warning).
+  dashUser: process.env.DASH_USER || "",
+  dashPass: process.env.DASH_PASS || "",
+
   mongoUri: req("MONGO_URI", "mongodb://mongo:27017"),
   mongoDb: process.env.MONGO_DB || "gtm",
 

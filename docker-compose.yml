@@ -1,6 +1,7 @@
 # Deploy on Dokploy as a Compose service.
-# Set the env vars (INGEST_TOKEN, PROSPEO_KEY, ENRICH_KEY, SENDKIT_KEY, PROXIES)
-# in Dokploy's Environment tab — do NOT commit them.
+# Set these in Dokploy's Environment tab (do NOT commit them):
+#   INGEST_TOKEN, PROSPEO_KEY, ENRICH_KEY, SENDKIT_KEY, PROXIES,
+#   MONGO_USER, MONGO_PASS, DASH_USER, DASH_PASS
 
 services:
   app:
@@ -10,13 +11,15 @@ services:
       - "3001:3001"
     environment:
       PORT: 3001
-      MONGO_URI: mongodb://mongo:27017
+      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASS}@mongo:27017/gtm?authSource=admin
       MONGO_DB: gtm
       INGEST_TOKEN: ${INGEST_TOKEN}
       PROSPEO_KEY: ${PROSPEO_KEY}
       ENRICH_KEY: ${ENRICH_KEY}
       SENDKIT_KEY: ${SENDKIT_KEY}
       PROXIES: ${PROXIES}
+      DASH_USER: ${DASH_USER}
+      DASH_PASS: ${DASH_PASS}
       PROXY_TIMEOUT_MS: 20000
       SCRAPE_RETRIES: 4
     depends_on:
@@ -25,8 +28,13 @@ services:
   mongo:
     image: mongo:7
     restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS}
+    # NOTE: no ports published — Mongo is only reachable inside the compose network,
+    # never from the internet. The root credentials are defence-in-depth.
     volumes:
-      - gtm_mongo:/data/db
+      - gtm_mongo_auth:/data/db
 
 volumes:
-  gtm_mongo:
+  gtm_mongo_auth:
