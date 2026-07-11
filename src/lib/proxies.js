@@ -23,12 +23,13 @@ function loadProxies() {
     const p = path.join(__dirname, "../../proxies.txt");
     if (fs.existsSync(p)) raw = fs.readFileSync(p, "utf8");
   }
-  // Split on newlines, commas or whitespace — so PROXIES can be a single-line env var
-  // (Dokploy env vars don't handle multi-line values well) or a multi-line proxies.txt.
+  // Split on newlines or commas only (NOT spaces) so a comma-separated single-line PROXIES
+  // env var works, then strip ALL internal whitespace per entry — the source list can carry
+  // stray \r characters mid-URL, and a proxy URL never legitimately contains whitespace.
   const list = raw
-    .split(/[\s,]+/)
-    .map((l) => l.trim())
-    .filter((l) => l && l.startsWith("http"));
+    .split(/[\n,]+/)
+    .map((l) => l.replace(/\s+/g, ""))
+    .filter((l) => l.startsWith("http"));
   return [...new Set(list)];
 }
 
