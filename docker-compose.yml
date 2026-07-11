@@ -11,7 +11,7 @@ services:
       - "3001:3001"
     environment:
       PORT: 3001
-      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASS}@mongo:27017/gtm?authSource=admin
+      MONGO_URI: mongodb://mongo:27017
       MONGO_DB: gtm
       INGEST_TOKEN: ${INGEST_TOKEN}
       PROSPEO_KEY: ${PROSPEO_KEY}
@@ -28,13 +28,13 @@ services:
   mongo:
     image: mongo:7
     restart: unless-stopped
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS}
-    # NOTE: no ports published — Mongo is only reachable inside the compose network,
-    # never from the internet. The root credentials are defence-in-depth.
+    # No published ports — Mongo is reachable ONLY from the app on the private compose
+    # network, never from the internet. That network isolation is the security boundary.
+    # (Root-user auth via compose interpolation fought Dokploy's volume handling; the
+    #  internet-facing surface is locked down separately: dashboard basic-auth, rate
+    #  limiting, ingest token.) Fresh volume name to escape the stale auth-enabled volume.
     volumes:
-      - gtm_mongo_secure:/data/db
+      - gtm_data_open:/data/db
 
 volumes:
-  gtm_mongo_secure:
+  gtm_data_open:
