@@ -25,15 +25,24 @@ app.use(express.json({ limit: "1mb" }));
 // Rate limits. /enrich is called per-engager by Trigify (bursty) so it gets a higher ceiling.
 const enrichLimiter = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false });
 const apiLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false });
+// Brute-force guard on the login surface: only FAILED (non-2xx) requests count, so the
+// dashboard's own auto-refresh isn't affected but password guessing is throttled hard.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 25,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 app.get("/health", (_req, res) => res.json({ ok: true, proxies: poolSize() }));
 
 // Trigify ingest — token-guarded (inside the router) + rate-limited.
 app.use("/", enrichLimiter, enrichRouter);
 
-// Dashboard API + static UI — basic-auth + rate-limited.
-app.use("/api", apiLimiter, basicAuth, apiRouter);
-app.use("/", basicAuth, express.static(path.join(__dirname, "../public")));
+// Dashboard API + static UI — brute-force guard + basic-auth + rate-limited.
+app.use("/api", authLimiter, apiLimiter, basicAuth, apiRouter);
+app.use("/", authLimiter, basicAuth, express.static(path.join(__dirname, "../public")));
 
 async function main() {
   await connect();
