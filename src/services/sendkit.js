@@ -28,9 +28,10 @@ export async function findOurLead(email) {
 export async function upsertLead(lead) {
   // lead: {email, firstName, lastName, companyName, jobTitle, linkedinUrl, tags:[...] }
   try {
+    // tags must be an ARRAY here — the bulk endpoint stores a comma-string as a single literal tag
     const r = await axios.post(
       `${base}/v1/leads/bulk`,
-      { skipDuplicates: false, leads: [{ ...lead, tags: lead.tags.join(",") }] },
+      { skipDuplicates: false, leads: [{ ...lead, tags: lead.tags }] },
       { headers: h(), timeout: 20000, validateStatus: () => true }
     );
     return r.status < 300;

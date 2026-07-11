@@ -7,3 +7,4 @@ proxies.txt
 server.pid
 dbg.mjs
 smoke.mjs
+dokploy_env_final.txt
