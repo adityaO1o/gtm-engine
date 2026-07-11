@@ -11,8 +11,20 @@ let db = null;
 
 export async function connect() {
   if (db) return db;
-  const client = new MongoClient(config.mongoUri, { serverSelectionTimeoutMS: 8000 });
-  await client.connect();
+  // On a fresh Mongo volume the server takes a few seconds to create the root user and
+  // enable auth — retry with backoff so the app doesn't crashloop during that window.
+  let client;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      client = new MongoClient(config.mongoUri, { serverSelectionTimeoutMS: 8000 });
+      await client.connect();
+      break;
+    } catch (e) {
+      if (attempt >= 10) throw e;
+      log.warn("mongo connect retry", { attempt, err: e.message });
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
   db = client.db(config.mongoDb);
   await db.collection("leads").createIndex({ linkedin_url: 1 }, { unique: true });
   await db.collection("leads").createIndex({ email: 1 });

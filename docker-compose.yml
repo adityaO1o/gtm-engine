@@ -34,7 +34,7 @@ services:
     # NOTE: no ports published — Mongo is only reachable inside the compose network,
     # never from the internet. The root credentials are defence-in-depth.
     volumes:
-      - gtm_mongo_auth:/data/db
+      - gtm_mongo_secure:/data/db
 
 volumes:
-  gtm_mongo_auth:
+  gtm_mongo_secure:
