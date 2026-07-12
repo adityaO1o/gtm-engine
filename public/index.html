@@ -4,182 +4,200 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>InboxKit GTM Engine</title>
+<link rel="preload" href="/fonts/SuisseIntlTrial-Regular.otf" as="font" type="font/otf" crossorigin>
+<link rel="preload" href="/fonts/SuisseIntlTrial-Medium.otf" as="font" type="font/otf" crossorigin>
+<link rel="preload" href="/fonts/SuisseIntlTrial-Semibold.otf" as="font" type="font/otf" crossorigin>
+<link rel="preload" href="/fonts/SuisseIntlMonoTrial-Regular.otf" as="font" type="font/otf" crossorigin>
 <style>
-  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Regular.otf') format('opentype');font-weight:400;font-display:swap}
-  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Medium.otf') format('opentype');font-weight:500;font-display:swap}
-  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Semibold.otf') format('opentype');font-weight:600;font-display:swap}
-  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Bold.otf') format('opentype');font-weight:700;font-display:swap}
-  @font-face{font-family:'SuisseMono';src:url('/fonts/SuisseIntlMonoTrial-Regular.otf') format('opentype');font-weight:400;font-display:swap}
+  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Regular.otf') format('opentype');font-weight:400;font-display:block}
+  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Medium.otf') format('opentype');font-weight:500;font-display:block}
+  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Semibold.otf') format('opentype');font-weight:600;font-display:block}
+  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Bold.otf') format('opentype');font-weight:700;font-display:block}
+  @font-face{font-family:'SuisseMono';src:url('/fonts/SuisseIntlMonoTrial-Regular.otf') format('opentype');font-weight:400;font-display:block}
 
   :root{
     --bg:#F6F6F7; --panel:#FFFFFF; --line:#E7E7EB; --line2:#F0F0F2;
     --ink:#16161D; --dim:#6E6E77; --faint:#9B9BA4;
-    --primary:#6C47FF; --primary-2:#5B36F0; --primary-soft:#F1EDFF;
+    --primary:#6C47FF; --primary-2:#5B36F0; --primary-soft:#F1EDFF; --primary-line:#DED3FF;
     --hot:#E0322F; --hot-soft:#FDECEC; --warm:#B7791F; --warm-soft:#FBF3E3;
     --cold:#5B636E; --cold-soft:#EFF1F3; --good:#0E8F49; --good-soft:#E8F5EE;
-    --sidebar:220px;
+    --sidebar:224px;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--ink);font-family:'Suisse',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
   .mono{font-family:'SuisseMono',ui-monospace,monospace}
   a{color:var(--primary);text-decoration:none}
-  button{font-family:inherit;cursor:pointer}
-
+  button{font-family:inherit;cursor:pointer;border:none;background:none}
+  .ico{width:18px;height:18px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
   .app{display:flex;min-height:100vh}
 
-  /* ---------- sidebar ---------- */
-  .sidebar{width:var(--sidebar);flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
-    display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
-  .brand{display:flex;align-items:center;gap:9px;padding:18px 18px 16px;border-bottom:1px solid var(--line)}
-  .brand .mk{width:20px;height:20px;background:var(--primary);flex-shrink:0}
-  .brand b{font-size:14px;font-weight:600;letter-spacing:-.01em}
+  /* sidebar */
+  .sidebar{width:var(--sidebar);flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);position:sticky;top:0;height:100vh;display:flex;flex-direction:column}
+  .brand{display:flex;align-items:center;gap:9px;padding:18px;border-bottom:1px solid var(--line)}
+  .brand .mk{width:22px;height:22px;background:var(--primary);flex-shrink:0}
+  .brand b{font-size:14px;font-weight:600}
   .brand span{display:block;font-size:10.5px;color:var(--faint);font-weight:400}
-  nav{padding:10px 10px;flex:1}
-  .nav-i{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;color:var(--dim);
-    font-weight:500;font-size:13px;cursor:pointer;border-left:2px solid transparent;user-select:none}
+  nav{padding:10px}
+  .nav-i{display:flex;align-items:center;gap:10px;padding:9px 12px;color:var(--dim);font-weight:500;font-size:13px;cursor:pointer;border-left:2px solid transparent;user-select:none}
   .nav-i:hover{background:var(--bg);color:var(--ink)}
   .nav-i.on{background:var(--primary-soft);color:var(--primary);border-left-color:var(--primary);font-weight:600}
-  .nav-i .cnt{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .nav-i .cnt{margin-left:auto;font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
   .nav-i.on .cnt{color:var(--primary)}
-  .side-foot{padding:14px 18px;border-top:1px solid var(--line);font-size:11px;color:var(--faint)}
 
-  /* ---------- main ---------- */
+  /* main */
   .main{flex:1;min-width:0;display:flex;flex-direction:column}
   .topbar{display:flex;align-items:center;gap:16px;padding:16px 26px;border-bottom:1px solid var(--line);background:var(--panel)}
-  .topbar h2{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
+  .topbar h2{margin:0;font-size:16px;font-weight:600}
   .topbar .grow{flex:1}
   .bals{display:flex;gap:22px}
   .balc{font-size:11.5px;color:var(--dim);text-align:right}
   .balc b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
   .balc .bar{width:130px;height:4px;background:var(--line);margin-top:4px;overflow:hidden}
   .balc .bar i{display:block;height:100%;background:var(--primary)}
-  .content{padding:22px 26px;max-width:1500px;width:100%}
+  .content{padding:22px 26px;max-width:1560px;width:100%}
 
-  /* ---------- cards / stats ---------- */
-  .grid{display:grid;gap:12px;margin-bottom:14px}
-  .g-cred{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .grid{display:grid;gap:12px}
+  .g-cred{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-bottom:16px}
   .g-stat{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}
   .card{background:var(--panel);border:1px solid var(--line);padding:15px 16px}
-  .card .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
-  .card .v{font-size:23px;font-weight:600;margin-top:5px;font-variant-numeric:tabular-nums}
+  .card .kh{display:flex;align-items:center;gap:7px;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  .card .kh .ico{width:15px;height:15px;stroke:var(--faint)}
+  .card .v{font-size:23px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums}
   .card .sub{font-size:11.5px;color:var(--faint);margin-top:3px}
   .card.pri{border-top:2px solid var(--primary)}
-  .card.hot .v{color:var(--hot)} .card.warm .v{color:var(--warm)}
-  .card.cold .v{color:var(--cold)} .card.good .v{color:var(--good)}
-  .section-t{font-size:12px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin:20px 0 10px}
+  .card.hot .v{color:var(--hot)} .card.warm .v{color:var(--warm)} .card.cold .v{color:var(--cold)} .card.good .v{color:var(--good)}
+  .card select{border:none;background:var(--bg);color:var(--dim);font-size:11px;padding:2px 4px;margin-left:auto}
+  .section-t{font-size:12px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin:22px 0 10px;display:flex;align-items:center;gap:7px}
+  .section-t .ico{width:15px;height:15px;stroke:var(--faint)}
 
-  /* ---------- toolbar ---------- */
+  .charts{display:grid;grid-template-columns:1fr 1.4fr;gap:12px;margin-bottom:8px}
+  .chartbox{background:var(--panel);border:1px solid var(--line);padding:16px}
+  .chartbox h4{margin:0 0 12px;font-size:12px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--dim)}
+  .legend i{display:inline-block;width:9px;height:9px;margin-right:5px;vertical-align:middle}
+  .funnel-row{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:12.5px}
+  .funnel-row .lbl{width:90px;color:var(--dim)}
+  .funnel-row .track{flex:1;height:20px;background:var(--bg)}
+  .funnel-row .track i{display:block;height:100%;background:var(--primary)}
+  .funnel-row .num{width:54px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+
+  /* toolbar / inputs */
   .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
   select,input,.btn{background:var(--panel);border:1px solid var(--line);color:var(--ink);padding:8px 11px;font-size:13px;font-family:inherit;outline:none}
-  input{min-width:230px}
+  input{min-width:220px}
   select:focus,input:focus{border-color:var(--primary)}
-  .btn{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:600}
+  .btn{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:600;display:inline-flex;align-items:center;gap:7px}
+  .btn .ico{width:15px;height:15px;stroke:#fff}
   .btn:hover{background:var(--primary-2)}
   .btn:disabled{opacity:.55;cursor:default}
   .btn-ghost{background:var(--panel);color:var(--primary)}
+  .btn-ghost .ico{stroke:var(--primary)}
+  .btn-sm{padding:6px 10px;font-size:12px}
+  .grow{flex:1}
 
-  /* ---------- table ---------- */
+  /* table */
   .tablewrap{background:var(--panel);border:1px solid var(--line);overflow-x:auto}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);
-    padding:10px 14px;border-bottom:1px solid var(--line);font-weight:600;white-space:nowrap;background:var(--panel);position:sticky;top:0}
+  th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);padding:10px 14px;border-bottom:1px solid var(--line);font-weight:600;white-space:nowrap;background:var(--panel);position:sticky;top:0}
   td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:middle;white-space:nowrap}
   tbody tr:last-child td{border-bottom:none}
-  tbody tr:hover td{background:#FAF9FF;cursor:pointer}
+  tbody tr:hover td{background:#FAF9FF}
+  td.click,th.click{cursor:pointer}
   .nm{font-weight:600}
   .em{font-size:12px;color:var(--dim)}
   .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;text-transform:capitalize}
   .b-hot{background:var(--hot-soft);color:var(--hot)} .b-warm{background:var(--warm-soft);color:var(--warm)} .b-cold{background:var(--cold-soft);color:var(--cold)}
   .pill{font-size:11px;padding:2px 8px;font-weight:500}
   .p-verified{background:var(--good-soft);color:var(--good)} .p-no-email{background:var(--cold-soft);color:var(--dim)}
-  .p-unverified{background:var(--warm-soft);color:var(--warm)} .p-role-based{background:var(--cold-soft);color:var(--dim)}
-  .src{font-size:11px}
+  .p-unverified{background:var(--warm-soft);color:var(--warm)} .p-review{background:var(--warm-soft);color:var(--warm)}
+  .p-role-based{background:var(--cold-soft);color:var(--dim)} .p-competitor{background:var(--hot-soft);color:var(--hot)}
+  .src{font-size:11.5px}
   .src b{color:var(--primary);font-weight:600}
   .src .via{color:var(--faint)}
-  .cats{display:flex;flex-wrap:wrap;gap:4px;max-width:200px}
+  .vby{font-size:11.5px;color:var(--primary);font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:3px}
+  .vby .ico{width:12px;height:12px;stroke:var(--primary)}
+  .tag-rec{font-size:10px;background:var(--good-soft);color:var(--good);padding:1px 6px;margin-left:6px}
+  .tag-pers{font-size:10px;background:var(--cold-soft);color:var(--dim);padding:1px 6px;margin-left:6px}
+  .cats{display:flex;flex-wrap:wrap;gap:4px;max-width:190px}
   .cat{font-size:10px;background:var(--primary-soft);color:var(--primary);padding:1px 6px;font-weight:500}
   .score{font-weight:600;font-variant-numeric:tabular-nums}
   .tstamp{font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
   .muted{color:var(--faint)}
-
-  .pager{display:flex;align-items:center;gap:12px;justify-content:flex-end;margin-top:12px;font-size:12.5px;color:var(--dim)}
-  .pager button{padding:6px 12px}
+  .chk{width:15px;height:15px;accent-color:var(--primary);cursor:pointer}
   #empty{text-align:center;color:var(--faint);padding:44px}
+  .pager{display:flex;align-items:center;gap:12px;justify-content:flex-end;margin-top:12px;font-size:12.5px;color:var(--dim)}
 
-  .note{background:var(--primary-soft);border:1px solid #DED3FF;color:var(--primary-2);padding:10px 14px;font-size:12.5px;margin-bottom:12px;display:none}
-  .note.on{display:block}
+  /* dropdown menu (reverify) */
+  .menu{position:absolute;z-index:40;background:var(--panel);border:1px solid var(--line);box-shadow:0 8px 26px rgba(20,20,30,.12);min-width:180px}
+  .menu button{display:flex;width:100%;text-align:left;padding:9px 13px;font-size:12.5px;color:var(--ink);gap:8px;align-items:center}
+  .menu button:hover{background:var(--primary-soft);color:var(--primary)}
+  .menu .res{padding:9px 13px;font-size:12px;border-top:1px solid var(--line2)}
 
-  .drawer{position:fixed;top:0;right:0;width:440px;max-width:92vw;height:100vh;background:var(--panel);
-    border-left:1px solid var(--line);transform:translateX(100%);transition:.2s;overflow-y:auto;z-index:20;padding:24px;box-shadow:-10px 0 40px rgba(20,20,30,.09)}
+  .note{background:var(--primary-soft);border:1px solid var(--primary-line);color:var(--primary-2);padding:10px 14px;font-size:12.5px;margin-bottom:12px}
+
+  .drawer{position:fixed;top:0;right:0;width:440px;max-width:92vw;height:100vh;background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);transition:.2s;overflow-y:auto;z-index:50;padding:24px;box-shadow:-10px 0 40px rgba(20,20,30,.09)}
   .drawer.open{transform:translateX(0)}
   .drawer h3{margin:0 0 3px;font-weight:600}
-  .drawer .x{position:absolute;top:18px;right:20px;cursor:pointer;color:var(--dim);font-size:22px;line-height:1}
+  .drawer .x{position:absolute;top:18px;right:20px;cursor:pointer;color:var(--dim);font-size:22px}
   .tl{border-left:2px solid var(--line);padding:9px 0 11px 15px;margin-left:5px;position:relative}
   .tl::before{content:"";position:absolute;left:-6px;top:13px;width:9px;height:9px;background:var(--primary)}
   .tl .c{font-size:12px;color:var(--dim)}
 </style>
 </head>
 <body>
+<!-- Phosphor-style icon sprite (self-hosted, no CDN) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 12l4-3"/><circle cx="12" cy="12" r="1"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M17.5 19a5.5 5.5 0 0 0-3-4.9"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 13l2.5-7h11L20 13v5H4z"/><path d="M4 13h4l1.5 2.5h5L16 13h4"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M6 21V4"/><path d="M6 4h11l-2 3.5L17 11H6"/></symbol>
+  <symbol id="i-mega" viewBox="0 0 24 24"><path d="M4 10v4h3l8 4V6l-8 4H4z"/><path d="M18 9a4 4 0 0 1 0 6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M12 3l2.2 1.4 2.6-.3 1.2 2.3 2.3 1.2-.3 2.6L21.6 14 20.2 16l.3 2.6-2.3 1.2-1.2 2.3-2.6-.3L12 23l-2.2-1.4-2.6.3-1.2-2.3-2.3-1.2.3-2.6L2.4 14 3.8 12 3.5 9.4l2.3-1.2 1.2-2.3 2.6.3z"/><path d="M9 12.5l2 2 4-4.5"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14"/><path d="M3 6l9 7 9-7"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 9v5M12 17v.5"/></symbol>
+  <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></symbol>
+  <symbol id="i-trend" viewBox="0 0 24 24"><path d="M4 15l5-5 3 3 6-7"/><path d="M15 6h4v4"/></symbol>
+  <symbol id="i-funnel" viewBox="0 0 24 24"><path d="M4 5h16l-6 7v6l-4 2v-8z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v10m0 0l-4-4m4 4l4-4"/><path d="M5 19h14"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5l2 2M20 12a8 8 0 0 1-14 5l-2-2"/><path d="M20 4v5h-5M4 20v-5h5"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="7" y="5" width="3.5" height="14"/><rect x="13.5" y="5" width="3.5" height="14"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 24 24"><path d="M20 8a8 8 0 0 0-14-3M4 6v3h3"/><path d="M4 16a8 8 0 0 0 14 3M20 18v-3h-3"/></symbol>
+</defs></svg>
+
 <div class="app">
   <aside class="sidebar">
     <div class="brand"><div class="mk"></div><div><b>InboxKit</b><span>GTM Engine</span></div></div>
     <nav id="nav">
-      <div class="nav-i on" data-v="overview">Overview</div>
-      <div class="nav-i" data-v="leads">Leads <span class="cnt" id="c-leads"></span></div>
-      <div class="nav-i" data-v="handoff">Hand-off <span class="cnt" id="c-handoff"></span></div>
-      <div class="nav-i" data-v="campaigns">Campaigns <span class="cnt" id="c-camp"></span></div>
+      <div class="nav-i on" data-v="overview"><svg class="ico"><use href="#i-gauge"/></svg>Overview</div>
+      <div class="nav-i" data-v="leads"><svg class="ico"><use href="#i-users"/></svg>Leads<span class="cnt" id="c-leads"></span></div>
+      <div class="nav-i" data-v="handoff"><svg class="ico"><use href="#i-inbox"/></svg>Hand-off<span class="cnt" id="c-handoff"></span></div>
+      <div class="nav-i" data-v="competitors"><svg class="ico"><use href="#i-flag"/></svg>Competitors<span class="cnt" id="c-comp"></span></div>
+      <div class="nav-i" data-v="campaigns"><svg class="ico"><use href="#i-mega"/></svg>Campaigns<span class="cnt" id="c-camp"></span></div>
     </nav>
-    <div class="side-foot" id="sidefoot">—</div>
   </aside>
 
   <main class="main">
     <div class="topbar">
-      <h2 id="pageTitle">Overview</h2>
-      <div class="grow"></div>
+      <h2 id="pageTitle">Overview</h2><div class="grow"></div>
       <div class="bals" id="bals"></div>
     </div>
     <div class="content">
-
-      <!-- OVERVIEW -->
-      <section id="v-overview">
-        <div class="section-t">Credits used — this run</div>
-        <div class="grid g-cred" id="credits"></div>
-        <div class="section-t">Leads</div>
-        <div class="grid g-stat" id="stats"></div>
-      </section>
-
-      <!-- LEADS / HAND-OFF share the table -->
-      <section id="v-leads" style="display:none">
-        <div class="toolbar" id="leadsToolbar"></div>
-        <div id="tableHost"></div>
-        <div class="pager" id="pager"></div>
-      </section>
-
-      <section id="v-handoff" style="display:none">
-        <div class="note on">These leads had no email under the old method. <b>Reprocess</b> runs them through the new Enrich-first waterfall (name+domain → URL → Prospeo).</div>
-        <div class="toolbar"><button class="btn" id="reprocessBtn">Reprocess with new method</button><span id="reprocessMsg" class="muted"></span></div>
-        <div id="handoffHost"></div>
-        <div class="pager" id="pagerH"></div>
-      </section>
-
-      <!-- CAMPAIGNS -->
-      <section id="v-campaigns" style="display:none">
-        <div class="tablewrap"><table>
-          <thead><tr><th>Campaign</th><th>Leads</th><th>Hot</th><th>Warm</th><th>Verified</th><th>No-email</th><th>Trigify</th><th>Prospeo finds</th><th>SendKit</th></tr></thead>
-          <tbody id="campRows"></tbody>
-        </table></div>
-      </section>
-
+      <section id="v-overview"></section>
+      <section id="v-leads" style="display:none"></section>
+      <section id="v-handoff" style="display:none"></section>
+      <section id="v-competitors" style="display:none"></section>
+      <section id="v-campaigns" style="display:none"></section>
     </div>
   </main>
 </div>
 
 <div class="drawer" id="drawer">
-  <span class="x" onclick="closeDrawer()">×</span>
+  <span class="x" data-x>×</span>
   <h3 id="d-name"></h3>
   <div class="muted mono" id="d-sub" style="font-size:11px;word-break:break-all"></div>
-  <div id="d-meta" style="margin-top:12px"></div>
   <div id="d-timeline" style="margin-top:16px"></div>
 </div>
 

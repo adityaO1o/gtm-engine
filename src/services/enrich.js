@@ -18,7 +18,7 @@ export async function findEmailByNameDomain(firstName, lastName, domain) {
     const r = await axios.post(
       FINDER_ENDPOINT,
       { firstName, lastName, domain },
-      { headers: { "x-api-key": config.enrichKey, "Content-Type": "application/json" }, timeout: 25000, validateStatus: () => true }
+      { headers: { "x-api-key": config.enrichKey, "Content-Type": "application/json" }, timeout: 30000, validateStatus: () => true }
     );
     const d = r.data?.data;
     if (r.status === 200 && d?.found && d?.email) {

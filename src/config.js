@@ -16,6 +16,8 @@ export const config = {
   // Dashboard + /api/* basic-auth. If unset, the dashboard stays OPEN (with a loud warning).
   dashUser: process.env.DASH_USER || "",
   dashPass: process.env.DASH_PASS || "",
+  // Optional extra layer: comma-separated IP allowlist for the dashboard (empty = allow all).
+  allowIps: (process.env.ALLOW_IPS || "").split(",").map((s) => s.trim()).filter(Boolean),
 
   mongoUri: req("MONGO_URI", "mongodb://mongo:27017"),
   mongoDb: process.env.MONGO_DB || "gtm",

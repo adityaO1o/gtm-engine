@@ -1,12 +1,13 @@
-// Reprocess the "no-email" hand-off leads through the current (Enrich-first) waterfall.
+// Reprocess "no-email" hand-off leads through the current (Enrich-first) waterfall.
 // Uses each lead's stored name/headline/linkedin_url — no Trigify re-scrape needed.
 
 import { leads } from "../db/mongo.js";
-import { findEmailWaterfall, verifyEmailWaterfall } from "./enrichLead.js";
+import { findEmailWaterfall, verifyEmailWaterfall, companyFromHeadline } from "./enrichLead.js";
 import { isRoleBased } from "../services/enrich.js";
 import { upsertLead, addToCampaign } from "../services/sendkit.js";
 import { bumpUsage } from "../services/usage.js";
-import { CAMPAIGN_ID } from "../services/score.js";
+import { CAMPAIGN_ID, isCompetitor } from "../services/campaigns.js";
+import { isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { log } from "../lib/logger.js";
 
 let running = false;
@@ -22,14 +23,28 @@ async function reprocessOne(d) {
   const w = await findEmailWaterfall({ name: d.name, headline: d.headline, linkedin_url: d.linkedin_url });
   const { em, emailSource, emailMethod, preVerified } = w;
   const campaign = (d.campaigns || [])[0] || "";
+  const company = companyFromHeadline(d.headline || "");
   await bumpUsage(campaign, { prospeo_calls: w.prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
   if (!em.found || !em.email) return false; // still no email — leave as hand-off
 
   const email = em.email;
-  const base = { email, email_source: emailSource, email_method: emailMethod, needs_email: false, updated_at: new Date() };
+  const base = {
+    email, email_source: emailSource, email_method: emailMethod,
+    personal_email: isPersonalDomain(email), needs_email: false, updated_at: new Date(),
+  };
 
+  // competitor employee — save, never send
+  if (isCompetitor({ company, emailDomain: emailDomain(email) })) {
+    await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { ...base, email_status: "competitor", is_competitor: true } });
+    return false;
+  }
   if (isRoleBased(email)) {
     await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { ...base, email_status: "role-based", role_based: true } });
+    return false;
+  }
+  // reputation guard — wrong-person email held for review
+  if (!nameMatchesEmail(d.name || "", email)) {
+    await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { ...base, email_status: "review", email_low_confidence: true } });
     return false;
   }
 
@@ -47,17 +62,19 @@ async function reprocessOne(d) {
   await upsertLead({ email, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags });
   const cid = (d.campaign_ids || [])[0] || CAMPAIGN_ID[campaign] || "";
   if (cid) await addToCampaign(cid, email);
-  await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { ...base, email_status: "verified", unverified: false, tags } });
+  await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { ...base, email_status: "verified", unverified: false, tags, recovered: true } });
   await bumpUsage(campaign, { sendkit_pushed: 1 });
   return true;
 }
 
-export async function reprocessNoEmail({ limit = 0, concurrency = 4 } = {}) {
+export async function reprocessNoEmail({ limit = 0, concurrency = 4, campaign = "" } = {}) {
   if (running) return { alreadyRunning: true, ...status };
   running = true;
-  const docs = await leads().find({ email_status: "no-email" }).toArray();
+  const q = { email_status: "no-email" };
+  if (campaign) q.campaigns = campaign;
+  const docs = await leads().find(q).toArray();
   const list = limit ? docs.slice(0, limit) : docs;
-  status = { running: true, processed: 0, total: list.length, newlyFound: 0, startedAt: new Date(), finishedAt: null };
+  status = { running: true, processed: 0, total: list.length, newlyFound: 0, campaign, startedAt: new Date(), finishedAt: null };
 
   let idx = 0;
   const worker = async () => {

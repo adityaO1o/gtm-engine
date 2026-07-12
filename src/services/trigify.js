@@ -5,6 +5,27 @@ import axios from "axios";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
+const BASE = "https://api.trigify.io/v1";
+const h = () => ({ "x-api-key": config.trigifyKey, "Content-Type": "application/json" });
+
+// Enable/disable the Trigify workflow whose name matches a campaign label (for the Pause button).
+export async function setWorkflowEnabled(campaignLabel, enabled) {
+  if (!config.trigifyKey) return { ok: false, error: "no trigify key" };
+  try {
+    const r = await axios.get(`${BASE}/workflows`, { headers: h(), timeout: 15000, validateStatus: () => true });
+    let list = r.data?.data;
+    list = Array.isArray(list) ? list : list?.items || [];
+    const label = (campaignLabel || "").toLowerCase();
+    const wf = list.find((w) => (w.name || "").toLowerCase().includes(label));
+    if (!wf) return { ok: false, error: "workflow not found" };
+    const p = await axios.patch(`${BASE}/workflows/${wf.id}`, { enabled }, { headers: h(), timeout: 15000, validateStatus: () => true });
+    return { ok: !!p.data?.success || p.status < 300, workflowId: wf.id, enabled };
+  } catch (e) {
+    log.warn("setWorkflowEnabled threw", { err: e.message });
+    return { ok: false, error: e.message };
+  }
+}
+
 let cache = { at: 0, data: null };
 
 export async function trigifyBalance() {

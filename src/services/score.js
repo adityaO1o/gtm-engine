@@ -15,27 +15,7 @@ export const CATEGORY_WEIGHT = {
 };
 
 export const ENGAGEMENT_POINTS = { comment: 3, like: 1 };
-
-// Campaign name -> SendKit campaign id (used when reprocessing leads that predate campaign_id storage).
-export const CAMPAIGN_ID = {
-  "Smartlead LinkedIn": "6a523205757679d5417ea44a",
-};
-
-// Map a search/campaign to its category. Extend as campaigns are added.
-export const CAMPAIGN_CATEGORY = {
-  "Smartlead LinkedIn": "sequencer",
-  "Instantly LinkedIn": "sequencer",
-  "EmailBison LinkedIn": "sequencer",
-  "PlusVibe LinkedIn": "infra-competitor",
-  "PremiumInboxes LinkedIn": "infra-competitor",
-  "ScaledMail LinkedIn": "infra-competitor",
-  "Infra Switchers LinkedIn": "infra-competitor",
-  "Deliverability Pain": "deliverability",
-  "Cold Email Infra": "infra",
-  "GTM Engineering": "gtm-eng",
-  "Data Tool Engagers": "data-tools",
-  "Cold Email": "cold-email",
-};
+// Campaign -> category / SendKit id live in ./campaigns.js (the single source of truth).
 
 // Given the categories a lead has ALREADY engaged with (Set of names) plus the
 // new signal, compute their updated intent state.

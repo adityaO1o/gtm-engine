@@ -13,7 +13,9 @@ import { findEmail, verifyEmail } from "../services/prospeo.js";
 import { validateEmail, isRoleBased, findEmailByLinkedin, findEmailByNameDomain } from "../services/enrich.js";
 import { companyDomain } from "../services/clearbit.js";
 import { findOurLead, upsertLead, addToCampaign } from "../services/sendkit.js";
-import { scoreFromHistory, CAMPAIGN_CATEGORY } from "../services/score.js";
+import { scoreFromHistory } from "../services/score.js";
+import { CAMPAIGN_CATEGORY, isCompetitor } from "../services/campaigns.js";
+import { isCompanyPage, isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { bumpUsage } from "../services/usage.js";
 import { log } from "../lib/logger.js";
 
@@ -90,6 +92,12 @@ export async function enrichLead(input) {
   const category = CAMPAIGN_CATEGORY[campaign] || "cold-email";
   const now = new Date();
 
+  // G1: LinkedIn company pages are not people — skip without saving or spending credits.
+  if (isCompanyPage(linkedin_url)) {
+    log.info("skip company page", { name, linkedin_url });
+    return { outcome: "skipped_company", name };
+  }
+
   const w = await findEmailWaterfall({ name, headline, linkedin_url });
   const { em, emailSource, emailMethod, preVerified, company } = w;
   let prospeoCalls = w.prospeoCalls;
@@ -114,8 +122,18 @@ export async function enrichLead(input) {
     company_domain: em.company_domain || null,
     status: scored.status, score: scored.score, categories: scored.categories, times_seen: scored.timesSeen,
     email_source: emailSource, email_method: emailMethod,
+    personal_email: em.email ? isPersonalDomain(em.email) : false,
     last_comment: comment_text || null, last_engagement_at: now, updated_at: now,
   };
+
+  // Part B + G4: competitor employee (by company OR email domain) — save, never send to SendKit.
+  if (isCompetitor({ company, emailDomain: em.email ? emailDomain(em.email) : "" })) {
+    await leads().updateOne({ linkedin_url: key },
+      { $set: { ...setDoc, email: em.email || null, email_status: "competitor", is_competitor: true, needs_email: false }, $addToSet: addToSet, $setOnInsert: { created_at: now } }, { upsert: true });
+    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
+    log.info("competitor", { name, company, email: em.email });
+    return { outcome: "competitor", ...scored, name };
+  }
 
   // no email found -> save for hand-off, stop here
   if (!em.found || !em.email) {
@@ -134,6 +152,16 @@ export async function enrichLead(input) {
       { $set: { ...setDoc, email, email_status: "role-based", role_based: true }, $addToSet: addToSet, $setOnInsert: { created_at: now } }, { upsert: true });
     await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
     return { outcome: "role_based", email, ...scored, name };
+  }
+
+  // G2 (REPUTATION GUARD): the email's local-part must plausibly belong to this person.
+  // A wrong-person match (e.g. "Tayo Kolade" -> smogey@) is held for review, never auto-sent.
+  if (!nameMatchesEmail(name, email)) {
+    await leads().updateOne({ linkedin_url: key },
+      { $set: { ...setDoc, email, email_status: "review", email_low_confidence: true, needs_email: false }, $addToSet: addToSet, $setOnInsert: { created_at: now } }, { upsert: true });
+    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
+    log.info("held for review (name mismatch)", { name, email });
+    return { outcome: "review", email, ...scored, name };
   }
 
   // verify

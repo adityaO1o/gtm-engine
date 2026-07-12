@@ -12,42 +12,67 @@ import { poolSize } from "./lib/proxies.js";
 import { log } from "./lib/logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = path.join(__dirname, "../public");
 
 const app = express();
 
-// Behind Traefik — trust the first proxy so rate-limit sees the real client IP.
+// Behind Traefik — trust the first proxy so rate-limit + IP allowlist see the real client IP.
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-app.use(helmet({ contentSecurityPolicy: false })); // dashboard is same-origin inline; keep other headers
+// Security headers incl. a CSP that permits only self + inline styles/data-URIs (dashboard is self-hosted).
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:"],
+      fontSrc: ["'self'"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'self'"],
+      baseUri: ["'self'"],
+    },
+  },
+  hsts: { maxAge: 31536000, includeSubDomains: true },
+}));
 app.use(express.json({ limit: "1mb" }));
 
 // Rate limits. /enrich is called per-engager by Trigify (bursty) so it gets a higher ceiling.
 const enrichLimiter = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false });
-const apiLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false });
-// Brute-force guard on the login surface: only FAILED (non-2xx) requests count, so the
-// dashboard's own auto-refresh isn't affected but password guessing is throttled hard.
-const authLimiter = rateLimit({
-  windowMs: 15 * 60_000,
-  max: 25,
-  skipSuccessfulRequests: true,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+const apiLimiter = rateLimit({ windowMs: 60_000, max: 150, standardHeaders: true, legacyHeaders: false });
+// Brute-force guard on the login surface: only FAILED (non-2xx) requests count.
+const authLimiter = rateLimit({ windowMs: 15 * 60_000, max: 25, skipSuccessfulRequests: true, standardHeaders: true, legacyHeaders: false });
 
-app.get("/health", (_req, res) => res.json({ ok: true, proxies: poolSize() }));
+// Optional IP allowlist for the dashboard surface (opt-in via ALLOW_IPS; never applied to /enrich).
+function ipAllow(req, res, next) {
+  if (!config.allowIps.length) return next();
+  const ip = (req.ip || "").replace("::ffff:", "");
+  if (config.allowIps.includes(ip)) return next();
+  return res.status(403).send("Forbidden");
+}
+
+// Health check — no secrets, no proxy count.
+app.get("/health", (_req, res) => res.json({ ok: true }));
 
 // Trigify ingest — token-guarded (inside the router) + rate-limited.
 app.use("/", enrichLimiter, enrichRouter);
 
-// Dashboard API + static UI — brute-force guard + basic-auth + rate-limited.
-app.use("/api", authLimiter, apiLimiter, basicAuth, apiRouter);
-app.use("/", authLimiter, basicAuth, express.static(path.join(__dirname, "../public")));
+// Dashboard API — IP allowlist + brute-force guard + basic-auth + rate-limit.
+app.use("/api", ipAllow, authLimiter, apiLimiter, basicAuth, apiRouter);
+
+// Static UI — long-cache fonts (fixes the font flash on reload) behind the same guards.
+app.use("/", ipAllow, authLimiter, basicAuth, express.static(publicDir, {
+  setHeaders: (res, p) => {
+    if (/[\\/]fonts[\\/]/.test(p)) res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  },
+}));
 
 async function main() {
   await connect();
   app.listen(config.port, () =>
-    log.info("gtm-engine up", { port: config.port, proxies: poolSize(), dashLocked: !!(config.dashUser && config.dashPass) })
+    log.info("gtm-engine up", { port: config.port, proxies: poolSize(), dashLocked: !!(config.dashUser && config.dashPass), ipAllowlist: config.allowIps.length })
   );
 }
 
