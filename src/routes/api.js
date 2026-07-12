@@ -9,12 +9,19 @@ import { findEmailWaterfall } from "../pipeline/enrichLead.js";
 import { reprocessNoEmail, reprocessStatus } from "../pipeline/reprocess.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { campaignByKey, campaignLabel } from "../services/campaigns.js";
+import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
 export const apiRouter = Router();
 
+// Coerce a query param to a plain string — blocks Mongo operator injection via qs
+// bracket notation (?status[$ne]=x would otherwise arrive as an object).
+const S = (v) => (typeof v === "string" ? v : "");
+const escRegex = (v) => S(v).slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 // counts for a lead filter (optionally scoped to one campaign)
 async function countBlock(campaign) {
+  campaign = S(campaign);
   const L = leads();
   const base = campaign ? { campaigns: campaign } : {};
   const [total, hot, warm, cold, verified, noEmail, unverified, review, competitor] = await Promise.all([
@@ -33,24 +40,23 @@ async function countBlock(campaign) {
 
 // shared lead filter builder (used by /leads and /export)
 function buildLeadFilter(query) {
-  const { status, email_status, category, campaign, q, recovered } = query;
+  const status = S(query.status), email_status = S(query.email_status), category = S(query.category), campaign = S(query.campaign), recovered = S(query.recovered), q = S(query.q);
   const filter = {};
   if (status) filter.status = status;
   if (email_status) filter.email_status = email_status;
   if (category) filter.categories = category;
   if (campaign) filter.campaigns = campaign;
   if (recovered === "1") filter.recovered = true;
-  if (q) filter.$or = [
-    { name: { $regex: q, $options: "i" } },
-    { email: { $regex: q, $options: "i" } },
-    { company: { $regex: q, $options: "i" } },
-  ];
+  if (q) {
+    const rx = escRegex(q); // escaped -> literal substring match, no ReDoS / regex injection
+    filter.$or = [{ name: { $regex: rx, $options: "i" } }, { email: { $regex: rx, $options: "i" } }, { company: { $regex: rx, $options: "i" } }];
+  }
   return filter;
 }
 
 // GET /api/stats?campaign= — headline counts (all campaigns, or one), + live Trigify balance
 apiRouter.get("/stats", async (req, res) => {
-  const campaign = req.query.campaign || "";
+  const campaign = S(req.query.campaign);
   const counts = await countBlock(campaign);
   const engFilter = campaign ? { campaign } : {};
   const engCount = await engagements().countDocuments(engFilter);
@@ -106,7 +112,7 @@ apiRouter.get("/leads/:linkedin_url/timeline", async (req, res) => {
 
 // GET /api/analytics?campaign= — status split, funnel, daily series (for the Overview charts)
 apiRouter.get("/analytics", async (req, res) => {
-  const campaign = req.query.campaign || "";
+  const campaign = S(req.query.campaign);
   const match = campaign ? { campaigns: campaign } : {};
   const counts = await countBlock(campaign);
   const emailFound = await leads().countDocuments({ ...match, email: { $ne: null } });
@@ -123,7 +129,11 @@ apiRouter.get("/analytics", async (req, res) => {
 });
 
 // GET /api/export — CSV of a filtered view or an explicit ?urls= list (selected rows)
-const csvCell = (v) => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+const csvCell = (v) => {
+  let s = v == null ? "" : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;                 // neutralize spreadsheet formula injection
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
 apiRouter.get("/export", async (req, res) => {
   let rows;
   if (req.query.urls) {
@@ -193,7 +203,7 @@ apiRouter.get("/reprocess/status", (_req, res) => res.json(reprocessStatus()));
 
 // POST /api/reset — wipe all leads + engagements (guarded by the ingest token). For clearing test data.
 apiRouter.post("/reset", async (req, res) => {
-  if ((req.headers["x-ingest-token"] || "") !== config.ingestToken) {
+  if (!safeEqual(req.headers["x-ingest-token"] || "", config.ingestToken)) {
     return res.status(401).json({ ok: false });
   }
   const a = await leads().deleteMany({});

@@ -60,7 +60,7 @@ export async function syncVerified({ campaign = "" } = {}) {
   const q = { email_status: "verified" };
   if (campaign) q.campaigns = campaign;
   const docs = await leads().find(q).toArray();
-  status = { running: true, processed: 0, total: docs.length, reFound: 0, pushed: 0, startedAt: new Date(), finishedAt: null };
+  status = { running: true, processed: 0, total: docs.length, reFound: 0, pushed: 0, moved: 0, startedAt: new Date(), finishedAt: null };
 
   let idx = 0;
   const worker = async () => {
