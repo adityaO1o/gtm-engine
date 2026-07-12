@@ -5,110 +5,161 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>InboxKit GTM Engine</title>
 <style>
+  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Regular.otf') format('opentype');font-weight:400;font-display:swap}
+  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Medium.otf') format('opentype');font-weight:500;font-display:swap}
+  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Semibold.otf') format('opentype');font-weight:600;font-display:swap}
+  @font-face{font-family:'Suisse';src:url('/fonts/SuisseIntlTrial-Bold.otf') format('opentype');font-weight:700;font-display:swap}
+  @font-face{font-family:'SuisseMono';src:url('/fonts/SuisseIntlMonoTrial-Regular.otf') format('opentype');font-weight:400;font-display:swap}
+
   :root{
-    --bg:#0b0e14; --panel:#141922; --panel2:#1b212c; --line:#252c39;
-    --txt:#e6e9ef; --dim:#8a93a6; --accent:#5b8cff;
-    --hot:#ff5c5c; --warm:#ffb020; --cold:#5b8cff; --good:#2ecc71; --bad:#6b7280;
+    --bg:#F7F7F8; --card:#FFFFFF; --line:#ECECEF; --line2:#F1F1F3;
+    --ink:#17171F; --dim:#77777F; --faint:#9A9AA3;
+    --primary:#6C47FF; --primary-soft:rgba(108,71,255,.09); --primary-line:rgba(108,71,255,.22);
+    --hot:#E5484D; --hot-soft:rgba(229,72,77,.10);
+    --warm:#F59E0B; --warm-soft:rgba(245,158,11,.12);
+    --cold:#6B7280; --cold-soft:rgba(107,114,128,.10);
+    --good:#12A150; --good-soft:rgba(18,161,80,.10);
+    --shadow:0 1px 2px rgba(20,20,30,.04),0 4px 16px rgba(20,20,30,.04);
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-  header{padding:20px 28px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px}
-  header h1{font-size:17px;margin:0;font-weight:650;letter-spacing:.2px}
-  header .tag{font-size:11px;color:var(--dim);border:1px solid var(--line);padding:2px 8px;border-radius:20px}
-  .wrap{padding:22px 28px;max-width:1400px;margin:0 auto}
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:22px}
-  .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-  .stat .n{font-size:26px;font-weight:680;letter-spacing:.5px}
-  .stat .l{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;margin-top:2px}
-  .stat.hot .n{color:var(--hot)} .stat.warm .n{color:var(--warm)} .stat.cold .n{color:var(--cold)}
-  .stat.good .n{color:var(--good)}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:'Suisse',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .mono{font-family:'SuisseMono',ui-monospace,monospace}
+  a{color:var(--primary);text-decoration:none}
+
+  header{background:var(--card);border-bottom:1px solid var(--line);padding:16px 30px;display:flex;align-items:center;gap:14px}
+  .logo{display:flex;align-items:center;gap:10px}
+  .dot{width:10px;height:10px;border-radius:3px;background:var(--primary)}
+  header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:-.01em}
+  header .sub{font-size:12px;color:var(--faint)}
+  .spacer{flex:1}
+  .bal{text-align:right;font-size:12px;color:var(--dim)}
+  .bal b{color:var(--ink);font-weight:600}
+  .bal .bar{width:150px;height:5px;border-radius:3px;background:var(--line);margin-top:5px;overflow:hidden}
+  .bal .bar i{display:block;height:100%;background:var(--primary);border-radius:3px}
+
+  .wrap{padding:24px 30px;max-width:1440px;margin:0 auto}
+
+  /* campaign tabs */
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px}
+  .tab{font-size:13px;font-weight:500;padding:7px 14px;border-radius:9px;border:1px solid var(--line);
+    background:var(--card);color:var(--dim);cursor:pointer;transition:.12s;white-space:nowrap}
+  .tab:hover{border-color:var(--primary-line);color:var(--ink)}
+  .tab.on{background:var(--primary);border-color:var(--primary);color:#fff}
+  .tab .c{opacity:.7;margin-left:5px;font-size:12px}
+  .tab.on .c{opacity:.85}
+
+  /* credits strip */
+  .credits{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+  .cred{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 16px;display:flex;align-items:center;gap:10px;box-shadow:var(--shadow)}
+  .cred .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+  .cred .v{font-size:18px;font-weight:600}
+  .cred.tg{border-color:var(--primary-line)}
+
+  /* stat tiles */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:22px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
+  .stat .n{font-size:24px;font-weight:600;letter-spacing:-.02em}
+  .stat .l{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-top:3px}
+  .stat.hot .n{color:var(--hot)} .stat.warm .n{color:var(--warm)}
+  .stat.cold .n{color:var(--cold)} .stat.good .n{color:var(--good)}
+
   .controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center}
-  select,input{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:8px 10px;border-radius:8px;font-size:13px;outline:none}
-  input{min-width:220px}
-  select:focus,input:focus{border-color:var(--accent)}
-  table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);padding:11px 14px;border-bottom:1px solid var(--line);font-weight:600}
-  td{padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  select,input{background:var(--card);border:1px solid var(--line);color:var(--ink);
+    padding:9px 12px;border-radius:9px;font-size:13px;font-family:inherit;outline:none;transition:.12s}
+  input{min-width:240px}
+  select:focus,input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+
+  table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);
+    border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);
+    padding:12px 16px;border-bottom:1px solid var(--line);font-weight:600;background:var(--bg)}
+  td{padding:13px 16px;border-bottom:1px solid var(--line2);vertical-align:top}
   tr:last-child td{border-bottom:none}
-  tr:hover td{background:var(--panel2);cursor:pointer}
-  .badge{display:inline-block;font-size:11px;font-weight:650;padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.4px}
-  .b-hot{background:rgba(255,92,92,.15);color:var(--hot)}
-  .b-warm{background:rgba(255,176,32,.15);color:var(--warm)}
-  .b-cold{background:rgba(91,140,255,.15);color:var(--cold)}
-  .em{font-size:11px;padding:2px 7px;border-radius:6px}
-  .em-verified{background:rgba(46,204,113,.14);color:var(--good)}
-  .em-no-email{background:rgba(107,114,128,.18);color:var(--dim)}
-  .em-unverified{background:rgba(255,176,32,.14);color:var(--warm)}
-  .em-role-based{background:rgba(107,114,128,.18);color:var(--dim)}
+  tbody tr{transition:.1s}
+  tbody tr:hover td{background:#FBFAFF;cursor:pointer}
+
+  .name{font-weight:600;letter-spacing:-.01em}
+  .email{font-size:12px;color:var(--dim)}
+  .prov{font-size:11px;color:var(--faint);margin-top:2px}
+  .prov b{color:var(--primary);font-weight:600}
+
+  .badge{display:inline-block;font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;text-transform:capitalize}
+  .b-hot{background:var(--hot-soft);color:var(--hot)}
+  .b-warm{background:var(--warm-soft);color:var(--warm)}
+  .b-cold{background:var(--cold-soft);color:var(--cold)}
+  .em{font-size:11px;padding:3px 8px;border-radius:7px;font-weight:500}
+  .em-verified{background:var(--good-soft);color:var(--good)}
+  .em-no-email{background:var(--cold-soft);color:var(--dim)}
+  .em-unverified{background:var(--warm-soft);color:var(--warm)}
+  .em-role-based{background:var(--cold-soft);color:var(--dim)}
   .cats{display:flex;flex-wrap:wrap;gap:4px}
-  .cat{font-size:10px;background:var(--panel2);border:1px solid var(--line);color:var(--dim);padding:1px 6px;border-radius:5px}
-  .score{font-weight:680;font-size:15px}
+  .cat{font-size:10px;background:var(--primary-soft);border:1px solid var(--primary-line);color:var(--primary);padding:2px 7px;border-radius:6px;font-weight:500}
+  .score{font-weight:600;font-size:15px}
+  .seen{font-size:12px;color:var(--dim)}
   .muted{color:var(--dim);font-size:12px}
-  .name{font-weight:600}
-  .seen{font-size:11px;color:var(--dim)}
-  #empty{text-align:center;color:var(--dim);padding:40px}
-  .drawer{position:fixed;top:0;right:0;width:420px;max-width:90vw;height:100vh;background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);transition:.2s;overflow-y:auto;z-index:10;padding:22px}
+  #empty{text-align:center;color:var(--dim);padding:48px}
+
+  .drawer{position:fixed;top:0;right:0;width:440px;max-width:92vw;height:100vh;background:var(--card);
+    border-left:1px solid var(--line);transform:translateX(100%);transition:.22s;overflow-y:auto;z-index:10;padding:26px;box-shadow:-8px 0 30px rgba(20,20,30,.08)}
   .drawer.open{transform:translateX(0)}
-  .drawer h3{margin:0 0 4px}
-  .drawer .close{position:absolute;top:16px;right:18px;cursor:pointer;color:var(--dim);font-size:20px}
-  .tl{border-left:2px solid var(--line);padding:10px 0 10px 16px;margin-left:6px;position:relative}
-  .tl::before{content:"";position:absolute;left:-6px;top:14px;width:10px;height:10px;border-radius:50%;background:var(--accent)}
+  .drawer h3{margin:0 0 3px;font-weight:600}
+  .drawer .close{position:absolute;top:18px;right:20px;cursor:pointer;color:var(--dim);font-size:22px;line-height:1}
+  .tl{border-left:2px solid var(--line);padding:10px 0 12px 16px;margin-left:6px;position:relative}
+  .tl::before{content:"";position:absolute;left:-6px;top:14px;width:10px;height:10px;border-radius:50%;background:var(--primary);border:2px solid var(--card)}
   .tl .c{font-size:12px;color:var(--dim)}
 </style>
 </head>
 <body>
 <header>
-  <h1>InboxKit GTM Engine</h1>
-  <span class="tag" id="proxytag">proxies —</span>
-  <span class="tag" id="engtag">engagements —</span>
-  <span style="flex:1"></span>
-  <span class="muted" id="refreshed"></span>
+  <div class="logo"><span class="dot"></span>
+    <div><h1>InboxKit GTM Engine</h1><div class="sub" id="proxysub">—</div></div>
+  </div>
+  <div class="spacer"></div>
+  <div class="bal" id="bal"></div>
 </header>
 
 <div class="wrap">
+  <div class="tabs" id="tabs"></div>
+  <div class="credits" id="credits"></div>
   <div class="stats" id="stats"></div>
 
   <div class="controls">
     <select id="f-status">
       <option value="">All status</option>
-      <option value="hot">🔥 Hot</option>
-      <option value="warm">🟡 Warm</option>
-      <option value="cold">🔵 Cold</option>
+      <option value="hot">🔥 Hot</option><option value="warm">🟡 Warm</option><option value="cold">🔵 Cold</option>
     </select>
     <select id="f-email">
       <option value="">All emails</option>
-      <option value="verified">Verified</option>
-      <option value="no-email">No email (hand-off)</option>
-      <option value="unverified">Unverified</option>
-      <option value="role-based">Role-based</option>
+      <option value="verified">Verified</option><option value="no-email">No email (hand-off)</option>
+      <option value="unverified">Unverified</option><option value="role-based">Role-based</option>
     </select>
     <select id="f-cat">
       <option value="">All categories</option>
-      <option>infra-competitor</option><option>deliverability</option>
-      <option>infra</option><option>sequencer</option>
-      <option>gtm-eng</option><option>data-tools</option><option>cold-email</option>
+      <option>infra-competitor</option><option>deliverability</option><option>infra</option>
+      <option>sequencer</option><option>gtm-eng</option><option>data-tools</option><option>cold-email</option>
     </select>
     <select id="f-sort">
-      <option value="score">Sort: score</option>
-      <option value="recent">Sort: most recent</option>
+      <option value="score">Sort: score</option><option value="recent">Sort: most recent</option>
     </select>
     <input id="f-q" placeholder="search name / email / company" />
   </div>
 
   <table>
     <thead><tr>
-      <th>Name</th><th>Status</th><th>Score</th><th>Email</th>
+      <th>Person</th><th>Status</th><th>Score</th><th>Email</th>
       <th>Categories</th><th>Seen</th><th>Company</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
-  <div id="empty" style="display:none">No leads yet. Publish a Trigify workflow and let a post flow through.</div>
+  <div id="empty" style="display:none">No leads yet in this view.</div>
 </div>
 
 <div class="drawer" id="drawer">
   <span class="close" onclick="closeDrawer()">×</span>
   <h3 id="d-name"></h3>
   <div class="muted" id="d-sub"></div>
+  <div id="d-prov" style="margin-top:10px"></div>
   <div id="d-timeline" style="margin-top:18px"></div>
 </div>
 

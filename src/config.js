@@ -22,6 +22,10 @@ export const config = {
 
   prospeoKey: req("PROSPEO_KEY"),
   enrichKey: req("ENRICH_KEY"),
+  // Enrich.so "linkedin-to-email" finder (staging) — the Prospeo fallback.
+  enrichLteKey: process.env.ENRICH_LTE_KEY || "lte_enrich_2026_internal",
+  // Trigify API key — read-only, for pulling the live credit balance onto the dashboard.
+  trigifyKey: process.env.TRIGIFY_KEY || "",
 
   sendkit: {
     key: req("SENDKIT_KEY"),

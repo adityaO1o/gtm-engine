@@ -32,9 +32,11 @@ export async function connect() {
   await db.collection("leads").createIndex({ score: -1 });
   await db.collection("engagements").createIndex({ linkedin_url: 1 });
   await db.collection("engagements").createIndex({ created_at: -1 });
+  await db.collection("usage").createIndex({ campaign: 1 }, { unique: true });
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
 
 export const leads = () => db.collection("leads");
 export const engagements = () => db.collection("engagements");
+export const usage = () => db.collection("usage");

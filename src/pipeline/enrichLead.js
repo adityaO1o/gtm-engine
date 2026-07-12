@@ -11,9 +11,10 @@
 import { leads, engagements } from "../db/mongo.js";
 import { resolveVanity, isUrn } from "../services/resolve.js";
 import { findEmail, verifyEmail } from "../services/prospeo.js";
-import { validateEmail, isRoleBased } from "../services/enrich.js";
+import { validateEmail, isRoleBased, findEmailByLinkedin } from "../services/enrich.js";
 import { findOurLead, upsertLead, addToCampaign } from "../services/sendkit.js";
 import { scoreFromHistory, CAMPAIGN_CATEGORY } from "../services/score.js";
+import { bumpUsage } from "../services/usage.js";
 import { log } from "../lib/logger.js";
 
 // crude company extraction from a headline ("Founder @ Acme | ex-Google" -> "Acme")
@@ -46,6 +47,8 @@ export async function enrichLead(input) {
 
   const category = CAMPAIGN_CATEGORY[campaign] || "cold-email";
   const now = new Date();
+  let prospeoCalls = 0; // for per-campaign usage tracking
+  let emailSource = null; // "prospeo" | "enrich"
 
   // 1) always log the engagement (audit + rescoring source of truth)
   //    we log by resolved identity later; for now use the raw url as a temp key
@@ -58,15 +61,27 @@ export async function enrichLead(input) {
     if (resolved) vanity = resolved;
   }
 
-  // 3) find the work email (Prospeo, 400-safe)
+  // 3) find the work email — Prospeo first (400-safe), then Enrich.so as fallback
   let em = { found: false };
   if (vanity && !isUrn(vanity)) {
     em = await findEmail({ linkedin_url: vanity, full_name: name });
+    prospeoCalls++;
   }
-  // fallback: if still nothing and we have a company domain guess, try name+domain
+  // Prospeo name+domain retry if we have a company domain guess
   if (!em.found && em.company_domain) {
     const [first, ...rest] = name.split(" ");
     em = await findEmail({ first_name: first, last_name: rest.join(" "), company_domain: em.company_domain });
+    prospeoCalls++;
+  }
+  if (em.found && em.email) emailSource = "prospeo";
+
+  // FALLBACK: Prospeo missed -> Enrich.so linkedin-to-email (we already have the URL)
+  if ((!em.found || !em.email) && vanity && !isUrn(vanity)) {
+    const lte = await findEmailByLinkedin(vanity);
+    if (lte.found && lte.email) {
+      em = { found: true, email: lte.email, company_name: em.company_name, company_domain: em.company_domain };
+      emailSource = "enrich";
+    }
   }
 
   // identity key for dedup/accumulation: prefer the resolved vanity url, else raw
@@ -102,6 +117,7 @@ export async function enrichLead(input) {
     score: scored.score,
     categories: scored.categories,
     times_seen: scored.timesSeen,
+    email_source: emailSource, // "prospeo" | "enrich" | null
     last_comment: comment_text || null,
     last_engagement_at: now,
     updated_at: now,
@@ -117,6 +133,7 @@ export async function enrichLead(input) {
       { $set: setDoc, $addToSet: { campaigns: campaign, posts_seen: post_url }, $setOnInsert: { created_at: now } },
       { upsert: true }
     );
+    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls });
     log.info("no email", { name, key });
     return { outcome: "no_email", ...scored, name };
   }
@@ -131,21 +148,28 @@ export async function enrichLead(input) {
         $addToSet: { campaigns: campaign, posts_seen: post_url }, $setOnInsert: { created_at: now } },
       { upsert: true }
     );
+    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls });
     return { outcome: "role_based", email, ...scored, name };
   }
 
   // 5) verify: Enrich.so first, Prospeo as second opinion
   let verified = false;
+  let verifiedBy = null;
   let verifyLabel = "";
   const v1 = await validateEmail(email);
   if (v1.good) {
     verified = true;
+    verifiedBy = "enrich";
     verifyLabel = `enrichso:${v1.result}/${v1.confidence}`;
   } else {
     const v2 = await verifyEmail(email);
+    prospeoCalls++;
     verified = v2.ok;
+    if (v2.ok) verifiedBy = "prospeo";
     verifyLabel = `enrichso:${v1.result}|prospeo:${v2.status}`;
   }
+  setDoc.email_source = emailSource;
+  setDoc.verified_by = verifiedBy;
 
   if (!verified) {
     await leads().updateOne(
@@ -154,6 +178,7 @@ export async function enrichLead(input) {
         $addToSet: { campaigns: campaign, posts_seen: post_url }, $setOnInsert: { created_at: now } },
       { upsert: true }
     );
+    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls });
     log.info("unverified", { name, email, verifyLabel });
     return { outcome: "unverified", email, ...scored, name };
   }
@@ -182,6 +207,9 @@ export async function enrichLead(input) {
     { upsert: true }
   );
 
-  log.info("verified & synced", { name, email, status: scored.status, score: scored.score, isRepeat });
-  return { outcome: "sent", email, isRepeat, ...scored, name };
+  // count the SendKit push only on first insert into this campaign (avoid double-count on repeats)
+  await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, sendkit_pushed: isRepeat ? 0 : 1 });
+
+  log.info("verified & synced", { name, email, source: emailSource, verifiedBy, status: scored.status, score: scored.score, isRepeat });
+  return { outcome: "sent", email, isRepeat, email_source: emailSource, verified_by: verifiedBy, ...scored, name };
 }

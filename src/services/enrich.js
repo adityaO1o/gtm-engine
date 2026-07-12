@@ -7,6 +7,31 @@ import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
 const ENDPOINT = "https://dev.enrich.so/api/v3/email-validation";
+const LTE_ENDPOINT = "https://staging-v3-api.enrich.so/api/v3/linkedin-to-email";
+
+// Prospeo fallback: find an email straight from the LinkedIn URL.
+// Single URL -> 200 (found) / 404 (not found). Staging branch, so best-effort — never throws.
+export async function findEmailByLinkedin(linkedinUrl) {
+  try {
+    const r = await axios.post(
+      LTE_ENDPOINT,
+      { linkedinUrls: [linkedinUrl], skipEnrichment: false },
+      {
+        headers: { "x-api-key": config.enrichLteKey, "Content-Type": "application/json" },
+        timeout: 20000,
+        validateStatus: () => true,
+      }
+    );
+    if (r.status === 200 && r.data?.success) {
+      const email = r.data?.data?.email || null;
+      return { found: !!email, email, source: r.data?.data?.source || "enrich" };
+    }
+    return { found: false, email: null }; // 404 not-found, 401/503, etc.
+  } catch (e) {
+    log.warn("enrich linkedin-to-email threw", { err: e.message });
+    return { found: false, email: null };
+  }
+}
 
 export async function validateEmail(email) {
   try {
