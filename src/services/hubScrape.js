@@ -1,31 +1,51 @@
-// Scrape a public LinkedIn "top-content" hub page through the proxy pool and pull out the
-// individual post URLs + author /in/ profile links. Post URLs feed the pipeline directly;
-// authors are harvested as influencer sources (robust even when post extraction is thin).
+// Scrape a public LinkedIn "top-content" hub page and pull out the individual post URLs +
+// author /in/ profile links. Post URLs feed the pipeline directly; authors are harvested as
+// influencer sources (robust even when post extraction is thin).
+//
+// LinkedIn serves the FULL public hub HTML to a plain datacenter fetch, but shows a login wall
+// to many residential-proxy IPs — so we fetch DIRECT first and only fall back to the proxy pool
+// if the direct fetch is blocked or empty.
 
 import axios from "axios";
 import { nextWorkingAgent } from "../lib/proxies.js";
 import { log } from "../lib/logger.js";
 
-export async function hubScrape(hubUrl) {
-  const agent = await nextWorkingAgent();
-  const cfg = {
-    timeout: 25000, validateStatus: () => true,
-    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36" },
-  };
-  if (agent) { cfg.httpsAgent = agent; cfg.proxy = false; }
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36";
 
-  let html = "";
-  try {
-    const r = await axios.get(hubUrl, cfg);
-    html = typeof r.data === "string" ? r.data : JSON.stringify(r.data || "");
-  } catch (e) {
-    log.warn("hubScrape threw", { err: e.message });
-  }
-
+function extract(html) {
   const posts = [...new Set(html.match(/https:\/\/www\.linkedin\.com\/(?:posts\/[^"'\s\\)]+|feed\/update\/urn:li:activity:\d+)/g) || [])]
     .map((u) => u.replace(/[",]+$/, ""));
-  const authors = [...new Set(html.match(/https:\/\/www\.linkedin\.com\/in\/[a-zA-Z0-9\-_%]{3,}/g) || [])]
+  const authors = [...new Set((html.match(/https:\/\/www\.linkedin\.com\/in\/[a-zA-Z0-9\-_%]{3,}/g) || [])
+    .map((u) => u.replace(/\?.*$/, "")))]        // drop ?trk= tracking query so upserts dedup cleanly
     .filter((u) => !/\/in\/ACoAA/i.test(u));
+  return { posts, authors };
+}
 
-  return { posts, authors, ok: !!html };
+async function fetchHtml(hubUrl, useProxy) {
+  const cfg = { timeout: 25000, validateStatus: () => true, headers: { "User-Agent": UA } };
+  if (useProxy) {
+    const agent = await nextWorkingAgent();
+    if (!agent) return "";
+    cfg.httpsAgent = agent; cfg.proxy = false;
+  }
+  try {
+    const r = await axios.get(hubUrl, cfg);
+    return typeof r.data === "string" ? r.data : JSON.stringify(r.data || "");
+  } catch (e) {
+    log.warn("hubScrape fetch threw", { proxy: !!useProxy, err: e.message });
+    return "";
+  }
+}
+
+export async function hubScrape(hubUrl) {
+  // Direct first — the public hub page returns full HTML (authors + posts) to a datacenter IP.
+  let html = await fetchHtml(hubUrl, false);
+  let out = extract(html);
+  if (!out.authors.length && !out.posts.length) {
+    log.info("hubScrape direct empty, retrying via proxy", { hubUrl });
+    html = await fetchHtml(hubUrl, true);
+    out = extract(html);
+  }
+  log.info("hubScrape done", { hubUrl, posts: out.posts.length, authors: out.authors.length });
+  return { ...out, ok: !!html };
 }
