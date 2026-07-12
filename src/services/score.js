@@ -16,6 +16,11 @@ export const CATEGORY_WEIGHT = {
 
 export const ENGAGEMENT_POINTS = { comment: 3, like: 1 };
 
+// Campaign name -> SendKit campaign id (used when reprocessing leads that predate campaign_id storage).
+export const CAMPAIGN_ID = {
+  "Smartlead LinkedIn": "6a523205757679d5417ea44a",
+};
+
 // Map a search/campaign to its category. Extend as campaigns are added.
 export const CAMPAIGN_CATEGORY = {
   "Smartlead LinkedIn": "sequencer",

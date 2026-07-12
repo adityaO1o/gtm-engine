@@ -8,6 +8,29 @@ import { log } from "../lib/logger.js";
 
 const ENDPOINT = "https://dev.enrich.so/api/v3/email-validation";
 const LTE_ENDPOINT = "https://staging-v3-api.enrich.so/api/v3/linkedin-to-email";
+const FINDER_ENDPOINT = "https://dev.enrich.so/api/v3/email-finder";
+
+// Primary finder: name + company domain -> work email. Returns an already-verified
+// mailbox when confidence is high (so we can skip a separate validation call).
+export async function findEmailByNameDomain(firstName, lastName, domain) {
+  if (!firstName || !lastName || !domain) return { found: false, email: null };
+  try {
+    const r = await axios.post(
+      FINDER_ENDPOINT,
+      { firstName, lastName, domain },
+      { headers: { "x-api-key": config.enrichKey, "Content-Type": "application/json" }, timeout: 25000, validateStatus: () => true }
+    );
+    const d = r.data?.data;
+    if (r.status === 200 && d?.found && d?.email) {
+      const verified = d.confidence === "high" || /verified/i.test(d.message || "");
+      return { found: true, email: d.email, confidence: d.confidence || null, verified };
+    }
+    return { found: false, email: null };
+  } catch (e) {
+    log.warn("enrich email-finder threw", { err: e.message });
+    return { found: false, email: null };
+  }
+}
 
 // Prospeo fallback: find an email straight from the LinkedIn URL.
 // Single URL -> 200 (found) / 404 (not found). Staging branch, so best-effort — never throws.

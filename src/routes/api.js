@@ -5,6 +5,7 @@ import { leads, engagements, usage } from "../db/mongo.js";
 import { poolSize } from "../lib/proxies.js";
 import { trigifyBalance } from "../services/trigify.js";
 import { prospeoBalance } from "../services/prospeo.js";
+import { reprocessNoEmail, reprocessStatus } from "../pipeline/reprocess.js";
 import { config } from "../config.js";
 
 export const apiRouter = Router();
@@ -91,6 +92,16 @@ apiRouter.get("/leads/:linkedin_url/timeline", async (req, res) => {
   const rows = await engagements().find({ linkedin_url: url }).sort({ created_at: -1 }).toArray();
   res.json({ rows });
 });
+
+// POST /api/reprocess — re-run the no-email hand-off leads through the Enrich-first waterfall.
+// Runs in the background (fire-and-forget); poll /api/reprocess/status for progress.
+apiRouter.post("/reprocess", (_req, res) => {
+  const st = reprocessStatus();
+  if (st.running) return res.json({ started: false, ...st });
+  reprocessNoEmail({ concurrency: 5 }).catch((e) => console.error("reprocess error", e.message));
+  res.json({ started: true });
+});
+apiRouter.get("/reprocess/status", (_req, res) => res.json(reprocessStatus()));
 
 // POST /api/reset — wipe all leads + engagements (guarded by the ingest token). For clearing test data.
 apiRouter.post("/reset", async (req, res) => {

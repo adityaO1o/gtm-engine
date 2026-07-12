@@ -12,155 +12,175 @@
   @font-face{font-family:'SuisseMono';src:url('/fonts/SuisseIntlMonoTrial-Regular.otf') format('opentype');font-weight:400;font-display:swap}
 
   :root{
-    --bg:#F7F7F8; --card:#FFFFFF; --line:#ECECEF; --line2:#F1F1F3;
-    --ink:#17171F; --dim:#77777F; --faint:#9A9AA3;
-    --primary:#6C47FF; --primary-soft:rgba(108,71,255,.09); --primary-line:rgba(108,71,255,.22);
-    --hot:#E5484D; --hot-soft:rgba(229,72,77,.10);
-    --warm:#F59E0B; --warm-soft:rgba(245,158,11,.12);
-    --cold:#6B7280; --cold-soft:rgba(107,114,128,.10);
-    --good:#12A150; --good-soft:rgba(18,161,80,.10);
-    --shadow:0 1px 2px rgba(20,20,30,.04),0 4px 16px rgba(20,20,30,.04);
+    --bg:#F6F6F7; --panel:#FFFFFF; --line:#E7E7EB; --line2:#F0F0F2;
+    --ink:#16161D; --dim:#6E6E77; --faint:#9B9BA4;
+    --primary:#6C47FF; --primary-2:#5B36F0; --primary-soft:#F1EDFF;
+    --hot:#E0322F; --hot-soft:#FDECEC; --warm:#B7791F; --warm-soft:#FBF3E3;
+    --cold:#5B636E; --cold-soft:#EFF1F3; --good:#0E8F49; --good-soft:#E8F5EE;
+    --sidebar:220px;
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);
-    font-family:'Suisse',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--ink);font-family:'Suisse',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
   .mono{font-family:'SuisseMono',ui-monospace,monospace}
   a{color:var(--primary);text-decoration:none}
+  button{font-family:inherit;cursor:pointer}
 
-  header{background:var(--card);border-bottom:1px solid var(--line);padding:16px 30px;display:flex;align-items:center;gap:14px}
-  .logo{display:flex;align-items:center;gap:10px}
-  .dot{width:10px;height:10px;border-radius:3px;background:var(--primary)}
-  header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:-.01em}
-  header .sub{font-size:12px;color:var(--faint)}
-  .spacer{flex:1}
-  .bal{text-align:right;font-size:12px;color:var(--dim)}
-  .bal b{color:var(--ink);font-weight:600}
-  .bal .bar{width:150px;height:5px;border-radius:3px;background:var(--line);margin-top:5px;overflow:hidden}
-  .bal .bar i{display:block;height:100%;background:var(--primary);border-radius:3px}
+  .app{display:flex;min-height:100vh}
 
-  .wrap{padding:24px 30px;max-width:1440px;margin:0 auto}
+  /* ---------- sidebar ---------- */
+  .sidebar{width:var(--sidebar);flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+  .brand{display:flex;align-items:center;gap:9px;padding:18px 18px 16px;border-bottom:1px solid var(--line)}
+  .brand .mk{width:20px;height:20px;background:var(--primary);flex-shrink:0}
+  .brand b{font-size:14px;font-weight:600;letter-spacing:-.01em}
+  .brand span{display:block;font-size:10.5px;color:var(--faint);font-weight:400}
+  nav{padding:10px 10px;flex:1}
+  .nav-i{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;color:var(--dim);
+    font-weight:500;font-size:13px;cursor:pointer;border-left:2px solid transparent;user-select:none}
+  .nav-i:hover{background:var(--bg);color:var(--ink)}
+  .nav-i.on{background:var(--primary-soft);color:var(--primary);border-left-color:var(--primary);font-weight:600}
+  .nav-i .cnt{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .nav-i.on .cnt{color:var(--primary)}
+  .side-foot{padding:14px 18px;border-top:1px solid var(--line);font-size:11px;color:var(--faint)}
 
-  /* campaign tabs */
-  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px}
-  .tab{font-size:13px;font-weight:500;padding:7px 14px;border-radius:9px;border:1px solid var(--line);
-    background:var(--card);color:var(--dim);cursor:pointer;transition:.12s;white-space:nowrap}
-  .tab:hover{border-color:var(--primary-line);color:var(--ink)}
-  .tab.on{background:var(--primary);border-color:var(--primary);color:#fff}
-  .tab .c{opacity:.7;margin-left:5px;font-size:12px}
-  .tab.on .c{opacity:.85}
+  /* ---------- main ---------- */
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;gap:16px;padding:16px 26px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .topbar h2{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
+  .topbar .grow{flex:1}
+  .bals{display:flex;gap:22px}
+  .balc{font-size:11.5px;color:var(--dim);text-align:right}
+  .balc b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+  .balc .bar{width:130px;height:4px;background:var(--line);margin-top:4px;overflow:hidden}
+  .balc .bar i{display:block;height:100%;background:var(--primary)}
+  .content{padding:22px 26px;max-width:1500px;width:100%}
 
-  /* credits strip */
-  .credits{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
-  .cred{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 16px;display:flex;align-items:center;gap:10px;box-shadow:var(--shadow)}
-  .cred .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
-  .cred .v{font-size:18px;font-weight:600}
-  .cred.tg{border-color:var(--primary-line)}
+  /* ---------- cards / stats ---------- */
+  .grid{display:grid;gap:12px;margin-bottom:14px}
+  .g-cred{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .g-stat{grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);padding:15px 16px}
+  .card .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+  .card .v{font-size:23px;font-weight:600;margin-top:5px;font-variant-numeric:tabular-nums}
+  .card .sub{font-size:11.5px;color:var(--faint);margin-top:3px}
+  .card.pri{border-top:2px solid var(--primary)}
+  .card.hot .v{color:var(--hot)} .card.warm .v{color:var(--warm)}
+  .card.cold .v{color:var(--cold)} .card.good .v{color:var(--good)}
+  .section-t{font-size:12px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin:20px 0 10px}
 
-  /* stat tiles */
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:22px}
-  .stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
-  .stat .n{font-size:24px;font-weight:600;letter-spacing:-.02em}
-  .stat .l{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-top:3px}
-  .stat.hot .n{color:var(--hot)} .stat.warm .n{color:var(--warm)}
-  .stat.cold .n{color:var(--cold)} .stat.good .n{color:var(--good)}
+  /* ---------- toolbar ---------- */
+  .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+  select,input,.btn{background:var(--panel);border:1px solid var(--line);color:var(--ink);padding:8px 11px;font-size:13px;font-family:inherit;outline:none}
+  input{min-width:230px}
+  select:focus,input:focus{border-color:var(--primary)}
+  .btn{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:600}
+  .btn:hover{background:var(--primary-2)}
+  .btn:disabled{opacity:.55;cursor:default}
+  .btn-ghost{background:var(--panel);color:var(--primary)}
 
-  .controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center}
-  select,input{background:var(--card);border:1px solid var(--line);color:var(--ink);
-    padding:9px 12px;border-radius:9px;font-size:13px;font-family:inherit;outline:none;transition:.12s}
-  input{min-width:240px}
-  select:focus,input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+  /* ---------- table ---------- */
+  .tablewrap{background:var(--panel);border:1px solid var(--line);overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);
+    padding:10px 14px;border-bottom:1px solid var(--line);font-weight:600;white-space:nowrap;background:var(--panel);position:sticky;top:0}
+  td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:middle;white-space:nowrap}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover td{background:#FAF9FF;cursor:pointer}
+  .nm{font-weight:600}
+  .em{font-size:12px;color:var(--dim)}
+  .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;text-transform:capitalize}
+  .b-hot{background:var(--hot-soft);color:var(--hot)} .b-warm{background:var(--warm-soft);color:var(--warm)} .b-cold{background:var(--cold-soft);color:var(--cold)}
+  .pill{font-size:11px;padding:2px 8px;font-weight:500}
+  .p-verified{background:var(--good-soft);color:var(--good)} .p-no-email{background:var(--cold-soft);color:var(--dim)}
+  .p-unverified{background:var(--warm-soft);color:var(--warm)} .p-role-based{background:var(--cold-soft);color:var(--dim)}
+  .src{font-size:11px}
+  .src b{color:var(--primary);font-weight:600}
+  .src .via{color:var(--faint)}
+  .cats{display:flex;flex-wrap:wrap;gap:4px;max-width:200px}
+  .cat{font-size:10px;background:var(--primary-soft);color:var(--primary);padding:1px 6px;font-weight:500}
+  .score{font-weight:600;font-variant-numeric:tabular-nums}
+  .tstamp{font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .muted{color:var(--faint)}
 
-  table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);
-    border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
-  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);
-    padding:12px 16px;border-bottom:1px solid var(--line);font-weight:600;background:var(--bg)}
-  td{padding:13px 16px;border-bottom:1px solid var(--line2);vertical-align:top}
-  tr:last-child td{border-bottom:none}
-  tbody tr{transition:.1s}
-  tbody tr:hover td{background:#FBFAFF;cursor:pointer}
+  .pager{display:flex;align-items:center;gap:12px;justify-content:flex-end;margin-top:12px;font-size:12.5px;color:var(--dim)}
+  .pager button{padding:6px 12px}
+  #empty{text-align:center;color:var(--faint);padding:44px}
 
-  .name{font-weight:600;letter-spacing:-.01em}
-  .email{font-size:12px;color:var(--dim)}
-  .prov{font-size:11px;color:var(--faint);margin-top:2px}
-  .prov b{color:var(--primary);font-weight:600}
+  .note{background:var(--primary-soft);border:1px solid #DED3FF;color:var(--primary-2);padding:10px 14px;font-size:12.5px;margin-bottom:12px;display:none}
+  .note.on{display:block}
 
-  .badge{display:inline-block;font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;text-transform:capitalize}
-  .b-hot{background:var(--hot-soft);color:var(--hot)}
-  .b-warm{background:var(--warm-soft);color:var(--warm)}
-  .b-cold{background:var(--cold-soft);color:var(--cold)}
-  .em{font-size:11px;padding:3px 8px;border-radius:7px;font-weight:500}
-  .em-verified{background:var(--good-soft);color:var(--good)}
-  .em-no-email{background:var(--cold-soft);color:var(--dim)}
-  .em-unverified{background:var(--warm-soft);color:var(--warm)}
-  .em-role-based{background:var(--cold-soft);color:var(--dim)}
-  .cats{display:flex;flex-wrap:wrap;gap:4px}
-  .cat{font-size:10px;background:var(--primary-soft);border:1px solid var(--primary-line);color:var(--primary);padding:2px 7px;border-radius:6px;font-weight:500}
-  .score{font-weight:600;font-size:15px}
-  .seen{font-size:12px;color:var(--dim)}
-  .muted{color:var(--dim);font-size:12px}
-  #empty{text-align:center;color:var(--dim);padding:48px}
-
-  .drawer{position:fixed;top:0;right:0;width:440px;max-width:92vw;height:100vh;background:var(--card);
-    border-left:1px solid var(--line);transform:translateX(100%);transition:.22s;overflow-y:auto;z-index:10;padding:26px;box-shadow:-8px 0 30px rgba(20,20,30,.08)}
+  .drawer{position:fixed;top:0;right:0;width:440px;max-width:92vw;height:100vh;background:var(--panel);
+    border-left:1px solid var(--line);transform:translateX(100%);transition:.2s;overflow-y:auto;z-index:20;padding:24px;box-shadow:-10px 0 40px rgba(20,20,30,.09)}
   .drawer.open{transform:translateX(0)}
   .drawer h3{margin:0 0 3px;font-weight:600}
-  .drawer .close{position:absolute;top:18px;right:20px;cursor:pointer;color:var(--dim);font-size:22px;line-height:1}
-  .tl{border-left:2px solid var(--line);padding:10px 0 12px 16px;margin-left:6px;position:relative}
-  .tl::before{content:"";position:absolute;left:-6px;top:14px;width:10px;height:10px;border-radius:50%;background:var(--primary);border:2px solid var(--card)}
+  .drawer .x{position:absolute;top:18px;right:20px;cursor:pointer;color:var(--dim);font-size:22px;line-height:1}
+  .tl{border-left:2px solid var(--line);padding:9px 0 11px 15px;margin-left:5px;position:relative}
+  .tl::before{content:"";position:absolute;left:-6px;top:13px;width:9px;height:9px;background:var(--primary)}
   .tl .c{font-size:12px;color:var(--dim)}
 </style>
 </head>
 <body>
-<header>
-  <div class="logo"><span class="dot"></span>
-    <div><h1>InboxKit GTM Engine</h1><div class="sub" id="proxysub">—</div></div>
-  </div>
-  <div class="spacer"></div>
-  <div class="bal" id="bal"></div>
-</header>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><div class="mk"></div><div><b>InboxKit</b><span>GTM Engine</span></div></div>
+    <nav id="nav">
+      <div class="nav-i on" data-v="overview">Overview</div>
+      <div class="nav-i" data-v="leads">Leads <span class="cnt" id="c-leads"></span></div>
+      <div class="nav-i" data-v="handoff">Hand-off <span class="cnt" id="c-handoff"></span></div>
+      <div class="nav-i" data-v="campaigns">Campaigns <span class="cnt" id="c-camp"></span></div>
+    </nav>
+    <div class="side-foot" id="sidefoot">—</div>
+  </aside>
 
-<div class="wrap">
-  <div class="tabs" id="tabs"></div>
-  <div class="credits" id="credits"></div>
-  <div class="stats" id="stats"></div>
+  <main class="main">
+    <div class="topbar">
+      <h2 id="pageTitle">Overview</h2>
+      <div class="grow"></div>
+      <div class="bals" id="bals"></div>
+    </div>
+    <div class="content">
 
-  <div class="controls">
-    <select id="f-status">
-      <option value="">All status</option>
-      <option value="hot">🔥 Hot</option><option value="warm">🟡 Warm</option><option value="cold">🔵 Cold</option>
-    </select>
-    <select id="f-email">
-      <option value="">All emails</option>
-      <option value="verified">Verified</option><option value="no-email">No email (hand-off)</option>
-      <option value="unverified">Unverified</option><option value="role-based">Role-based</option>
-    </select>
-    <select id="f-cat">
-      <option value="">All categories</option>
-      <option>infra-competitor</option><option>deliverability</option><option>infra</option>
-      <option>sequencer</option><option>gtm-eng</option><option>data-tools</option><option>cold-email</option>
-    </select>
-    <select id="f-sort">
-      <option value="score">Sort: score</option><option value="recent">Sort: most recent</option>
-    </select>
-    <input id="f-q" placeholder="search name / email / company" />
-  </div>
+      <!-- OVERVIEW -->
+      <section id="v-overview">
+        <div class="section-t">Credits used — this run</div>
+        <div class="grid g-cred" id="credits"></div>
+        <div class="section-t">Leads</div>
+        <div class="grid g-stat" id="stats"></div>
+      </section>
 
-  <table>
-    <thead><tr>
-      <th>Person</th><th>Status</th><th>Score</th><th>Email</th>
-      <th>Categories</th><th>Seen</th><th>Company</th>
-    </tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
-  <div id="empty" style="display:none">No leads yet in this view.</div>
+      <!-- LEADS / HAND-OFF share the table -->
+      <section id="v-leads" style="display:none">
+        <div class="toolbar" id="leadsToolbar"></div>
+        <div id="tableHost"></div>
+        <div class="pager" id="pager"></div>
+      </section>
+
+      <section id="v-handoff" style="display:none">
+        <div class="note on">These leads had no email under the old method. <b>Reprocess</b> runs them through the new Enrich-first waterfall (name+domain → URL → Prospeo).</div>
+        <div class="toolbar"><button class="btn" id="reprocessBtn">Reprocess with new method</button><span id="reprocessMsg" class="muted"></span></div>
+        <div id="handoffHost"></div>
+        <div class="pager" id="pagerH"></div>
+      </section>
+
+      <!-- CAMPAIGNS -->
+      <section id="v-campaigns" style="display:none">
+        <div class="tablewrap"><table>
+          <thead><tr><th>Campaign</th><th>Leads</th><th>Hot</th><th>Warm</th><th>Verified</th><th>No-email</th><th>Trigify</th><th>Prospeo finds</th><th>SendKit</th></tr></thead>
+          <tbody id="campRows"></tbody>
+        </table></div>
+      </section>
+
+    </div>
+  </main>
 </div>
 
 <div class="drawer" id="drawer">
-  <span class="close" onclick="closeDrawer()">×</span>
+  <span class="x" onclick="closeDrawer()">×</span>
   <h3 id="d-name"></h3>
-  <div class="muted" id="d-sub"></div>
-  <div id="d-prov" style="margin-top:10px"></div>
-  <div id="d-timeline" style="margin-top:18px"></div>
+  <div class="muted mono" id="d-sub" style="font-size:11px;word-break:break-all"></div>
+  <div id="d-meta" style="margin-top:12px"></div>
+  <div id="d-timeline" style="margin-top:16px"></div>
 </div>
 
 <script src="/app.js"></script>

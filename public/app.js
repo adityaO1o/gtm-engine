@@ -2,125 +2,202 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => (s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const j = async (u) => (await fetch(u)).json();
 const num = (n) => (n ?? 0).toLocaleString();
+const ts = (d) => (d ? new Date(d).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
 
-let CURRENT = "";            // "" = all campaigns
-let CAMPAIGNS = [];          // from /api/campaigns
+let VIEW = "overview";
+let CAMPAIGNS = [];
+let BAL = { trigify: null, prospeo: null };
+const PAGE = { leads: 0, handoff: 0 };
+const SIZE = 50;
+let F = { status: "", email: "", cat: "", campaign: "", q: "", sort: "score" };
 
-function qp() { return CURRENT ? "?campaign=" + encodeURIComponent(CURRENT) : ""; }
+const statusBadge = (s) => `<span class="badge ${({ hot: "b-hot", warm: "b-warm", cold: "b-cold" }[s]) || "b-cold"}">${s || "cold"}</span>`;
+const emailPill = (s) => `<span class="pill p-${s || "no-email"}">${s || "—"}</span>`;
+function methodLabel(m) {
+  if (!m) return '<span class="muted">—</span>';
+  const [prov, how] = m.split(":");
+  const P = prov === "enrich" ? "Enrich" : "Prospeo";
+  const H = how === "name+domain" ? "name+domain" : how === "url" ? "URL" : how || "";
+  return `<span class="src"><b>${P}</b> <span class="via">· ${H}</span></span>`;
+}
+const verifiedBy = (v) => (v ? `<span class="src"><b>${v[0].toUpperCase() + v.slice(1)}</b></span>` : '<span class="muted">—</span>');
 
-// ---- campaign tabs + per-campaign credits ----
-async function loadCampaigns() {
+// ---------- top bar + overview + campaigns ----------
+async function loadTop() {
   const d = await j("/api/campaigns");
   CAMPAIGNS = d.campaigns || [];
+  BAL = { trigify: d.trigify, prospeo: d.prospeo };
 
-  // top-right real credit balances (authoritative — pulled live from Trigify + Prospeo)
-  const tgt = d.trigify, prb = d.prospeo;
-  let balHtml = "";
-  if (tgt) {
-    const pct = tgt.limit ? Math.min(100, (tgt.used / tgt.limit) * 100) : 0;
-    balHtml += `<div>Trigify · <b>${num(tgt.remaining)}</b> left<div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  // balances (top-right)
+  let bh = "";
+  if (d.trigify) {
+    const pct = d.trigify.limit ? Math.min(100, (d.trigify.used / d.trigify.limit) * 100) : 0;
+    bh += `<div class="balc">Trigify · <b>${num(d.trigify.remaining)}</b> left<div class="bar"><i style="width:${pct}%"></i></div></div>`;
   }
-  if (prb) balHtml += `<div style="margin-top:6px">Prospeo · <b>${num(prb.remaining)}</b> left</div>`;
-  $("#bal").innerHTML = balHtml;
+  if (d.prospeo) bh += `<div class="balc">Prospeo · <b>${num(d.prospeo.remaining)}</b> left</div>`;
+  $("#bals").innerHTML = bh;
 
-  // tabs
-  const allTotal = CAMPAIGNS.reduce((s, c) => s + c.total, 0);
-  let tabs = `<div class="tab ${CURRENT === "" ? "on" : ""}" data-c="">All campaigns<span class="c">${num(allTotal)}</span></div>`;
-  tabs += CAMPAIGNS.map((c) =>
-    `<div class="tab ${CURRENT === c.campaign ? "on" : ""}" data-c="${esc(c.campaign)}">${esc(c.campaign)}<span class="c">${num(c.total)}</span></div>`
-  ).join("");
-  $("#tabs").innerHTML = tabs;
-  document.querySelectorAll(".tab").forEach((t) =>
-    t.addEventListener("click", () => { CURRENT = t.dataset.c; refresh(); })
-  );
-
-  // per-campaign activity (credit proxies): scraped ≈ Trigify cr, finds ≈ Prospeo cr, pushed = SendKit leads
-  let tg = 0, pr = 0, sk = 0;
-  const pick = CURRENT ? CAMPAIGNS.filter((c) => c.campaign === CURRENT) : CAMPAIGNS;
+  // sums (respect campaign filter for credit cards)
+  const pick = F.campaign ? CAMPAIGNS.filter((c) => c.campaign === F.campaign) : CAMPAIGNS;
+  let tg = 0, pr = 0, sk = 0, total = 0, noEmail = 0;
   pick.forEach((c) => { tg += c.credits.trigify; pr += c.credits.prospeo; sk += c.credits.sendkit; });
+  CAMPAIGNS.forEach((c) => { total += c.total; noEmail += c.noEmail; });
+
+  // nav counts
+  $("#c-leads").textContent = num(total);
+  $("#c-handoff").textContent = num(noEmail);
+  $("#c-camp").textContent = num(CAMPAIGNS.length);
+
+  // credit cards
+  const left = (b) => (b ? `<div class="sub">${num(b.remaining)} left</div>` : "");
   $("#credits").innerHTML = `
-    <div class="cred tg"><div><div class="k">Trigify · scraped</div><div class="v">${num(tg)}</div></div></div>
-    <div class="cred"><div><div class="k">Prospeo · finds</div><div class="v">${num(pr)}</div></div></div>
-    <div class="cred"><div><div class="k">SendKit · pushed</div><div class="v">${num(sk)}</div></div></div>`;
+    <div class="card pri"><div class="k">Trigify · scraped</div><div class="v">${num(tg)}</div>${left(d.trigify)}</div>
+    <div class="card pri"><div class="k">Prospeo · finds</div><div class="v">${num(pr)}</div>${left(d.prospeo)}</div>
+    <div class="card"><div class="k">SendKit · pushed</div><div class="v">${num(sk)}</div></div>`;
+
+  // campaigns table
+  $("#campRows").innerHTML = CAMPAIGNS.map((c) => `
+    <tr><td class="nm">${esc(c.campaign)}</td><td>${num(c.total)}</td><td>${num(c.hot)}</td><td>${num(c.warm)}</td>
+    <td>${num(c.verified)}</td><td>${num(c.noEmail)}</td>
+    <td>${num(c.credits.trigify)}</td><td>${num(c.credits.prospeo)}</td><td>${num(c.credits.sendkit)}</td></tr>`).join("")
+    || `<tr><td colspan="9" class="muted" style="padding:24px;text-align:center">No campaigns yet</td></tr>`;
 }
 
 async function loadStats() {
-  const s = await j("/api/stats" + qp());
-  $("#proxysub").textContent = `${num(s.proxies)} proxies · ${num(s.engagements)} engagements`;
+  const s = await j("/api/stats" + (F.campaign ? "?campaign=" + encodeURIComponent(F.campaign) : ""));
+  $("#sidefoot").textContent = `${num(s.proxies)} proxies · ${num(s.engagements)} engagements`;
   $("#stats").innerHTML = `
-    <div class="stat"><div class="n">${num(s.total)}</div><div class="l">Total leads</div></div>
-    <div class="stat hot"><div class="n">${num(s.hot)}</div><div class="l">🔥 Hot</div></div>
-    <div class="stat warm"><div class="n">${num(s.warm)}</div><div class="l">🟡 Warm</div></div>
-    <div class="stat cold"><div class="n">${num(s.cold)}</div><div class="l">🔵 Cold</div></div>
-    <div class="stat good"><div class="n">${num(s.verified)}</div><div class="l">Verified email</div></div>
-    <div class="stat"><div class="n">${num(s.noEmail)}</div><div class="l">No email · hand-off</div></div>
-    <div class="stat"><div class="n">${num(s.unverified)}</div><div class="l">Unverified</div></div>`;
+    <div class="card"><div class="k">Total</div><div class="v">${num(s.total)}</div></div>
+    <div class="card hot"><div class="k">Hot</div><div class="v">${num(s.hot)}</div></div>
+    <div class="card warm"><div class="k">Warm</div><div class="v">${num(s.warm)}</div></div>
+    <div class="card cold"><div class="k">Cold</div><div class="v">${num(s.cold)}</div></div>
+    <div class="card good"><div class="k">Verified</div><div class="v">${num(s.verified)}</div></div>
+    <div class="card"><div class="k">No-email</div><div class="v">${num(s.noEmail)}</div></div>
+    <div class="card"><div class="k">Unverified</div><div class="v">${num(s.unverified)}</div></div>`;
 }
 
-const badge = (st) => `<span class="badge ${({ hot: "b-hot", warm: "b-warm", cold: "b-cold" }[st]) || "b-cold"}">${st || "cold"}</span>`;
-
-// "found by Prospeo · verified by Enrich"
-function provenance(r) {
-  if (!r.email) return "";
-  const cap = (x) => x ? x[0].toUpperCase() + x.slice(1) : "";
-  const parts = [];
-  if (r.email_source) parts.push(`found by <b>${cap(r.email_source)}</b>`);
-  if (r.verified_by) parts.push(`verified by <b>${cap(r.verified_by)}</b>`);
-  return parts.length ? `<div class="prov">${parts.join(" · ")}</div>` : "";
+// ---------- leads table (shared by Leads + Hand-off) ----------
+function tableHTML(rows) {
+  return `<div class="tablewrap"><table>
+    <thead><tr>
+      <th>Person</th><th>Company</th><th>Status</th><th>Score</th><th>Email</th>
+      <th>Found by</th><th>Verified</th><th>Categories</th><th>Seen</th><th>First seen</th><th>Last seen</th>
+    </tr></thead><tbody>${rows.map(rowHTML).join("")}</tbody></table></div>`;
+}
+function rowHTML(r) {
+  return `<tr onclick='openDrawer(${JSON.stringify(r.linkedin_url)}, ${JSON.stringify(esc(r.name))})'>
+    <td><div class="nm">${esc(r.name) || "—"}</div>${r.email ? `<div class="em mono">${esc(r.email.slice(0, 40))}</div>` : ""}</td>
+    <td class="muted">${esc(r.company || "")}</td>
+    <td>${statusBadge(r.status)}</td>
+    <td class="score">${r.score ?? 0}</td>
+    <td>${emailPill(r.email_status)}</td>
+    <td>${methodLabel(r.email_method)}</td>
+    <td>${verifiedBy(r.verified_by)}</td>
+    <td><div class="cats">${(r.categories || []).map((c) => `<span class="cat">${c}</span>`).join("")}</div></td>
+    <td class="tstamp">${r.times_seen || 1}×</td>
+    <td class="tstamp">${ts(r.created_at)}</td>
+    <td class="tstamp">${ts(r.last_engagement_at)}</td>
+  </tr>`;
 }
 
-async function loadLeads() {
+async function renderLeads(view) {
+  const pageKey = view === "handoff" ? "handoff" : "leads";
   const p = new URLSearchParams();
-  if (CURRENT) p.set("campaign", CURRENT);
-  const st = $("#f-status").value, em = $("#f-email").value, cat = $("#f-cat").value, q = $("#f-q").value;
-  if (st) p.set("status", st);
-  if (em) p.set("email_status", em);
-  if (cat) p.set("category", cat);
-  if (q) p.set("q", q);
-  p.set("sort", $("#f-sort").value);
-  p.set("limit", "300");
+  if (view === "handoff") { p.set("email_status", "no-email"); }
+  else {
+    if (F.status) p.set("status", F.status);
+    if (F.email) p.set("email_status", F.email);
+    if (F.cat) p.set("category", F.cat);
+    if (F.campaign) p.set("campaign", F.campaign);
+    if (F.q) p.set("q", F.q);
+    p.set("sort", F.sort);
+  }
+  p.set("limit", SIZE);
+  p.set("skip", PAGE[pageKey] * SIZE);
 
-  const { rows } = await j("/api/leads?" + p.toString());
-  $("#empty").style.display = rows.length ? "none" : "block";
-  $("#rows").innerHTML = rows.map((r) => `
-    <tr onclick='openDrawer(${JSON.stringify(r.linkedin_url)}, ${JSON.stringify(esc(r.name))})'>
-      <td>
-        <div class="name">${esc(r.name) || "—"}</div>
-        ${r.email ? `<div class="email mono">${esc(r.email.slice(0, 38))}</div>` : ""}
-        ${provenance(r)}
-      </td>
-      <td>${badge(r.status)}</td>
-      <td><span class="score">${r.score ?? 0}</span></td>
-      <td><span class="em em-${r.email_status || "no-email"}">${r.email_status || "—"}</span></td>
-      <td><div class="cats">${(r.categories || []).map((c) => `<span class="cat">${c}</span>`).join("")}</div></td>
-      <td><span class="seen">${r.times_seen || 1}×</span></td>
-      <td class="muted">${esc(r.company || "")}</td>
-    </tr>`).join("");
+  const { rows, count } = await j("/api/leads?" + p.toString());
+  const hostId = view === "handoff" ? "#handoffHost" : "#tableHost";
+  const pagerId = view === "handoff" ? "#pagerH" : "#pager";
+  $(hostId).innerHTML = rows.length ? tableHTML(rows) : '<div id="empty">No leads in this view.</div>';
+
+  const from = count ? PAGE[pageKey] * SIZE + 1 : 0;
+  const to = Math.min(count, (PAGE[pageKey] + 1) * SIZE);
+  const last = Math.max(0, Math.ceil(count / SIZE) - 1);
+  $(pagerId).innerHTML = `<span>${from}–${to} of ${num(count)}</span>
+    <button class="btn btn-ghost" ${PAGE[pageKey] <= 0 ? "disabled" : ""} data-pg="prev" data-v="${view}">Prev</button>
+    <button class="btn btn-ghost" ${PAGE[pageKey] >= last ? "disabled" : ""} data-pg="next" data-v="${view}">Next</button>`;
+  $(pagerId).querySelectorAll("button[data-pg]").forEach((b) => b.addEventListener("click", () => {
+    PAGE[pageKey] += b.dataset.pg === "next" ? 1 : -1;
+    if (PAGE[pageKey] < 0) PAGE[pageKey] = 0;
+    renderLeads(view);
+  }));
 }
 
+// ---------- leads toolbar ----------
+function buildToolbar() {
+  const opt = (v, l, cur) => `<option value="${v}" ${cur === v ? "selected" : ""}>${l}</option>`;
+  const camps = CAMPAIGNS.map((c) => opt(c.campaign, c.campaign, F.campaign)).join("");
+  $("#leadsToolbar").innerHTML = `
+    <select id="f-campaign"><option value="">All campaigns</option>${camps}</select>
+    <select id="f-status">${opt("", "All status", F.status)}${opt("hot", "🔥 Hot", F.status)}${opt("warm", "🟡 Warm", F.status)}${opt("cold", "🔵 Cold", F.status)}</select>
+    <select id="f-email">${opt("", "All emails", F.email)}${opt("verified", "Verified", F.email)}${opt("no-email", "No email", F.email)}${opt("unverified", "Unverified", F.email)}${opt("role-based", "Role-based", F.email)}</select>
+    <select id="f-cat">${opt("", "All categories", F.cat)}${["infra-competitor", "deliverability", "infra", "sequencer", "gtm-eng", "data-tools", "cold-email"].map((c) => opt(c, c, F.cat)).join("")}</select>
+    <select id="f-sort">${opt("score", "Sort: score", F.sort)}${opt("recent", "Sort: recent", F.sort)}</select>
+    <input id="f-q" placeholder="search name / email / company" value="${esc(F.q)}" />`;
+  const bind = (id, key) => $("#" + id).addEventListener("change", (e) => { F[key] = e.target.value; PAGE.leads = 0; loadTop(); renderLeads("leads"); });
+  bind("f-campaign", "campaign"); bind("f-status", "status"); bind("f-email", "email"); bind("f-cat", "cat"); bind("f-sort", "sort");
+  let t; $("#f-q").addEventListener("input", (e) => { F.q = e.target.value; clearTimeout(t); t = setTimeout(() => { PAGE.leads = 0; renderLeads("leads"); }, 300); });
+}
+
+// ---------- view switch ----------
+const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", campaigns: "Campaigns" };
+function switchView(v) {
+  VIEW = v;
+  document.querySelectorAll(".nav-i").forEach((n) => n.classList.toggle("on", n.dataset.v === v));
+  ["overview", "leads", "handoff", "campaigns"].forEach((x) => $("#v-" + x).style.display = x === v ? "" : "none");
+  $("#pageTitle").textContent = TITLES[v];
+  if (v === "leads") { buildToolbar(); renderLeads("leads"); }
+  if (v === "handoff") renderLeads("handoff");
+}
+
+// ---------- reprocess ----------
+async function pollReprocess() {
+  const s = await j("/api/reprocess/status");
+  if (s.running) {
+    $("#reprocessMsg").textContent = `Reprocessing… ${s.processed}/${s.total} · ${s.newlyFound} emails found`;
+    setTimeout(pollReprocess, 2000);
+  } else {
+    $("#reprocessBtn").disabled = false;
+    if (s.total) $("#reprocessMsg").textContent = `Done · ${s.newlyFound} of ${s.total} now have emails`;
+    loadTop(); loadStats(); renderLeads("handoff");
+  }
+}
+async function startReprocess() {
+  $("#reprocessBtn").disabled = true;
+  $("#reprocessMsg").textContent = "Starting…";
+  await fetch("/api/reprocess", { method: "POST" });
+  pollReprocess();
+}
+
+// ---------- drawer ----------
 window.openDrawer = async (url, name) => {
   $("#d-name").textContent = name || "—";
   $("#d-sub").textContent = url;
   const { rows } = await j("/api/leads/" + encodeURIComponent(url) + "/timeline");
+  $("#d-meta").innerHTML = "";
   $("#d-timeline").innerHTML = rows.map((e) => `
-    <div class="tl">
-      <div><strong>${esc(e.category)}</strong> · ${e.engagement}</div>
+    <div class="tl"><div><strong>${esc(e.category)}</strong> · ${e.engagement}</div>
       <div class="c">${esc(e.campaign || "")} · ${new Date(e.created_at).toLocaleString()}</div>
       ${e.comment_text ? `<div class="c">“${esc(e.comment_text)}”</div>` : ""}
-      <div class="c"><a href="${esc(e.post_url)}" target="_blank">post ↗</a></div>
-    </div>`).join("") || '<div class="muted">no timeline</div>';
+      <div class="c"><a href="${esc(e.post_url)}" target="_blank">post ↗</a></div></div>`).join("") || '<div class="muted">no timeline</div>';
   $("#drawer").classList.add("open");
 };
 window.closeDrawer = () => $("#drawer").classList.remove("open");
 
-function refresh() {
-  loadCampaigns();
-  loadStats();
-  loadLeads();
-}
+// ---------- init ----------
+document.querySelectorAll(".nav-i").forEach((n) => n.addEventListener("click", () => switchView(n.dataset.v)));
+$("#reprocessBtn").addEventListener("click", startReprocess);
 
-["f-status", "f-email", "f-cat", "f-sort"].forEach((id) => $("#" + id).addEventListener("change", loadLeads));
-let t; $("#f-q").addEventListener("input", () => { clearTimeout(t); t = setTimeout(loadLeads, 300); });
-
+function refresh() { loadTop(); loadStats(); if (VIEW === "leads") renderLeads("leads"); if (VIEW === "handoff") renderLeads("handoff"); }
 refresh();
 setInterval(refresh, 20000);
