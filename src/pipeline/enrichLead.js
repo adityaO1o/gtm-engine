@@ -133,7 +133,7 @@ export async function enrichLead(input) {
       { $set: setDoc, $addToSet: { campaigns: campaign, posts_seen: post_url }, $setOnInsert: { created_at: now } },
       { upsert: true }
     );
-    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls });
+    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
     log.info("no email", { name, key });
     return { outcome: "no_email", ...scored, name };
   }
@@ -148,7 +148,7 @@ export async function enrichLead(input) {
         $addToSet: { campaigns: campaign, posts_seen: post_url }, $setOnInsert: { created_at: now } },
       { upsert: true }
     );
-    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls });
+    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
     return { outcome: "role_based", email, ...scored, name };
   }
 
@@ -178,7 +178,7 @@ export async function enrichLead(input) {
         $addToSet: { campaigns: campaign, posts_seen: post_url }, $setOnInsert: { created_at: now } },
       { upsert: true }
     );
-    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls });
+    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
     log.info("unverified", { name, email, verifyLabel });
     return { outcome: "unverified", email, ...scored, name };
   }
@@ -208,7 +208,7 @@ export async function enrichLead(input) {
   );
 
   // count the SendKit push only on first insert into this campaign (avoid double-count on repeats)
-  await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, sendkit_pushed: isRepeat ? 0 : 1 });
+  await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0, sendkit_pushed: isRepeat ? 0 : 1 });
 
   log.info("verified & synced", { name, email, source: emailSource, verifiedBy, status: scored.status, score: scored.score, isRepeat });
   return { outcome: "sent", email, isRepeat, email_source: emailSource, verified_by: verifiedBy, ...scored, name };

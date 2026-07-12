@@ -51,6 +51,24 @@ export async function findEmail(ids) {
   }
 }
 
+// Live Prospeo credit balance for the dashboard (cached 5 min). remaining/used.
+let balCache = { at: 0, data: null };
+export async function prospeoBalance() {
+  if (balCache.data && Date.now() - balCache.at < 5 * 60_000) return balCache.data;
+  try {
+    const r = await axios.post(
+      "https://api.prospeo.io/account-information",
+      {},
+      { headers: headers(), timeout: 15000, validateStatus: () => true }
+    );
+    const d = r.data?.response;
+    if (d) balCache = { at: Date.now(), data: { used: +d.used_credits, remaining: +d.remaining_credits } };
+  } catch (e) {
+    log.warn("prospeo balance threw", { err: e.message });
+  }
+  return balCache.data;
+}
+
 // Verify an existing email. Prospeo echoes person.email.status = VERIFIED when deliverable.
 export async function verifyEmail(email) {
   try {

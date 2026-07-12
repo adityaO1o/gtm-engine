@@ -13,14 +13,15 @@ async function loadCampaigns() {
   const d = await j("/api/campaigns");
   CAMPAIGNS = d.campaigns || [];
 
-  // top-right Trigify balance
-  const b = d.trigify;
-  if (b) {
-    const pct = b.limit ? Math.min(100, (b.used / b.limit) * 100) : 0;
-    $("#bal").innerHTML =
-      `Trigify credits · <b>${num(b.remaining)}</b> left of ${num(b.limit)}
-       <div class="bar"><i style="width:${pct}%"></i></div>`;
+  // top-right real credit balances (authoritative — pulled live from Trigify + Prospeo)
+  const tgt = d.trigify, prb = d.prospeo;
+  let balHtml = "";
+  if (tgt) {
+    const pct = tgt.limit ? Math.min(100, (tgt.used / tgt.limit) * 100) : 0;
+    balHtml += `<div>Trigify · <b>${num(tgt.remaining)}</b> left<div class="bar"><i style="width:${pct}%"></i></div></div>`;
   }
+  if (prb) balHtml += `<div style="margin-top:6px">Prospeo · <b>${num(prb.remaining)}</b> left</div>`;
+  $("#bal").innerHTML = balHtml;
 
   // tabs
   const allTotal = CAMPAIGNS.reduce((s, c) => s + c.total, 0);
@@ -33,14 +34,14 @@ async function loadCampaigns() {
     t.addEventListener("click", () => { CURRENT = t.dataset.c; refresh(); })
   );
 
-  // credits strip (selected campaign, or summed for "all")
+  // per-campaign activity (credit proxies): scraped ≈ Trigify cr, finds ≈ Prospeo cr, pushed = SendKit leads
   let tg = 0, pr = 0, sk = 0;
   const pick = CURRENT ? CAMPAIGNS.filter((c) => c.campaign === CURRENT) : CAMPAIGNS;
   pick.forEach((c) => { tg += c.credits.trigify; pr += c.credits.prospeo; sk += c.credits.sendkit; });
   $("#credits").innerHTML = `
-    <div class="cred tg"><div><div class="k">Trigify</div><div class="v">${num(tg)}</div></div></div>
-    <div class="cred"><div><div class="k">Prospeo</div><div class="v">${num(pr)}</div></div></div>
-    <div class="cred"><div><div class="k">SendKit</div><div class="v">${num(sk)}</div></div></div>`;
+    <div class="cred tg"><div><div class="k">Trigify · scraped</div><div class="v">${num(tg)}</div></div></div>
+    <div class="cred"><div><div class="k">Prospeo · finds</div><div class="v">${num(pr)}</div></div></div>
+    <div class="cred"><div><div class="k">SendKit · pushed</div><div class="v">${num(sk)}</div></div></div>`;
 }
 
 async function loadStats() {

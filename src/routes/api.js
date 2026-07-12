@@ -4,6 +4,7 @@ import { Router } from "express";
 import { leads, engagements, usage } from "../db/mongo.js";
 import { poolSize } from "../lib/proxies.js";
 import { trigifyBalance } from "../services/trigify.js";
+import { prospeoBalance } from "../services/prospeo.js";
 import { config } from "../config.js";
 
 export const apiRouter = Router();
@@ -30,8 +31,8 @@ apiRouter.get("/stats", async (req, res) => {
   const counts = await countBlock(campaign);
   const engFilter = campaign ? { campaign } : {};
   const engCount = await engagements().countDocuments(engFilter);
-  const bal = await trigifyBalance();
-  res.json({ ...counts, engagements: engCount, proxies: poolSize(), trigify: bal });
+  const [trigify, prospeo] = await Promise.all([trigifyBalance(), prospeoBalance()]);
+  res.json({ ...counts, engagements: engCount, proxies: poolSize(), trigify, prospeo });
 });
 
 // GET /api/campaigns — one row per campaign: counts + per-campaign credits (trigify/prospeo/sendkit)
@@ -47,14 +48,16 @@ apiRouter.get("/campaigns", async (_req, res) => {
       campaign: c,
       ...counts,
       credits: {
-        trigify: u.trigify_scraped || 0,
-        prospeo: u.prospeo_calls || 0,
-        sendkit: u.sendkit_pushed || 0,
+        trigify: u.trigify_scraped || 0,          // engagers scraped ≈ Trigify credits
+        prospeo: u.prospeo_finds || 0,            // successful Prospeo finds ≈ Prospeo credits (misses are free)
+        prospeo_calls: u.prospeo_calls || 0,      // raw API calls (informational)
+        sendkit: u.sendkit_pushed || 0,           // leads pushed to SendKit
       },
     });
   }
   out.sort((a, b) => b.total - a.total);
-  res.json({ campaigns: out, trigify: await trigifyBalance() });
+  const [trigify, prospeo] = await Promise.all([trigifyBalance(), prospeoBalance()]);
+  res.json({ campaigns: out, trigify, prospeo });
 });
 
 // GET /api/leads?status=&email_status=&category=&campaign=&q=&sort=&limit=&skip=
