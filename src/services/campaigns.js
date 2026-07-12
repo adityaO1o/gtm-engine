@@ -15,7 +15,16 @@ export const CAMPAIGNS = [
   { key: "Cold Email Keyword Engagers - InboxKit",        label: "Cold Email",      category: "cold-email",       sendkitId: "6a4fc54e5fed5bfd2bfb3a30", keywords: ["cold email", "email outreach", "email deliverability", "cold email infrastructure"] },
   { key: "GTM Engineering Keyword Engagers - InboxKit",   label: "GTM Engineering", category: "gtm-eng",          sendkitId: "6a4fc55b5fed5bfd2bfb45fc", keywords: ["Clay", "GTM engineer", "GTM engineering", "Claygency"] },
   { key: "Data Tool Engagers - InboxKit",                 label: "Data Tools",      category: "data-tools",       sendkitId: "6a4fc8f95fed5bfd2bfe5510", keywords: ["Prospeo", "FullEnrich", "Apollo", "ZoomInfo"] },
+  // Source-based campaigns (v5): category is classified per-post, so the entry's category is only a neutral default.
+  { key: "Influencer Engagers - InboxKit",                label: "Influencers",     category: "cold-email",       sendkitId: "6a53bb3d757679d541224126", keywords: [], source: "influencer" },
+  { key: "LinkedIn Hub Engagers - InboxKit",              label: "LinkedIn Hubs",   category: "cold-email",       sendkitId: "6a53bb3e757679d54122419e", keywords: [], source: "hub" },
 ];
+
+// source key -> its SendKit campaign name/id (used by the sources orchestrator)
+export const SOURCE_CAMPAIGN = {
+  influencer: { key: "Influencer Engagers - InboxKit", sendkitId: "6a53bb3d757679d541224126" },
+  hub: { key: "LinkedIn Hub Engagers - InboxKit", sendkitId: "6a53bb3e757679d54122419e" },
+};
 
 export const KEYWORDS_NOT = NOT;
 

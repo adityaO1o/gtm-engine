@@ -9,6 +9,7 @@ import { enrichRouter } from "./routes/enrich.js";
 import { apiRouter } from "./routes/api.js";
 import { basicAuth } from "./lib/auth.js";
 import { poolSize } from "./lib/proxies.js";
+import { runSources } from "./pipeline/sources.js";
 import { log } from "./lib/logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -74,6 +75,8 @@ async function main() {
   app.listen(config.port, () =>
     log.info("gtm-engine up", { port: config.port, proxies: poolSize(), dashLocked: !!(config.dashUser && config.dashPass), ipAllowlist: config.allowIps.length })
   );
+  // Daily scrape of the managed hub + influencer sources.
+  setInterval(() => { runSources().catch((e) => log.warn("scheduled sources failed", { err: e.message })); }, 24 * 60 * 60 * 1000);
 }
 
 main().catch((e) => {

@@ -1,7 +1,9 @@
 // Read-only API for the dashboard frontend.
 
 import { Router } from "express";
-import { leads, engagements, usage } from "../db/mongo.js";
+import { ObjectId } from "mongodb";
+import { leads, engagements, usage, sources } from "../db/mongo.js";
+import { runSources, sourcesStatus } from "../pipeline/sources.js";
 import { trigifyBalance, setWorkflowEnabled } from "../services/trigify.js";
 import { prospeoBalance, verifyEmail } from "../services/prospeo.js";
 import { validateEmail } from "../services/enrich.js";
@@ -200,6 +202,34 @@ apiRouter.post("/reprocess", (req, res) => {
   res.json({ started: true });
 });
 apiRouter.get("/reprocess/status", (_req, res) => res.json(reprocessStatus()));
+
+// ── Sources (LinkedIn hubs + influencers) ──────────────────────────────
+apiRouter.get("/sources", async (_req, res) => {
+  const rows = await sources().find({}).sort({ addedAt: -1 }).toArray();
+  res.json({ sources: rows, status: sourcesStatus() });
+});
+apiRouter.post("/sources", async (req, res) => {
+  const type = req.body?.type === "hub" ? "hub" : "influencer";
+  let url = S(req.body?.url).trim();
+  if (!url) return res.status(400).json({ ok: false, error: "url required" });
+  if (type === "influencer" && !/\/in\//.test(url) && !/linkedin\.com/.test(url)) {
+    url = "https://www.linkedin.com/in/" + url.replace(/^@/, "");
+  }
+  const label = S(req.body?.label).trim() || (type === "influencer" ? (url.split("/in/")[1] || "").replace(/\/$/, "") : url.split("/").filter(Boolean).pop());
+  await sources().updateOne({ url }, { $set: { url, type, label, active: true }, $setOnInsert: { addedAt: new Date() } }, { upsert: true });
+  res.json({ ok: true });
+});
+apiRouter.delete("/sources/:id", async (req, res) => {
+  try { await sources().deleteOne({ _id: new ObjectId(req.params.id) }); } catch { /* ignore bad id */ }
+  res.json({ ok: true });
+});
+apiRouter.post("/sources/run", (_req, res) => {
+  const st = sourcesStatus();
+  if (st.running) return res.json({ started: false, ...st });
+  runSources().catch((e) => console.error("sources run error", e.message));
+  res.json({ started: true });
+});
+apiRouter.get("/sources/status", (_req, res) => res.json(sourcesStatus()));
 
 // POST /api/reset — wipe all leads + engagements (guarded by the ingest token). For clearing test data.
 apiRouter.post("/reset", async (req, res) => {

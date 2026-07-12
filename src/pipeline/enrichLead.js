@@ -25,13 +25,14 @@ export function companyFromHeadline(headline = "") {
   return m ? m[1].split(/[|·•\-]/)[0].trim() : null;
 }
 
-function buildTags({ status, score, timesSeen, categories }) {
+function buildTags({ status, score, timesSeen, categories, source }) {
   return [
     "gtm-auto",
     ...categories.map((c) => "cat:" + c),
     "score:" + score,
     "seen:" + timesSeen,
     status + "-lead",
+    ...(source ? ["source:" + source] : []),
   ];
 }
 
@@ -87,9 +88,11 @@ export async function enrichLead(input) {
     name = "", headline = "", linkedin_url = "",
     engagement_type = "like", comment_text = "",
     campaign = "", campaign_id = "", post_url = "",
+    category: categoryOverride = "", source = "",
   } = input;
 
-  const category = CAMPAIGN_CATEGORY[campaign] || "cold-email";
+  // classified sources pass an explicit category (their campaign isn't topic-named)
+  const category = categoryOverride || CAMPAIGN_CATEGORY[campaign] || "cold-email";
   const now = new Date();
 
   // G1: LinkedIn company pages are not people — skip without saving or spending credits.
@@ -123,6 +126,7 @@ export async function enrichLead(input) {
     status: scored.status, score: scored.score, categories: scored.categories, times_seen: scored.timesSeen,
     email_source: emailSource, email_method: emailMethod,
     personal_email: em.email ? isPersonalDomain(em.email) : false,
+    source: source || null,
     last_comment: comment_text || null, last_engagement_at: now, updated_at: now,
   };
 
@@ -179,7 +183,7 @@ export async function enrichLead(input) {
   }
 
   // verified & sendable — write to Mongo, sync to SendKit
-  const tags = buildTags({ status: scored.status, score: scored.score, timesSeen: scored.timesSeen, categories: scored.categories });
+  const tags = buildTags({ status: scored.status, score: scored.score, timesSeen: scored.timesSeen, categories: scored.categories, source });
   const existing = await findOurLead(email);
   const isRepeat = !!existing;
 

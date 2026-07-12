@@ -216,12 +216,12 @@ function openReverifyMenu(url, anchor) {
 }
 
 // ---------------- views ----------------
-const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", competitors: "Competitors", campaigns: "Campaigns" };
+const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources" };
 function setCrumb(html) { $("#crumb").innerHTML = html; }
 function show(v) {
   VIEW = v; PAGE = 0; ACTIVE_CAMPAIGN = null; if (v !== "leads") F.campaign = "";
   document.querySelectorAll(".nav-i").forEach((n) => n.classList.toggle("on", n.dataset.v === v));
-  ["overview", "leads", "handoff", "competitors", "campaigns"].forEach((x) => $("#v-" + x).style.display = x === v ? "" : "none");
+  ["overview", "leads", "handoff", "competitors", "campaigns", "sources"].forEach((x) => $("#v-" + x).style.display = x === v ? "" : "none");
   if (v !== "campaigns" || !ACTIVE_CAMPAIGN) setCrumb(`<h2 id="pageTitle">${TITLES[v]}</h2>`);
   render();
 }
@@ -230,13 +230,49 @@ function render() {
   else if (VIEW === "leads") renderLeads();
   else if (VIEW === "handoff") renderHandoff();
   else if (VIEW === "competitors") renderCompetitors();
+  else if (VIEW === "sources") renderSources();
   else if (VIEW === "campaigns") ACTIVE_CAMPAIGN ? renderCampaignDetail(ACTIVE_CAMPAIGN) : renderCampaignList();
+}
+
+// ---------------- Sources (hubs + influencers) ----------------
+async function renderSources() {
+  const d = await j("/api/sources");
+  const st = d.status || {};
+  $("#c-src") && ($("#c-src").textContent = (d.sources || []).length || "");
+  const srcRows = (type) => {
+    const rows = (d.sources || []).filter((s) => s.type === type);
+    if (!rows.length) return `<tr><td colspan="4" class="muted" style="padding:16px">None yet</td></tr>`;
+    return rows.map((s) => `<tr>
+      <td class="nm">${esc(s.label || "—")}${s.harvestedFrom ? '<span class="tag-pers">harvested</span>' : ""}</td>
+      <td><span class="trunc mono muted" title="${esc(s.url)}">${esc(s.url)}</span></td>
+      <td class="tstamp">${s.lastRun ? ts(s.lastRun) : "never"}</td>
+      <td><button class="btn btn-ghost btn-sm" data-delsrc="${s._id}">${ic("trash")}</button></td></tr>`).join("");
+  };
+  const running = st.running;
+  $("#v-sources").innerHTML = `
+    <div class="note">${ic("radio")}<div>Scrape big cold-email <b>influencers'</b> posts and LinkedIn <b>top-content hubs</b>. Each post is auto-classified (infra / sequencer / data / …) and its engagers routed to the Influencer/Hub campaigns with that category tag. Runs daily.</div></div>
+    <div class="toolbar"><div class="grow"></div>
+      <span class="muted" id="srcMsg" style="font-size:12px">${running ? `Running… ${st.phase || ""} · ${st.postsProcessed} posts · ${st.engagers} engagers` : (st.finishedAt ? `Last run: ${st.postsProcessed} posts · ${st.engagers} engagers` : "")}</span>
+      <button class="btn btn-sm" data-runsrc ${running ? "disabled" : ""}>${ic("refresh")}Run now</button></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:var(--s3);align-items:start">
+      <div class="chartbox"><h4>Influencers</h4>
+        <div class="toolbar" style="margin-bottom:var(--s3)"><input class="search" id="in-infl" placeholder="LinkedIn profile URL or handle" style="flex:1;min-width:0"><button class="btn btn-sm" data-addsrc="influencer">${ic("plus")}Add</button></div>
+        <div class="tablewrap" style="border:none"><table><thead><tr><th>Name</th><th>Profile</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("influencer")}</tbody></table></div></div>
+      <div class="chartbox"><h4>Hubs</h4>
+        <div class="toolbar" style="margin-bottom:var(--s3)"><input class="search" id="in-hub" placeholder="linkedin.com/top-content/... URL" style="flex:1;min-width:0"><button class="btn btn-sm" data-addsrc="hub">${ic("plus")}Add</button></div>
+        <div class="tablewrap" style="border:none"><table><thead><tr><th>Hub</th><th>URL</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("hub")}</tbody></table></div></div>
+    </div>`;
+}
+async function pollSources() {
+  const s = await j("/api/sources/status"); const el = $("#srcMsg"); if (!el) return;
+  if (s.running) { el.textContent = `Running… ${s.phase || ""} · ${s.postsProcessed} posts · ${s.engagers} engagers`; setTimeout(pollSources, 2500); }
+  else { loadTop(); renderSources(); }
 }
 
 // ---------------- events (CSP-safe delegation) ----------------
 document.addEventListener("click", async (e) => {
   if (!e.target.closest(".menu")) closeMenu();
-  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry]");
+  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-addsrc],[data-delsrc],[data-runsrc]");
   if (!t) return;
   if (t.dataset.v) return show(t.dataset.v);
   if (t.hasAttribute("data-x")) return $("#drawer").classList.remove("open");
@@ -267,6 +303,14 @@ document.addEventListener("click", async (e) => {
     await post("/api/reprocess", { campaign: camps.length === 1 ? camps[0] : "" });
     pollRetry(); return;
   }
+  if (t.dataset.addsrc) {
+    const inp = $(t.dataset.addsrc === "hub" ? "#in-hub" : "#in-infl");
+    const url = inp?.value.trim(); if (!url) return;
+    await post("/api/sources", { type: t.dataset.addsrc, url });
+    renderSources(); return;
+  }
+  if (t.dataset.delsrc) { await fetch("/api/sources/" + t.dataset.delsrc, { method: "DELETE" }); renderSources(); return; }
+  if (t.hasAttribute("data-runsrc")) { $("#srcMsg").textContent = "Starting…"; await post("/api/sources/run", {}); pollSources(); return; }
 });
 document.addEventListener("change", (e) => {
   const t = e.target;

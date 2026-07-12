@@ -33,6 +33,8 @@ export async function connect() {
   await db.collection("engagements").createIndex({ linkedin_url: 1 });
   await db.collection("engagements").createIndex({ created_at: -1 });
   await db.collection("usage").createIndex({ campaign: 1 }, { unique: true });
+  await db.collection("sources").createIndex({ url: 1 }, { unique: true });
+  await db.collection("processed_posts").createIndex({ postUrl: 1 }, { unique: true });
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
@@ -40,3 +42,5 @@ export async function connect() {
 export const leads = () => db.collection("leads");
 export const engagements = () => db.collection("engagements");
 export const usage = () => db.collection("usage");
+export const sources = () => db.collection("sources");
+export const processedPosts = () => db.collection("processed_posts");
