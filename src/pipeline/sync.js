@@ -7,11 +7,12 @@
 import { leads } from "../db/mongo.js";
 import { findEmailWaterfall } from "./enrichLead.js";
 import { upsertLead, addToCampaign } from "../services/sendkit.js";
-import { resolveKey, campaignByKey } from "../services/campaigns.js";
+import { resolveKey, campaignByKey, isCompetitor } from "../services/campaigns.js";
+import { nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { log } from "../lib/logger.js";
 
 let running = false;
-let status = { running: false, processed: 0, total: 0, reFound: 0, pushed: 0, startedAt: null, finishedAt: null };
+let status = { running: false, processed: 0, total: 0, reFound: 0, pushed: 0, moved: 0, startedAt: null, finishedAt: null };
 export function syncStatus() { return status; }
 
 const tagsFor = (d) => [
@@ -20,6 +21,18 @@ const tagsFor = (d) => [
 ];
 
 async function syncOne(d) {
+  // Cleanup pre-guard data: existing "verified" leads that are actually competitors or
+  // name-mismatched emails get moved out of the send list (no credits — uses stored fields).
+  if (d.email) {
+    if (isCompetitor({ company: d.company || "", emailDomain: emailDomain(d.email) })) {
+      await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { email_status: "competitor", is_competitor: true, updated_at: new Date() } });
+      status.moved++; return;
+    }
+    if (!nameMatchesEmail(d.name || "", d.email)) {
+      await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { email_status: "review", email_low_confidence: true, updated_at: new Date() } });
+      status.moved++; return;
+    }
+  }
   // re-find the method for old verified leads (so the "Found by" column is never blank)
   if (!d.email_method && d.email) {
     const w = await findEmailWaterfall({ name: d.name, headline: d.headline, linkedin_url: d.linkedin_url });
@@ -57,7 +70,7 @@ export async function syncVerified({ campaign = "" } = {}) {
       status.processed++;
     }
   };
-  await Promise.all(Array.from({ length: 4 }, worker));
+  await Promise.all(Array.from({ length: 3 }, worker));
   status = { ...status, running: false, finishedAt: new Date() };
   running = false;
   log.info("sync done", { pushed: status.pushed, reFound: status.reFound });
