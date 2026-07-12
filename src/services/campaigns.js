@@ -53,7 +53,7 @@ const COMPETITOR_DOMAINS = new Set([
   "zoominfo.com", "snov.io", "saleshandy.com", "woodpecker.co", "quickmail.com",
 ]);
 
-const norm = (s = "") => s.toLowerCase().replace(/[^a-z0-9.]/g, "");
+const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9.]/g, "");
 
 export function isCompetitor({ company = "", emailDomain = "" } = {}) {
   const c = norm(company);
