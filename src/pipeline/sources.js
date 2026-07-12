@@ -10,8 +10,8 @@ import { enrichLead } from "./enrichLead.js";
 import { log } from "../lib/logger.js";
 
 const POSTS_PER_INFLUENCER = 8;   // credit control
-const MAX_POSTS_PER_RUN = 60;
-const MAX_HARVEST_AUTHORS = 15;
+const MAX_POSTS_PER_RUN = 120;    // enough to cover ~14 influencers x 8 posts + a hub in one sweep
+const MAX_HARVEST_AUTHORS = 20;
 
 let running = false;
 let status = { running: false, phase: "idle", postsProcessed: 0, engagers: 0, newlyFound: 0, startedAt: null, finishedAt: null };
@@ -46,10 +46,11 @@ export async function runSources() {
   running = true;
   status = { running: true, phase: "starting", postsProcessed: 0, engagers: 0, newlyFound: 0, startedAt: new Date(), finishedAt: null };
   try {
-    const list = await sources().find({ active: { $ne: false } }).toArray();
     const queue = []; // { postUrl, text, source }
 
-    for (const s of list.filter((x) => x.type === "hub")) {
+    // Hubs first — they may harvest brand-new influencer profiles into the collection.
+    const hubs = await sources().find({ type: "hub", active: { $ne: false } }).toArray();
+    for (const s of hubs) {
       status.phase = "hub:" + (s.label || s.url);
       const { posts, authors } = await hubScrape(s.url);
       posts.forEach((p) => queue.push({ postUrl: p, text: "", source: "hub" }));
@@ -61,11 +62,14 @@ export async function runSources() {
       await sources().updateOne({ _id: s._id }, { $set: { lastRun: new Date() } });
     }
 
-    for (const s of list.filter((x) => x.type === "influencer")) {
+    // Re-query influencers AFTER harvest so the ones the hub just added (and any the user
+    // added while a run was starting) are covered in this same sweep — not left "never".
+    const infls = await sources().find({ type: "influencer", active: { $ne: false } }).toArray();
+    for (const s of infls) {
       status.phase = "influencer:" + (s.label || s.url);
       const posts = await getProfilePosts(s.url);
       posts.slice(0, POSTS_PER_INFLUENCER).forEach((p) => queue.push({ postUrl: p.postUrl, text: p.text, source: "influencer" }));
-      await sources().updateOne({ _id: s._id }, { $set: { lastRun: new Date() } });
+      await sources().updateOne({ _id: s._id }, { $set: { lastRun: new Date(), lastPosts: posts.length } });
     }
 
     status.phase = "processing";

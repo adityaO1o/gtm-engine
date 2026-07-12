@@ -252,20 +252,20 @@ async function renderSources() {
   $("#v-sources").innerHTML = `
     <div class="note">${ic("radio")}<div>Scrape big cold-email <b>influencers'</b> posts and LinkedIn <b>top-content hubs</b>. Each post is auto-classified (infra / sequencer / data / …) and its engagers routed to the Influencer/Hub campaigns with that category tag. Runs daily.</div></div>
     <div class="toolbar"><div class="grow"></div>
-      <span class="muted" id="srcMsg" style="font-size:12px">${running ? `Running… ${st.phase || ""} · ${st.postsProcessed} posts · ${st.engagers} engagers` : (st.finishedAt ? `Last run: ${st.postsProcessed} posts · ${st.engagers} engagers` : "")}</span>
+      <span class="muted" id="srcMsg" style="font-size:12px">${running ? `Running… ${st.phase || ""} · ${st.postsProcessed} posts · ${st.engagers} engagers · ${st.newlyFound || 0} sent` : (st.finishedAt ? `Last run: ${st.postsProcessed} posts · ${st.engagers} engagers · ${st.newlyFound || 0} leads sent` : "")}</span>
       <button class="btn btn-sm" data-runsrc ${running ? "disabled" : ""}>${ic("refresh")}Run now</button></div>
-    <div class="grid" style="grid-template-columns:1fr 1fr;gap:var(--s3);align-items:start">
-      <div class="chartbox"><h4>Influencers</h4>
+    <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s3);align-items:start">
+      <div class="chartbox" style="min-width:0;overflow:hidden"><h4>Influencers</h4>
         <div class="toolbar" style="margin-bottom:var(--s3)"><input class="search" id="in-infl" placeholder="LinkedIn profile URL or handle" style="flex:1;min-width:0"><button class="btn btn-sm" data-addsrc="influencer">${ic("plus")}Add</button></div>
         <div class="tablewrap" style="border:none"><table><thead><tr><th>Name</th><th>Profile</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("influencer")}</tbody></table></div></div>
-      <div class="chartbox"><h4>Hubs</h4>
+      <div class="chartbox" style="min-width:0;overflow:hidden"><h4>Hubs</h4>
         <div class="toolbar" style="margin-bottom:var(--s3)"><input class="search" id="in-hub" placeholder="linkedin.com/top-content/... URL" style="flex:1;min-width:0"><button class="btn btn-sm" data-addsrc="hub">${ic("plus")}Add</button></div>
         <div class="tablewrap" style="border:none"><table><thead><tr><th>Hub</th><th>URL</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("hub")}</tbody></table></div></div>
     </div>`;
 }
 async function pollSources() {
   const s = await j("/api/sources/status"); const el = $("#srcMsg"); if (!el) return;
-  if (s.running) { el.textContent = `Running… ${s.phase || ""} · ${s.postsProcessed} posts · ${s.engagers} engagers`; setTimeout(pollSources, 2500); }
+  if (s.running) { el.textContent = `Running… ${s.phase || ""} · ${s.postsProcessed} posts · ${s.engagers} engagers · ${s.newlyFound || 0} sent`; setTimeout(pollSources, 2500); }
   else { loadTop(); renderSources(); }
 }
 
