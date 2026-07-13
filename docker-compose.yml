@@ -1,6 +1,6 @@
 # Deploy on Dokploy as a Compose service.
 # Set these in Dokploy's Environment tab (do NOT commit them):
-#   INGEST_TOKEN, PROSPEO_KEY, ENRICH_KEY, SENDKIT_KEY, PROXIES,
+#   INGEST_TOKEN, PROSPEO_KEY, ENRICH_KEY, SENDKIT_KEY, JINA_KEY, PROXIES,
 #   MONGO_USER, MONGO_PASS, DASH_USER, DASH_PASS
 
 services:
@@ -21,6 +21,7 @@ services:
       ENRICH_KEY: ${ENRICH_KEY}
       ENRICH_LTE_KEY: ${ENRICH_LTE_KEY}
       TRIGIFY_KEY: ${TRIGIFY_KEY}
+      JINA_KEY: ${JINA_KEY}
       SENDKIT_KEY: ${SENDKIT_KEY}
       PROXIES: ${PROXIES}
       DASH_USER: ${DASH_USER}

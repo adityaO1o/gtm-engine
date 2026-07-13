@@ -42,6 +42,7 @@ async function loadTop() {
   if (d.trigify) { const pct = d.trigify.limit ? Math.min(100, d.trigify.used / d.trigify.limit * 100) : 0;
     bh += `<div class="balc">Trigify · <b>${num(d.trigify.remaining)}</b> left<div class="bar"><i style="width:${pct}%"></i></div></div>`; }
   if (d.prospeo) bh += `<div class="balc">Prospeo · <b>${num(d.prospeo.remaining)}</b> left</div>`;
+  if (d.jina) bh += `<div class="balc" title="Jina SERP resolves obfuscated liker URNs. ~10k tokens per lookup; proxies take over when it runs out.">Jina · <b>${num(d.jina.searches)}</b> lookups left</div>`;
   $("#bals").innerHTML = bh;
   // DISTINCT counts from /stats — NOT the sum of per-campaign totals. A lead can sit in two
   // campaigns, so summing campaign rows double-counts it (that was the sidebar/overview mismatch).

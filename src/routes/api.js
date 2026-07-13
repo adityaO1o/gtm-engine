@@ -6,6 +6,8 @@ import { leads, engagements, usage, sources } from "../db/mongo.js";
 import { runSources, sourcesStatus } from "../pipeline/sources.js";
 import { trigifyBalance, setWorkflowEnabled } from "../services/trigify.js";
 import { prospeoBalance, verifyEmail } from "../services/prospeo.js";
+import { jinaBalance } from "../services/jina.js";
+import { resolveStats } from "../services/resolve.js";
 import { validateEmail } from "../services/enrich.js";
 import { findEmailWaterfall } from "../pipeline/enrichLead.js";
 import { reprocessNoEmail, reprocessStatus, noEmailQuery } from "../pipeline/reprocess.js";
@@ -71,8 +73,8 @@ apiRouter.get("/stats", async (req, res) => {
   const counts = await countBlock(campaign);
   const engFilter = campaign ? { campaign } : {};
   const engCount = await engagements().countDocuments(engFilter);
-  const [trigify, prospeo] = await Promise.all([trigifyBalance(), prospeoBalance()]);
-  res.json({ ...counts, engagements: engCount, trigify, prospeo });
+  const [trigify, prospeo, jina] = await Promise.all([trigifyBalance(), prospeoBalance(), jinaBalance()]);
+  res.json({ ...counts, engagements: engCount, trigify, prospeo, jina, resolver: resolveStats() });
 });
 
 // GET /api/campaigns — one row per campaign: counts + per-campaign credits (trigify/prospeo/sendkit)
@@ -96,8 +98,8 @@ apiRouter.get("/campaigns", async (_req, res) => {
     });
   }
   out.sort((a, b) => b.total - a.total);
-  const [trigify, prospeo] = await Promise.all([trigifyBalance(), prospeoBalance()]);
-  res.json({ campaigns: out, trigify, prospeo });
+  const [trigify, prospeo, jina] = await Promise.all([trigifyBalance(), prospeoBalance(), jinaBalance()]);
+  res.json({ campaigns: out, trigify, prospeo, jina });
 });
 
 // GET /api/leads?status=&email_status=&category=&campaign=&q=&sort=&limit=&skip=

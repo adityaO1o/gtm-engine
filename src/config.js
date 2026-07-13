@@ -29,6 +29,10 @@ export const config = {
   // Trigify API key — read-only, for pulling the live credit balance onto the dashboard.
   trigifyKey: process.env.TRIGIFY_KEY || "",
 
+  // Jina SERP (s.jina.ai) — primary resolver for obfuscated liker URNs. Empty = skip straight
+  // to the proxy engines, so a missing key degrades gracefully instead of breaking.
+  jinaKey: process.env.JINA_KEY || "",
+
   sendkit: {
     key: req("SENDKIT_KEY"),
     base: process.env.SENDKIT_BASE || "https://api.sendkit.ai",
