@@ -47,6 +47,7 @@ async function loadTop() {
   // campaigns, so summing campaign rows double-counts it (that was the sidebar/overview mismatch).
   $("#c-leads").textContent = num(s.total);
   $("#c-handoff").textContent = num(s.noEmail);
+  $("#c-review").textContent = num(s.review);
   $("#c-comp").textContent = num(s.competitor);
   $("#c-camp").textContent = num(CAMPAIGNS.length);
 }
@@ -63,7 +64,7 @@ function donut(segs) {
     }
     a0 = a1;
   }
-  return `<svg viewBox="0 0 120 120" width="120" height="120">${paths}<text x="60" y="65" text-anchor="middle" font-size="20" font-weight="600" fill="#15151C" font-family="Suisse">${num(total)}</text></svg>`;
+  return `<svg viewBox="0 0 120 120" width="120" height="120">${paths}<text x="60" y="65" text-anchor="middle" font-size="20" font-weight="600" fill="#15151C" font-family="PlexNum, Suisse">${num(total)}</text></svg>`;
 }
 function area(series) {
   if (!series.length) return '<div class="muted" style="padding:40px 0;text-align:center">Not enough data yet</div>';
@@ -133,7 +134,7 @@ function toolbarHTML(withCampaign, count = 0) {
   return `<div class="toolbar">
     ${campSel}
     <select data-f="status">${opt("", "All status", F.status)}${opt("hot", "Hot", F.status)}${opt("warm", "Warm", F.status)}${opt("cold", "Cold", F.status)}</select>
-    <select data-f="email">${opt("", "All emails", F.email)}${opt("verified", "Verified", F.email)}${opt("no-email", "No email", F.email)}${opt("review", "Review", F.email)}${opt("unverified", "Unverified", F.email)}${opt("competitor", "Competitor", F.email)}</select>
+    <select data-f="email">${opt("", "All emails", F.email)}${opt("verified", "Verified", F.email)}${opt("no-email", "No email", F.email)}${opt("review", "Review", F.email)}${opt("unverified", "Unverified", F.email)}${opt("competitor", "Competitor", F.email)}${opt("discarded", "Discarded", F.email)}</select>
     <select data-f="cat">${opt("", "All categories", F.cat)}${["infra-competitor", "deliverability", "infra", "sequencer", "gtm-eng", "data-tools", "cold-email"].map((c) => opt(c, c, F.cat)).join("")}</select>
     <select data-f="recovered">${opt("", "All", F.recovered)}${opt("1", "Recovered", F.recovered)}</select>
     <select data-f="dnc">${opt("", "All (DNC)", F.dnc)}${opt("1", "DNC only", F.dnc)}</select>
@@ -200,6 +201,44 @@ async function renderHandoff() {
   updateBatchSel();
 }
 
+// ---------------- Review (you adjudicate the name-match guard) ----------------
+// These are emails the guard held back because the local-part didn't plausibly match the
+// person's name (providers do sometimes return the WRONG person's address). You decide:
+// Approve -> treated as verified and pushed to every campaign the lead is in.
+// Discard -> never sent; if it already reached SendKit, it's DNC'd so it can't be emailed.
+async function renderReview() {
+  const { rows, count } = await j("/api/leads?" + leadQuery({ email: "review" }).toString());
+  const r = (x) => `<tr>
+    <td class="chkcol"><input type="checkbox" class="chk" data-sel="${esc(x.linkedin_url)}" ${SELECTED.has(x.linkedin_url) ? "checked" : ""}></td>
+    <td><span class="nm trunc" title="${esc(x.name)}">${esc(x.name) || "—"}</span>
+        <span class="em trunc mono" title="${esc(x.email || "")}">${esc(x.email || "")}</span></td>
+    <td><span class="trunc sm muted" title="${esc(x.company || "")}">${esc(x.company || "—")}</span></td>
+    <td>${methodLabel(x.email_method)}</td>
+    <td>${x.personal_email ? '<span class="tag-pers">personal</span>' : ""}${x.dnc ? '<span class="tag-dnc">DNC</span>' : ""}</td>
+    <td><div class="cats">${(x.categories || []).map((c) => `<span class="cat">${c}</span>`).join("")}</div></td>
+    <td class="score">${x.score ?? 0}</td>
+    <td><div class="rowact">
+      <button class="btn btn-sm btn-ok" data-decide="approve" data-url="${esc(x.linkedin_url)}">${ic("check")}Approve</button>
+      <button class="btn btn-sm btn-no" data-decide="discard" data-url="${esc(x.linkedin_url)}">${ic("x")}Discard</button>
+    </div></td></tr>`;
+  $("#v-review").innerHTML = `
+    <div class="note">${ic("warn")}<div>Emails our <b>name-match guard</b> held back — the address doesn't obviously belong to this person (email finders sometimes return the <b>wrong person's</b> address). You decide.<br>
+      <b>Approve</b> → marked verified and pushed into every campaign the lead is in. <b>Discard</b> → never sent (and DNC'd if it already reached SendKit).</div></div>
+    <div class="toolbar">
+      <span class="resn"><b>${num(count)}</b> to review · <b id="selCount">${SELECTED.size}</b> selected</span>
+      <button class="btn btn-ghost btn-sm" data-selpage>${ic("check")}Select all</button>
+      <div class="grow"></div>
+      <button class="btn btn-sm btn-ok" data-decide="approve">${ic("check")}Approve selected</button>
+      <button class="btn btn-sm btn-no" data-decide="discard">${ic("x")}Discard selected</button>
+    </div>
+    <div id="revMsg" class="muted" style="font-size:12px;margin-bottom:10px"></div>
+    ${rows.length
+      ? `<div class="tablewrap"><table><thead><tr><th class="chkcol"><input type="checkbox" class="chk" data-selall></th>
+          <th>Person / email</th><th>Company</th><th>Found by</th><th></th><th>Categories</th><th>Score</th><th>Decision</th>
+        </tr></thead><tbody>${rows.map(r).join("")}</tbody></table></div>${pagerHTML(count)}`
+      : `<div class="tablewrap"><div class="empty">${ic("check")}<b>Nothing to review</b>Every held-back email has been decided.</div></div>`}`;
+}
+
 // ---------------- Competitors ----------------
 async function renderCompetitors() {
   const { rows, count } = await j("/api/leads?" + leadQuery({ email: "competitor" }).toString());
@@ -258,12 +297,12 @@ function openReverifyMenu(url, anchor) {
 }
 
 // ---------------- views ----------------
-const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources" };
+const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", review: "Review · Decide these emails", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources" };
 function setCrumb(html) { $("#crumb").innerHTML = html; }
 function show(v) {
   VIEW = v; PAGE = 0; ACTIVE_CAMPAIGN = null; if (v !== "leads") F.campaign = "";
   document.querySelectorAll(".nav-i").forEach((n) => n.classList.toggle("on", n.dataset.v === v));
-  ["overview", "leads", "handoff", "competitors", "campaigns", "sources"].forEach((x) => $("#v-" + x).style.display = x === v ? "" : "none");
+  ["overview", "leads", "handoff", "review", "competitors", "campaigns", "sources"].forEach((x) => $("#v-" + x).style.display = x === v ? "" : "none");
   if (v !== "campaigns" || !ACTIVE_CAMPAIGN) setCrumb(`<h2 id="pageTitle">${TITLES[v]}</h2>`);
   render();
 }
@@ -271,6 +310,7 @@ function render() {
   if (VIEW === "overview") renderOverview();
   else if (VIEW === "leads") renderLeads();
   else if (VIEW === "handoff") renderHandoff();
+  else if (VIEW === "review") renderReview();
   else if (VIEW === "competitors") renderCompetitors();
   else if (VIEW === "sources") renderSources();
   else if (VIEW === "campaigns") ACTIVE_CAMPAIGN ? renderCampaignDetail(ACTIVE_CAMPAIGN) : renderCampaignList();
@@ -316,7 +356,7 @@ async function renderSources() {
 // ---------------- events (CSP-safe delegation) ----------------
 document.addEventListener("click", async (e) => {
   if (!e.target.closest(".menu")) closeMenu();
-  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-addsrc],[data-delsrc],[data-runsrc]");
+  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-addsrc],[data-delsrc],[data-runsrc],[data-decide],[data-selpage],[data-batchallbtn]");
   if (!t) return;
   if (t.dataset.v) return show(t.dataset.v);
   if (t.hasAttribute("data-x")) return $("#drawer").classList.remove("open");
@@ -347,6 +387,22 @@ document.addEventListener("click", async (e) => {
     const camps = [...document.querySelectorAll("[data-batch]:checked")].map((c) => c.dataset.batch);
     await post("/api/reprocess", { campaigns: camps });
     return pollJobs();
+  }
+  if (t.dataset.decide) {
+    const urls = t.dataset.url ? [t.dataset.url] : [...SELECTED];
+    if (!urls.length) { const m = $("#revMsg"); if (m) m.textContent = "Pick at least one lead first."; return; }
+    const msg = $("#revMsg"); if (msg) msg.textContent = t.dataset.decide === "approve" ? "Approving…" : "Discarding…";
+    const r = await post("/api/leads/decision", { urls, action: t.dataset.decide });
+    if (!t.dataset.url) SELECTED.clear();
+    await loadTop();                       // every number on the dashboard refreshes
+    await render();
+    const m2 = $("#revMsg");
+    if (m2) m2.textContent = r.ok
+      ? (t.dataset.decide === "approve"
+          ? `✓ Approved ${num(r.approved)} · pushed ${num(r.pushed)} into their campaigns`
+          : `✓ Discarded ${num(r.discarded)}${r.dnc ? ` · ${num(r.dnc)} DNC'd (already in SendKit)` : ""}`)
+      : `✗ ${r.error || "failed"}`;
+    return;
   }
   if (t.hasAttribute("data-selpage")) {
     document.querySelectorAll("[data-sel]").forEach((c) => { c.checked = true; SELECTED.add(c.dataset.sel); });

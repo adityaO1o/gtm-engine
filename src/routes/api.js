@@ -10,7 +10,8 @@ import { validateEmail } from "../services/enrich.js";
 import { findEmailWaterfall } from "../pipeline/enrichLead.js";
 import { reprocessNoEmail, reprocessStatus, noEmailQuery } from "../pipeline/reprocess.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
-import { campaignByKey, campaignLabel } from "../services/campaigns.js";
+import { campaignByKey, campaignLabel, sendkitIdsFor } from "../services/campaigns.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc } from "../services/sendkit.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -26,7 +27,7 @@ async function countBlock(campaign) {
   campaign = S(campaign);
   const L = leads();
   const base = campaign ? { campaigns: campaign } : {};
-  const [total, hot, warm, cold, verified, noEmail, unverified, review, competitor, recovered, dnc] = await Promise.all([
+  const [total, hot, warm, cold, verified, noEmail, unverified, review, competitor, recovered, dnc, discarded] = await Promise.all([
     L.countDocuments(base),
     L.countDocuments({ ...base, status: "hot" }),
     L.countDocuments({ ...base, status: "warm" }),
@@ -38,12 +39,13 @@ async function countBlock(campaign) {
     L.countDocuments({ ...base, email_status: "competitor" }),
     L.countDocuments({ ...base, recovered: true }),   // emails rescued by a hand-off retry
     L.countDocuments({ ...base, dnc: true }),          // blocked AFTER reaching SendKit -> DNC'd
+    L.countDocuments({ ...base, email_status: "discarded" }),
   ]);
   // SendKit stores ONE lead per EMAIL, but we store one doc per LinkedIn PROFILE — and two
   // profiles can resolve to the same address. So `verified` (docs) will always read higher
   // than SendKit. `verifiedEmails` is the distinct-email count: THAT is what SendKit can hold.
   const verifiedEmails = (await L.distinct("email", { ...base, email_status: "verified", email: { $ne: null } })).length;
-  return { total, hot, warm, cold, verified, verifiedEmails, noEmail, unverified, review, competitor, recovered, dnc };
+  return { total, hot, warm, cold, verified, verifiedEmails, noEmail, unverified, review, competitor, recovered, dnc, discarded };
 }
 
 // shared lead filter builder (used by /leads and /export)
@@ -199,6 +201,75 @@ apiRouter.post("/campaigns/:key/pause", async (req, res) => {
   const label = campaignByKey(key)?.label || campaignLabel(key);
   const r = await setWorkflowEnabled(label, !req.body?.paused);
   res.json(r);
+});
+
+// POST /api/leads/decision { urls:[], action:"approve"|"discard" }
+// Manual adjudication of the `review` bucket — the emails the name-match guard held back
+// because the local-part didn't plausibly match the person's name. You are the tie-breaker:
+//   approve -> treat as verified, push into EVERY campaign the lead belongs to
+//   discard -> never send; and if it already reached SendKit, DNC it so it can't be emailed
+const tagsForDoc = (d) => [
+  "gtm-auto", ...(d.categories || []).map((c) => "cat:" + c),
+  "score:" + d.score, "seen:" + d.times_seen, (d.status || "cold") + "-lead",
+  ...(d.source ? ["source:" + d.source] : []),
+];
+apiRouter.post("/leads/decision", async (req, res) => {
+  const action = S(req.body?.action);
+  const urls = Array.isArray(req.body?.urls) ? req.body.urls.map(S).filter(Boolean) : [];
+  if (!["approve", "discard"].includes(action)) return res.status(400).json({ ok: false, error: "bad action" });
+  if (!urls.length) return res.status(400).json({ ok: false, error: "no leads selected" });
+
+  const docs = await leads().find({ linkedin_url: { $in: urls } }).toArray();
+  const now = new Date();
+
+  if (action === "discard") {
+    let discarded = 0, dnc = 0;
+    for (const d of docs) {
+      await leads().updateOne({ linkedin_url: d.linkedin_url },
+        { $set: { email_status: "discarded", discarded: true, needs_email: false, updated_at: now } });
+      discarded++;
+      // already pushed to SendKit? DNC is the only way to guarantee it is never emailed.
+      if (d.email && d.sendkit_campaigns?.length) {
+        await addToDnc([d.email]);
+        await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { dnc: true, dnc_at: now } });
+        dnc++;
+      }
+    }
+    return res.json({ ok: true, discarded, dnc });
+  }
+
+  // approve
+  const keep = docs.filter((d) => d.email);
+  const byEmail = new Map();
+  for (const d of keep) {
+    const [first, ...rest] = (d.name || "").split(" ");
+    const e = d.email.trim().toLowerCase();
+    if (!byEmail.has(e)) byEmail.set(e, { email: e, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags: tagsForDoc(d) });
+  }
+  await upsertLeads([...byEmail.values()]);
+
+  const perCampaign = new Map();
+  for (const d of keep) {
+    for (const cid of sendkitIdsFor(d.campaigns)) {
+      if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
+      perCampaign.get(cid).add(d.email.trim().toLowerCase());
+    }
+  }
+  let pushed = 0;
+  for (const [cid, set] of perCampaign) {
+    const r = await addLeadsToCampaign(cid, [...set]);
+    pushed += r.added;
+  }
+  for (const d of keep) {
+    await leads().updateOne({ linkedin_url: d.linkedin_url }, {
+      $set: {
+        email_status: "verified", email_low_confidence: false, needs_email: false, unverified: false,
+        manually_approved: true, approved_at: now, verified_by: "manual",
+        tags: tagsForDoc(d), sendkit_campaigns: sendkitIdsFor(d.campaigns), updated_at: now,
+      },
+    });
+  }
+  res.json({ ok: true, approved: keep.length, pushed });
 });
 
 // POST /api/reprocess {campaigns:[]} — re-run no-email leads through the Enrich-first waterfall
