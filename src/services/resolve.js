@@ -40,11 +40,31 @@ function pickVanity(urls) {
 }
 
 // ── stats (surfaced on the dashboard so you can see which tier is doing the work)
-const stats = { jina: 0, proxy: 0, miss: 0, jinaDisabled: false };
-export function resolveStats() { return { ...stats }; }
+const stats = { jina: 0, proxy: 0, miss: 0, jina429: 0, jinaDisabled: false };
+export function resolveStats() { return { ...stats, jinaCoolingDown: Date.now() < jinaCooldownUntil }; }
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── Tier 1: Jina SERP ────────────────────────────────────────────────────────
-let jinaDead = false; // circuit breaker: flipped once the token balance / auth is gone
+//
+// TWO kinds of "Jina says no", and conflating them cost us the whole feature once:
+//   402 / 401  -> out of tokens or bad key. PERMANENT: stop calling it.
+//   429        -> throttled. TEMPORARY: back off and come back.
+// The hand-off retry runs 14 workers; with no shared limiter they all hit s.jina.ai at once,
+// Jina 429s within seconds, and a permanent kill-switch then loses the fastest resolver for the
+// entire run (we burned 1,000+ leads on 100s proxy lookups with 8.8M tokens still in the wallet).
+let jinaOutOfTokens = false;   // permanent
+let jinaCooldownUntil = 0;     // temporary (429)
+
+// Shared rate limiter — one request per JINA_MIN_GAP_MS across every concurrent worker.
+const JINA_MIN_GAP_MS = 1600;  // ~37 req/min, comfortably under the throttle
+let jinaNextSlot = 0;
+async function jinaSlot() {
+  const now = Date.now();
+  const wait = Math.max(0, jinaNextSlot - now);
+  jinaNextSlot = Math.max(now, jinaNextSlot) + JINA_MIN_GAP_MS;
+  if (wait > 0) await sleep(wait);
+}
 
 const alpha = (s) => String(s || "").toLowerCase().normalize("NFKD").replace(/[^a-z]/g, "");
 
@@ -61,32 +81,51 @@ function matchesPerson(name, row) {
 // Returns: rows[] on success · [] when the query simply had no results · null when Jina itself
 // is unusable (out of tokens / bad key / throttled), which trips the breaker.
 async function jinaSearch(query) {
-  if (!config.jinaKey || jinaDead) return null;
-  const r = await axios.get("https://s.jina.ai/", {
-    params: { q: query },
-    headers: {
-      Authorization: `Bearer ${config.jinaKey}`,
-      Accept: "application/json",
-      "X-Respond-With": "no-content", // titles + urls only — don't pay to fetch page bodies
-    },
-    timeout: 30000,
-    validateStatus: () => true,
-  });
-  // 402 out of tokens · 401 bad key · 429 throttled -> stop calling Jina, let the proxies work
-  if (r.status === 402 || r.status === 401 || r.status === 429) {
-    jinaDead = true;
-    stats.jinaDisabled = true;
-    log.warn("jina disabled — falling back to proxy engines for the rest of this run", { status: r.status });
-    return null;
+  if (!config.jinaKey || jinaOutOfTokens) return null;
+  if (Date.now() < jinaCooldownUntil) return null; // mid-cooldown — let the proxies take this one
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await jinaSlot();
+    const r = await axios.get("https://s.jina.ai/", {
+      params: { q: query },
+      headers: {
+        Authorization: `Bearer ${config.jinaKey}`,
+        Accept: "application/json",
+        "X-Respond-With": "no-content", // titles + urls only — don't pay to fetch page bodies
+      },
+      timeout: 30000,
+      validateStatus: () => true,
+    });
+
+    // Throttled — back off and retry. Do NOT kill Jina: the quota is usually fine.
+    if (r.status === 429) {
+      stats.jina429++;
+      const backoff = 2000 * 2 ** attempt; // 2s, 4s, 8s
+      if (attempt === 2) {
+        jinaCooldownUntil = Date.now() + 30_000; // still throttled: pause Jina 30s for everyone
+        log.warn("jina throttled — cooling down 30s, proxies cover the gap", { jina429: stats.jina429 });
+        return null;
+      }
+      await sleep(backoff);
+      continue;
+    }
+    // Genuinely unusable — out of tokens or a bad key. This one IS permanent.
+    if (r.status === 402 || r.status === 401) {
+      jinaOutOfTokens = true;
+      stats.jinaDisabled = true;
+      log.warn("jina disabled (out of tokens / bad key)", { status: r.status });
+      return null;
+    }
+    // 422 = "No search results available for query". NOT an error and NOT a quota problem —
+    // the query was just too specific. Report it as empty so the caller can widen and retry.
+    if (r.status === 422) return [];
+    if (r.status !== 200) {
+      log.warn("jina non-200", { status: r.status });
+      return [];
+    }
+    return r.data?.data || [];
   }
-  // 422 = "No search results available for query". NOT an error and NOT a quota problem —
-  // the query was just too specific. Report it as empty so the caller can widen and retry.
-  if (r.status === 422) return [];
-  if (r.status !== 200) {
-    log.warn("jina non-200", { status: r.status });
-    return [];
-  }
-  return r.data?.data || [];
+  return null;
 }
 
 // Headlines give us junk like "Mission Hills CC Dinah Shore Tournament Course" — long tails
