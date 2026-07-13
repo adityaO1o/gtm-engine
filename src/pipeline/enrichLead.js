@@ -14,7 +14,7 @@ import { validateEmail, isRoleBased, findEmailByLinkedin, findEmailByNameDomain 
 import { companyDomain } from "../services/clearbit.js";
 import { findOurLead, upsertLead, addToCampaign } from "../services/sendkit.js";
 import { scoreFromHistory } from "../services/score.js";
-import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor } from "../services/campaigns.js";
+import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
 import { isCompanyPage, isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { bumpUsage } from "../services/usage.js";
 import { log } from "../lib/logger.js";
@@ -139,12 +139,17 @@ export async function enrichLead(input) {
       },
       $addToSet: add,
     });
-    // keep SendKit in step with the new score / categories / campaign
+    // keep SendKit in step with the new score / categories / campaign — and make sure they are
+    // in EVERY campaign they now belong to (this engagement may have added a new one)
     if (known.email_status === "verified") {
       const [f, ...r] = (name || known.name || "").split(" ");
       await upsertLead({ email: known.email, firstName: f, lastName: r.join(" "), companyName: known.company || "", jobTitle: headline || known.headline || "", linkedinUrl: key, tags });
-      const cid = campaign_id || CAMPAIGN_ID[campaign] || "";
-      if (cid) await addToCampaign(cid, known.email);
+      const fresh = await leads().findOne({ linkedin_url: key });
+      const landed = [];
+      for (const cid of sendkitIdsFor(fresh?.campaigns || [campaign])) {
+        if (await addToCampaign(cid, known.email)) landed.push(cid);
+      }
+      await leads().updateOne({ linkedin_url: key }, { $set: { sendkit_campaigns: landed } });
     }
     await bumpUsage(campaign, { trigify_scraped: 1 }); // scraped only — zero email-provider spend
     log.info("repeat engager (email already known)", { name, email: known.email, status: known.email_status, seen: scored.timesSeen });
@@ -240,17 +245,24 @@ export async function enrichLead(input) {
     return { outcome: "unverified", email, ...scored, name };
   }
 
-  // verified & sendable — write to Mongo, sync to SendKit
+  // verified & sendable — write to Mongo FIRST (so the campaigns array is current), then push
   const tags = buildTags({ status: scored.status, score: scored.score, timesSeen: scored.timesSeen, categories: scored.categories, source });
   const existing = await findOurLead(email);
   const isRepeat = !!existing;
 
-  const [first, ...rest] = name.split(" ");
-  await upsertLead({ email, firstName: first, lastName: rest.join(" "), companyName: em.company_name || company || "", jobTitle: headline, linkedinUrl: key, tags });
-  await addToCampaign(campaign_id, email);
-
   await leads().updateOne({ linkedin_url: key },
     { $set: { ...setDoc, email, email_status: "verified", unverified: false, needs_email: false, verify_detail: verifyLabel, tags }, $addToSet: addToSet, $setOnInsert: { created_at: now } }, { upsert: true });
+
+  const [first, ...rest] = name.split(" ");
+  await upsertLead({ email, firstName: first, lastName: rest.join(" "), companyName: em.company_name || company || "", jobTitle: headline, linkedinUrl: key, tags });
+  // push into EVERY campaign this person now belongs to — they may have engaged with posts
+  // from more than one campaign, and the dashboard counts them as verified in each.
+  const doc = await leads().findOne({ linkedin_url: key });
+  const landed = [];
+  for (const cid of sendkitIdsFor(doc?.campaigns || [campaign])) {
+    if (await addToCampaign(cid, email)) landed.push(cid);
+  }
+  await leads().updateOne({ linkedin_url: key }, { $set: { sendkit_campaigns: landed } });
 
   await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0, sendkit_pushed: isRepeat ? 0 : 1 });
 

@@ -7,12 +7,12 @@
 import { leads } from "../db/mongo.js";
 import { findEmailWaterfall } from "./enrichLead.js";
 import { upsertLead, addToCampaign } from "../services/sendkit.js";
-import { resolveKey, campaignByKey, isCompetitor } from "../services/campaigns.js";
+import { resolveKey, campaignByKey, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
 import { nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { log } from "../lib/logger.js";
 
 let running = false;
-let status = { running: false, processed: 0, total: 0, reFound: 0, pushed: 0, moved: 0, startedAt: null, finishedAt: null };
+let status = { running: false, processed: 0, total: 0, reFound: 0, pushed: 0, moved: 0, failed: 0, startedAt: null, finishedAt: null };
 export function syncStatus() { return status; }
 
 const tagsFor = (d) => [
@@ -42,13 +42,19 @@ async function syncOne(d) {
       status.reFound++;
     }
   }
-  // push into the correct SendKit campaign (idempotent, free)
-  const key = resolveKey((d.campaigns || [])[0] || "");
-  const cid = campaignByKey(key)?.sendkitId || "";
+  // Push into EVERY SendKit campaign this lead belongs to (idempotent, free) — not just the
+  // first one. Pushing only campaigns[0] is why SendKit was short of our verified counts.
   const [first, ...rest] = (d.name || "").split(" ");
   await upsertLead({ email: d.email, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags: tagsFor(d) });
-  if (cid) await addToCampaign(cid, d.email);
-  status.pushed++;
+
+  const cids = sendkitIdsFor(d.campaigns);
+  const landed = [];
+  for (const cid of cids) { if (await addToCampaign(cid, d.email)) landed.push(cid); }
+  await leads().updateOne({ linkedin_url: d.linkedin_url },
+    { $set: { sendkit_campaigns: landed, sendkit_synced_at: new Date() } });
+
+  status.pushed += landed.length;
+  status.failed += cids.length - landed.length;   // surfaced, not swallowed
 }
 
 export async function syncVerified({ campaign = "" } = {}) {
@@ -60,7 +66,7 @@ export async function syncVerified({ campaign = "" } = {}) {
   const q = { email_status: "verified" };
   if (campaign) q.campaigns = campaign;
   const docs = await leads().find(q).toArray();
-  status = { running: true, processed: 0, total: docs.length, reFound: 0, pushed: 0, moved: 0, startedAt: new Date(), finishedAt: null };
+  status = { running: true, processed: 0, total: docs.length, reFound: 0, pushed: 0, moved: 0, failed: 0, startedAt: new Date(), finishedAt: null };
 
   let idx = 0;
   const worker = async () => {
@@ -70,9 +76,9 @@ export async function syncVerified({ campaign = "" } = {}) {
       status.processed++;
     }
   };
-  await Promise.all(Array.from({ length: 3 }, worker));
+  await Promise.all(Array.from({ length: 10 }, worker));
   status = { ...status, running: false, finishedAt: new Date() };
   running = false;
-  log.info("sync done", { pushed: status.pushed, reFound: status.reFound });
+  log.info("sync done", { pushed: status.pushed, reFound: status.reFound, failed: status.failed });
   return { processed: status.processed, reFound: status.reFound, pushed: status.pushed };
 }

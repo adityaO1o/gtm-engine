@@ -42,15 +42,25 @@ export async function upsertLead(lead) {
 }
 
 export async function addToCampaign(campaignId, email) {
+  if (!campaignId || !email) return false;
   try {
     const r = await axios.post(
       `${base}/v1/campaigns/${campaignId}/leads`,
       { leads: [{ email }] },
       { headers: h(), timeout: 20000, validateStatus: () => true }
     );
-    return r.status < 300;
+    if (r.status >= 300) {
+      // Never swallow this — a silent failure here is a lead that shows as "verified" on the
+      // dashboard but never actually reaches the SendKit campaign.
+      log.warn("sendkit addToCampaign failed", {
+        campaignId, email, status: r.status,
+        body: typeof r.data === "string" ? r.data.slice(0, 200) : JSON.stringify(r.data || {}).slice(0, 200),
+      });
+      return false;
+    }
+    return true;
   } catch (e) {
-    log.warn("sendkit addToCampaign threw", { err: e.message });
+    log.warn("sendkit addToCampaign threw", { campaignId, email, err: e.message });
     return false;
   }
 }

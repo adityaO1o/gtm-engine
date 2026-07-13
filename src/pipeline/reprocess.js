@@ -6,7 +6,7 @@ import { findEmailWaterfall, verifyEmailWaterfall, companyFromHeadline } from ".
 import { isRoleBased } from "../services/enrich.js";
 import { upsertLead, addToCampaign } from "../services/sendkit.js";
 import { bumpUsage } from "../services/usage.js";
-import { CAMPAIGN_ID, isCompetitor } from "../services/campaigns.js";
+import { CAMPAIGN_ID, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
 import { isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { log } from "../lib/logger.js";
 
@@ -60,9 +60,11 @@ async function reprocessOne(d) {
   const tags = tagsFor(d);
   const [first, ...rest] = (d.name || "").split(" ");
   await upsertLead({ email, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags });
-  const cid = (d.campaign_ids || [])[0] || CAMPAIGN_ID[campaign] || "";
-  if (cid) await addToCampaign(cid, email);
-  await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { ...base, email_status: "verified", unverified: false, tags, recovered: true } });
+  // push into EVERY campaign this lead belongs to, not just the first one
+  const cids = sendkitIdsFor(d.campaigns);
+  const landed = [];
+  for (const cid of cids) { if (await addToCampaign(cid, email)) landed.push(cid); }
+  await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { ...base, email_status: "verified", unverified: false, tags, recovered: true, sendkit_campaigns: landed } });
   await bumpUsage(campaign, { sendkit_pushed: 1 });
   return true;
 }

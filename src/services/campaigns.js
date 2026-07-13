@@ -43,6 +43,12 @@ export const CAMPAIGN_ID = Object.fromEntries(
 );
 
 // short display label from any campaign name
+// Every SendKit campaign id a lead belongs to. A person who engages with a Smartlead post AND
+// a Cold Email post sits in BOTH campaigns — our per-campaign "verified" counts reflect that,
+// so the push must too. Only ever pushing campaigns[0] is what left SendKit short.
+export const sendkitIdsFor = (campaigns = []) =>
+  [...new Set((campaigns || []).map((c) => CAMPAIGN_ID[resolveKey(c)]).filter(Boolean))];
+
 export const campaignLabel = (name) =>
   (campaignByKey(name)?.label) || (name || "").replace(/\s*(Keyword )?Engagers - InboxKit$/, "").replace(/ - InboxKit$/, "").trim();
 
