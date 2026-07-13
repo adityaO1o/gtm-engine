@@ -6,13 +6,13 @@
 
 import { leads } from "../db/mongo.js";
 import { findEmailWaterfall } from "./enrichLead.js";
-import { upsertLead, addToCampaign } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign } from "../services/sendkit.js";
 import { resolveKey, campaignByKey, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
 import { nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { log } from "../lib/logger.js";
 
 let running = false;
-let status = { running: false, processed: 0, total: 0, reFound: 0, pushed: 0, moved: 0, failed: 0, startedAt: null, finishedAt: null };
+let status = { running: false, phase: "idle", processed: 0, total: 0, reFound: 0, pushed: 0, alreadyIn: 0, moved: 0, failed: 0, uniqueEmails: 0, startedAt: null, finishedAt: null };
 export function syncStatus() { return status; }
 
 const tagsFor = (d) => [
@@ -42,19 +42,7 @@ async function syncOne(d) {
       status.reFound++;
     }
   }
-  // Push into EVERY SendKit campaign this lead belongs to (idempotent, free) — not just the
-  // first one. Pushing only campaigns[0] is why SendKit was short of our verified counts.
-  const [first, ...rest] = (d.name || "").split(" ");
-  await upsertLead({ email: d.email, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags: tagsFor(d) });
-
-  const cids = sendkitIdsFor(d.campaigns);
-  const landed = [];
-  for (const cid of cids) { if (await addToCampaign(cid, d.email)) landed.push(cid); }
-  await leads().updateOne({ linkedin_url: d.linkedin_url },
-    { $set: { sendkit_campaigns: landed, sendkit_synced_at: new Date() } });
-
-  status.pushed += landed.length;
-  status.failed += cids.length - landed.length;   // surfaced, not swallowed
+  return true;   // survived cleanup -> this lead should be in SendKit
 }
 
 export async function syncVerified({ campaign = "" } = {}) {
@@ -66,19 +54,54 @@ export async function syncVerified({ campaign = "" } = {}) {
   const q = { email_status: "verified" };
   if (campaign) q.campaigns = campaign;
   const docs = await leads().find(q).toArray();
-  status = { running: true, processed: 0, total: docs.length, reFound: 0, pushed: 0, moved: 0, failed: 0, startedAt: new Date(), finishedAt: null };
+  status = { running: true, phase: "cleanup", processed: 0, total: docs.length, reFound: 0, pushed: 0, alreadyIn: 0, moved: 0, failed: 0, uniqueEmails: 0, startedAt: new Date(), finishedAt: null };
 
+  // Phase 1 — per-lead cleanup (competitor / name-mismatch / missing method), collect keepers.
+  const keep = [];
   let idx = 0;
   const worker = async () => {
     while (idx < docs.length) {
       const d = docs[idx++];
-      try { await syncOne(d); } catch (e) { log.warn("sync one failed", { err: e.message }); }
+      try { if (await syncOne(d)) keep.push(d); } catch (e) { log.warn("sync one failed", { err: e.message }); }
       status.processed++;
     }
   };
   await Promise.all(Array.from({ length: 10 }, worker));
-  status = { ...status, running: false, finishedAt: new Date() };
+
+  // Phase 2 — BULK upsert every keeper (100 per call). Firing one HTTP call per lead got us
+  // rate-limited: a 5.4k-call sync came back mostly non-2xx and the leads never landed.
+  status.phase = "upserting";
+  const byEmail = new Map();   // dedupe: two LinkedIn profiles can resolve to the SAME email,
+  for (const d of keep) {      // and SendKit stores ONE lead per email
+    const [first, ...rest] = (d.name || "").split(" ");
+    if (!d.email) continue;
+    const e = d.email.trim().toLowerCase();
+    if (!byEmail.has(e)) byEmail.set(e, { email: e, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags: tagsFor(d) });
+  }
+  const up = await upsertLeads([...byEmail.values()]);
+  status.failed += up.failed;
+
+  // Phase 3 — group by campaign, then add each campaign's emails in batches of 100.
+  status.phase = "adding to campaigns";
+  const perCampaign = new Map();
+  for (const d of keep) {
+    if (!d.email) continue;
+    const e = d.email.trim().toLowerCase();
+    for (const cid of sendkitIdsFor(d.campaigns)) {
+      if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
+      perCampaign.get(cid).add(e);
+    }
+  }
+  for (const [cid, set] of perCampaign) {
+    const r = await addLeadsToCampaign(cid, [...set]);
+    status.pushed += r.added;        // genuinely new members
+    status.alreadyIn += r.skipped;   // already in that campaign — success, not a failure
+    status.failed += r.failed;
+  }
+  status.uniqueEmails = byEmail.size;
+
+  status = { ...status, running: false, phase: "done", finishedAt: new Date() };
   running = false;
-  log.info("sync done", { pushed: status.pushed, reFound: status.reFound, failed: status.failed });
-  return { processed: status.processed, reFound: status.reFound, pushed: status.pushed };
+  log.info("sync done", { added: status.pushed, alreadyIn: status.alreadyIn, failed: status.failed, uniqueEmails: status.uniqueEmails, docs: docs.length });
+  return { processed: status.processed, added: status.pushed, alreadyIn: status.alreadyIn, failed: status.failed };
 }

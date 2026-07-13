@@ -38,7 +38,11 @@ async function countBlock(campaign) {
     L.countDocuments({ ...base, email_status: "competitor" }),
     L.countDocuments({ ...base, recovered: true }),   // emails rescued by a hand-off retry
   ]);
-  return { total, hot, warm, cold, verified, noEmail, unverified, review, competitor, recovered };
+  // SendKit stores ONE lead per EMAIL, but we store one doc per LinkedIn PROFILE — and two
+  // profiles can resolve to the same address. So `verified` (docs) will always read higher
+  // than SendKit. `verifiedEmails` is the distinct-email count: THAT is what SendKit can hold.
+  const verifiedEmails = (await L.distinct("email", { ...base, email_status: "verified", email: { $ne: null } })).length;
+  return { total, hot, warm, cold, verified, verifiedEmails, noEmail, unverified, review, competitor, recovered };
 }
 
 // shared lead filter builder (used by /leads and /export)

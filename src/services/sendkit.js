@@ -41,14 +41,75 @@ export async function upsertLead(lead) {
   }
 }
 
+// SendKit rate-limits us (a big sync fired thousands of single calls and most came back
+// non-2xx). Retry 429/5xx with exponential backoff.
+async function withRetry(fn, tries = 5) {
+  let wait = 600, r;
+  for (let i = 0; i < tries; i++) {
+    r = await fn();
+    if (r.status !== 429 && r.status < 500) return r;
+    await new Promise((s) => setTimeout(s, wait));
+    wait *= 2;
+  }
+  return r;
+}
+
+// Bulk-upsert leads, 100 at a time (the /leads/bulk endpoint takes an array).
+export async function upsertLeads(list = []) {
+  let ok = 0, failed = 0;
+  for (let i = 0; i < list.length; i += 100) {
+    const chunk = list.slice(i, i + 100);
+    try {
+      const r = await withRetry(() => axios.post(
+        `${base}/v1/leads/bulk`,
+        { skipDuplicates: false, leads: chunk.map((l) => ({ ...l, tags: l.tags })) },
+        { headers: h(), timeout: 40000, validateStatus: () => true }
+      ));
+      if (r.status < 300) ok += chunk.length;
+      else { failed += chunk.length; log.warn("sendkit bulk upsert failed", { status: r.status, body: JSON.stringify(r.data || {}).slice(0, 200) }); }
+    } catch (e) { failed += chunk.length; log.warn("sendkit bulk upsert threw", { err: e.message }); }
+  }
+  return { ok, failed };
+}
+
+// Add many emails to one campaign, 100 at a time. SendKit answers {added, skipped}: "skipped"
+// means the lead is ALREADY a member of that campaign — that's success, not a failure.
+export async function addLeadsToCampaign(campaignId, emails = []) {
+  if (!campaignId || !emails.length) return { added: 0, skipped: 0, failed: 0 };
+  let added = 0, skipped = 0, failed = 0;
+  for (let i = 0; i < emails.length; i += 100) {
+    const chunk = emails.slice(i, i + 100);
+    try {
+      const r = await withRetry(() => axios.post(
+        `${base}/v1/campaigns/${campaignId}/leads`,
+        { leads: chunk.map((email) => ({ email })) },
+        { headers: h(), timeout: 40000, validateStatus: () => true }
+      ));
+      if (r.status >= 300) {
+        failed += chunk.length;
+        log.warn("sendkit addLeadsToCampaign failed", { campaignId, n: chunk.length, status: r.status, body: JSON.stringify(r.data || {}).slice(0, 200) });
+        continue;
+      }
+      added += r.data?.data?.added || 0;
+      skipped += r.data?.data?.skipped || 0;
+    } catch (e) {
+      failed += chunk.length;
+      log.warn("sendkit addLeadsToCampaign threw", { campaignId, err: e.message });
+    }
+  }
+  return { added, skipped, failed };
+}
+
+// Single-lead add (used by the live /enrich path). A 2xx means the lead is in the campaign —
+// either newly added, or "skipped" because they were already a member. Both are success.
 export async function addToCampaign(campaignId, email) {
   if (!campaignId || !email) return false;
   try {
-    const r = await axios.post(
+    const r = await withRetry(() => axios.post(
       `${base}/v1/campaigns/${campaignId}/leads`,
       { leads: [{ email }] },
       { headers: h(), timeout: 20000, validateStatus: () => true }
-    );
+    ));
     if (r.status >= 300) {
       // Never swallow this — a silent failure here is a lead that shows as "verified" on the
       // dashboard but never actually reaches the SendKit campaign.

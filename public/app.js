@@ -215,10 +215,11 @@ function renderCampaignList() {
   setCrumb(`<h2 id="pageTitle">Campaigns</h2>`);
   const rows = CAMPAIGNS.map((c) => `<tr class="click" data-camp="${esc(c.campaign)}"><td class="nm">${esc(c.label)}</td>
     <td class="score">${num(c.total)}</td><td>${num(c.hot)}</td><td>${num(c.warm)}</td><td class="num-c" style="color:var(--good)">${num(c.verified)}</td>
+    <td class="num-c" style="color:var(--primary-2);font-weight:600">${num(c.verifiedEmails ?? c.verified)}</td>
     <td>${num(c.noEmail)}</td><td class="num-c" style="color:var(--good)">${num(c.recovered || 0)}</td><td>${num(c.competitor)}</td>
-    <td class="num-c">${num(c.credits.trigify)}</td><td class="num-c">${num(c.credits.prospeo)}</td><td class="num-c">${num(c.credits.sendkit)}</td></tr>`).join("");
+    <td class="num-c">${num(c.credits.trigify)}</td><td class="num-c">${num(c.credits.prospeo)}</td></tr>`).join("");
   $("#v-campaigns").innerHTML = CAMPAIGNS.length
-    ? `<div class="tablewrap"><table><thead><tr><th>Campaign</th><th>Leads</th><th>Hot</th><th>Warm</th><th>Verified</th><th>No-email</th><th title="Emails rescued by a hand-off retry">Recovered</th><th>Competitors</th><th>Trigify</th><th>Prospeo</th><th>SendKit</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    ? `<div class="tablewrap"><table><thead><tr><th>Campaign</th><th>Leads</th><th>Hot</th><th>Warm</th><th title="Verified lead records (one per LinkedIn profile)">Verified</th><th title="Distinct email addresses — this is what SendKit holds. Two LinkedIn profiles can share one email.">In SendKit</th><th>No-email</th><th title="Emails rescued by a hand-off retry">Recovered</th><th>Competitors</th><th>Trigify</th><th>Prospeo</th></tr></thead><tbody>${rows}</tbody></table></div>`
     : `<div class="tablewrap"><div class="empty">${ic("mega")}<b>No campaigns yet</b>Leads will appear here as posts flow in.</div></div>`;
 }
 const METRICS = { total: "Leads", verified: "Verified", hot: "Hot", warm: "Warm", cold: "Cold", noEmail: "No-email", recovered: "Recovered", review: "Review", competitor: "Competitors", unverified: "Unverified", verifyRate: "Verify rate %" };
@@ -385,7 +386,7 @@ function jobBox(kind, s) {
   if (!s || (!s.running && !s.finishedAt)) return "";
   const C = {
     retry: { done: s.processed, total: s.total, verb: "Retrying", extra: `<b class="ok">${num(s.newlyFound || 0)}</b> emails recovered` },
-    sync: { done: s.processed, total: s.total, verb: "Syncing", extra: `<b class="ok">${num(s.pushed || 0)}</b> pushed · ${num(s.reFound || 0)} re-found` },
+    sync: { done: s.processed, total: s.total, verb: "Syncing", extra: `<b class="ok">${num(s.pushed || 0)}</b> added · ${num(s.alreadyIn || 0)} already in · ${num(s.failed || 0)} failed` },
     sources: { done: s.postsProcessed, total: s.totalPosts, verb: "Scraping posts", extra: `<b>${num(s.uniqueEngagers || 0)}</b> unique people · <b class="ok">${num(s.newlyFound || 0)}</b> sent` },
   }[kind];
   const done = C.done || 0, total = C.total || 0, pct = pctOf(done, total);
