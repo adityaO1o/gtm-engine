@@ -54,6 +54,47 @@ async function withRetry(fn, tries = 5) {
   return r;
 }
 
+// Do-Not-Contact. SendKit has NO "remove lead from campaign" endpoint, so once a lead has been
+// pushed, DNC is the only way to guarantee it is never emailed. Campaigns run skipDNC:true, so
+// a DNC'd address is skipped at send time. `reason` is an enum: manual|bounce|complaint|unsubscribe_link.
+export async function addToDnc(emails = []) {
+  const list = [...new Set(emails.filter(Boolean).map((e) => e.trim().toLowerCase()))];
+  if (!list.length) return { added: 0, failed: 0 };
+  let added = 0, failed = 0;
+  for (let i = 0; i < list.length; i += 100) {
+    const chunk = list.slice(i, i + 100);
+    try {
+      const r = await withRetry(() => axios.post(
+        `${base}/v1/dnc`,
+        { entries: chunk.map((email) => ({ email, entryType: "email", reason: "manual" })) },
+        { headers: h(), timeout: 30000, validateStatus: () => true }
+      ));
+      if (r.status >= 300) { failed += chunk.length; log.warn("sendkit dnc failed", { status: r.status, body: JSON.stringify(r.data || {}).slice(0, 200) }); continue; }
+      added += r.data?.data?.added || 0;
+    } catch (e) { failed += chunk.length; log.warn("sendkit dnc threw", { err: e.message }); }
+  }
+  return { added, failed };
+}
+
+// Every email on the workspace DNC list (domain entries are skipped — we match addresses).
+export async function fetchDncEmails() {
+  const out = new Set();
+  let cursor = "";
+  for (let i = 0; i < 80; i++) {
+    const r = await withRetry(() => axios.get(`${base}/v1/dnc`, {
+      headers: h(), params: { limit: 100, ...(cursor ? { cursor } : {}) },
+      timeout: 30000, validateStatus: () => true,
+    }));
+    if (r.status >= 300) { log.warn("sendkit dnc list failed", { status: r.status }); break; }
+    for (const e of (r.data?.data || [])) {
+      if (e?.entryType === "email" && e.email) out.add(String(e.email).trim().toLowerCase());
+    }
+    cursor = r.data?.pagination?.nextCursor || "";
+    if (!cursor) break;
+  }
+  return out;
+}
+
 // Bulk-upsert leads, 100 at a time (the /leads/bulk endpoint takes an array).
 export async function upsertLeads(list = []) {
   let ok = 0, failed = 0;

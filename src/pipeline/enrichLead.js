@@ -12,7 +12,7 @@ import { resolveVanity, isUrn } from "../services/resolve.js";
 import { findEmail, verifyEmail } from "../services/prospeo.js";
 import { validateEmail, isRoleBased, findEmailByLinkedin, findEmailByNameDomain } from "../services/enrich.js";
 import { companyDomain } from "../services/clearbit.js";
-import { findOurLead, upsertLead, addToCampaign } from "../services/sendkit.js";
+import { findOurLead, upsertLead, addToCampaign, addToDnc } from "../services/sendkit.js";
 import { scoreFromHistory } from "../services/score.js";
 import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
 import { isCompanyPage, isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
@@ -181,10 +181,21 @@ export async function enrichLead(input) {
     last_comment: comment_text || null, last_engagement_at: now, updated_at: now,
   };
 
+  // If this person ALREADY landed in a SendKit campaign and a guard is only blocking them now,
+  // we cannot pull them back out — SendKit has no remove-from-campaign endpoint. DNC is the
+  // guarantee: campaigns run skipDNC:true, so a DNC'd address is skipped at send time.
+  const dncIfAlreadyInSendkit = async (addr) => {
+    if (!addr || !known?.sendkit_campaigns?.length) return;
+    await addToDnc([addr]);
+    await leads().updateOne({ linkedin_url: key }, { $set: { dnc: true, dnc_at: new Date() } });
+    log.info("blocked a lead that was already in SendKit -> DNC'd", { email: addr });
+  };
+
   // Part B + G4: competitor employee (by company OR email domain) — save, never send to SendKit.
   if (isCompetitor({ company, emailDomain: em.email ? emailDomain(em.email) : "" })) {
     await leads().updateOne({ linkedin_url: key },
       { $set: { ...setDoc, email: em.email || null, email_status: "competitor", is_competitor: true, needs_email: false }, $addToSet: addToSet, $setOnInsert: { created_at: now } }, { upsert: true });
+    await dncIfAlreadyInSendkit(em.email);
     await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
     log.info("competitor", { name, company, email: em.email });
     return { outcome: "competitor", ...scored, name };
@@ -226,6 +237,7 @@ export async function enrichLead(input) {
   if (!nameMatchesEmail(name, email)) {
     await leads().updateOne({ linkedin_url: key },
       { $set: { ...setDoc, email, email_status: "review", email_low_confidence: true, needs_email: false }, $addToSet: addToSet, $setOnInsert: { created_at: now } }, { upsert: true });
+    await dncIfAlreadyInSendkit(email);
     await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
     log.info("held for review (name mismatch)", { name, email });
     return { outcome: "review", email, ...scored, name };

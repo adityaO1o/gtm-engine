@@ -9,7 +9,7 @@ const cap = (x) => (x ? x[0].toUpperCase() + x.slice(1) : "");
 
 let VIEW = "overview", CAMPAIGNS = [], BAL = {}, STATS = {};
 let SIZE = 50, PAGE = 0;
-let F = { status: "", email: "", cat: "", campaign: "", q: "", sort: "score", recovered: "" };
+let F = { status: "", email: "", cat: "", campaign: "", q: "", sort: "score", recovered: "", dnc: "" };
 let SELECTED = new Set();
 let ACTIVE_CAMPAIGN = null;
 let CARD_METRICS = ["total", "verified", "hot", "noEmail"];
@@ -91,7 +91,7 @@ async function renderOverview() {
     <div class="grid g-stat" style="margin-bottom:var(--s2)">
       ${card("users", "Total", s.total)}${card("bolt", "Hot", s.hot, "hot")}${card("warn", "Warm", s.warm, "warm")}
       ${card("users", "Cold", s.cold, "cold")}${card("mail", "Verified", s.verified, "good")}
-      ${card("inbox", "No-email", s.noEmail)}${card("refresh", "Recovered", s.recovered, "rec")}${card("warn", "Review", s.review, "warm")}${card("flag", "Competitors", s.competitor)}
+      ${card("inbox", "No-email", s.noEmail)}${card("refresh", "Recovered", s.recovered, "rec")}${card("warn", "Review", s.review, "warm")}${card("flag", "Competitors", s.competitor)}${card("x", "DNC · never emailed", s.dnc, "dncc")}
     </div>
     <div class="charts">
       <div class="chartbox"><h4>Status split</h4>${donut([{ value: a.status.hot, color: "#DC2B2B" }, { value: a.status.warm, color: "#B26B00" }, { value: a.status.cold, color: "#2E90D9" }])}
@@ -111,7 +111,7 @@ function tableHTML(rows) {
     <td><span class="nm trunc" title="${esc(x.name)}">${esc(x.name) || "—"}</span>${x.email ? `<span class="em trunc mono" title="${esc(x.email)}">${esc(x.email)}</span>` : ""}</td>
     <td><span class="trunc sm muted" title="${esc(x.company || "")}">${esc(x.company || "")}</span></td>
     <td>${statusBadge(x.status)}</td><td class="score">${x.score ?? 0}</td>
-    <td>${emailPill(x.email_status)}${x.recovered ? `<span class="tag-rec">${ic("check")}rec</span>` : ""}${x.personal_email ? '<span class="tag-pers">personal</span>' : ""}</td>
+    <td>${emailPill(x.email_status)}${x.recovered ? `<span class="tag-rec">${ic("check")}rec</span>` : ""}${x.personal_email ? '<span class="tag-pers">personal</span>' : ""}${x.dnc ? `<span class="tag-dnc" title="On SendKit DNC — will never be emailed">DNC</span>` : ""}</td>
     <td>${methodLabel(x.email_method)}</td><td>${verifiedCell(x)}</td>
     <td><div class="cats">${(x.categories || []).map((c) => `<span class="cat">${c}</span>`).join("")}</div></td>
     <td class="tstamp">${x.times_seen || 1}×</td><td class="tstamp">${ts(x.last_engagement_at)}</td></tr>`;
@@ -136,6 +136,7 @@ function toolbarHTML(withCampaign, count = 0) {
     <select data-f="email">${opt("", "All emails", F.email)}${opt("verified", "Verified", F.email)}${opt("no-email", "No email", F.email)}${opt("review", "Review", F.email)}${opt("unverified", "Unverified", F.email)}${opt("competitor", "Competitor", F.email)}</select>
     <select data-f="cat">${opt("", "All categories", F.cat)}${["infra-competitor", "deliverability", "infra", "sequencer", "gtm-eng", "data-tools", "cold-email"].map((c) => opt(c, c, F.cat)).join("")}</select>
     <select data-f="recovered">${opt("", "All", F.recovered)}${opt("1", "Recovered", F.recovered)}</select>
+    <select data-f="dnc">${opt("", "All (DNC)", F.dnc)}${opt("1", "DNC only", F.dnc)}</select>
     <select data-f="sort">${opt("score", "Sort · score", F.sort)}${opt("recent", "Sort · recent", F.sort)}</select>
     <input class="search" data-f="q" placeholder="Search name, email, company" value="${esc(F.q)}" />
     <div class="grow"></div>
@@ -147,7 +148,7 @@ function toolbarHTML(withCampaign, count = 0) {
 }
 function leadQuery(extra) {
   const p = new URLSearchParams(), f = { ...F, ...extra };
-  ["status", "campaign", "cat", "sort", "q", "recovered"].forEach((k) => { if (f[k]) p.set(k === "cat" ? "category" : k, f[k]); });
+  ["status", "campaign", "cat", "sort", "q", "recovered", "dnc"].forEach((k) => { if (f[k]) p.set(k === "cat" ? "category" : k, f[k]); });
   if (f.email) p.set("email_status", f.email);
   p.set("limit", SIZE); p.set("skip", PAGE * SIZE);
   return p;
@@ -216,10 +217,10 @@ function renderCampaignList() {
   const rows = CAMPAIGNS.map((c) => `<tr class="click" data-camp="${esc(c.campaign)}"><td class="nm">${esc(c.label)}</td>
     <td class="score">${num(c.total)}</td><td>${num(c.hot)}</td><td>${num(c.warm)}</td><td class="num-c" style="color:var(--good)">${num(c.verified)}</td>
     <td class="num-c" style="color:var(--primary-2);font-weight:600">${num(c.verifiedEmails ?? c.verified)}</td>
-    <td>${num(c.noEmail)}</td><td class="num-c" style="color:var(--good)">${num(c.recovered || 0)}</td><td>${num(c.competitor)}</td>
+    <td>${num(c.noEmail)}</td><td class="num-c" style="color:var(--good)">${num(c.recovered || 0)}</td><td>${num(c.competitor)}</td><td class="num-c" style="color:var(--hot);font-weight:600">${num(c.dnc || 0)}</td>
     <td class="num-c">${num(c.credits.trigify)}</td><td class="num-c">${num(c.credits.prospeo)}</td></tr>`).join("");
   $("#v-campaigns").innerHTML = CAMPAIGNS.length
-    ? `<div class="tablewrap"><table><thead><tr><th>Campaign</th><th>Leads</th><th>Hot</th><th>Warm</th><th title="Verified lead records (one per LinkedIn profile)">Verified</th><th title="Distinct email addresses — this is what SendKit holds. Two LinkedIn profiles can share one email.">In SendKit</th><th>No-email</th><th title="Emails rescued by a hand-off retry">Recovered</th><th>Competitors</th><th>Trigify</th><th>Prospeo</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    ? `<div class="tablewrap"><table><thead><tr><th>Campaign</th><th>Leads</th><th>Hot</th><th>Warm</th><th title="Verified lead records (one per LinkedIn profile)">Verified</th><th title="Distinct email addresses — this is what SendKit holds. Two LinkedIn profiles can share one email.">In SendKit</th><th>No-email</th><th title="Emails rescued by a hand-off retry">Recovered</th><th>Competitors</th><th title="On SendKit's Do-Not-Contact list — blocked at send time, can never be emailed">DNC</th><th>Trigify</th><th>Prospeo</th></tr></thead><tbody>${rows}</tbody></table></div>`
     : `<div class="tablewrap"><div class="empty">${ic("mega")}<b>No campaigns yet</b>Leads will appear here as posts flow in.</div></div>`;
 }
 const METRICS = { total: "Leads", verified: "Verified", hot: "Hot", warm: "Warm", cold: "Cold", noEmail: "No-email", recovered: "Recovered", review: "Review", competitor: "Competitors", unverified: "Unverified", verifyRate: "Verify rate %" };
@@ -386,7 +387,7 @@ function jobBox(kind, s) {
   if (!s || (!s.running && !s.finishedAt)) return "";
   const C = {
     retry: { done: s.processed, total: s.total, verb: "Retrying", extra: `<b class="ok">${num(s.newlyFound || 0)}</b> emails recovered` },
-    sync: { done: s.processed, total: s.total, verb: "Syncing", extra: `<b class="ok">${num(s.pushed || 0)}</b> added · ${num(s.alreadyIn || 0)} already in · ${num(s.failed || 0)} failed` },
+    sync: { done: s.processed, total: s.total, verb: "Syncing", extra: `<b class="ok">${num(s.pushed || 0)}</b> added · ${num(s.alreadyIn || 0)} already in · <b>${num(s.dnc || 0)}</b> DNC’d · ${num(s.failed || 0)} failed` },
     sources: { done: s.postsProcessed, total: s.totalPosts, verb: "Scraping posts", extra: `<b>${num(s.uniqueEngagers || 0)}</b> unique people · <b class="ok">${num(s.newlyFound || 0)}</b> sent` },
   }[kind];
   const done = C.done || 0, total = C.total || 0, pct = pctOf(done, total);

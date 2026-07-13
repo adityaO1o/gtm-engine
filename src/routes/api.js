@@ -26,7 +26,7 @@ async function countBlock(campaign) {
   campaign = S(campaign);
   const L = leads();
   const base = campaign ? { campaigns: campaign } : {};
-  const [total, hot, warm, cold, verified, noEmail, unverified, review, competitor, recovered] = await Promise.all([
+  const [total, hot, warm, cold, verified, noEmail, unverified, review, competitor, recovered, dnc] = await Promise.all([
     L.countDocuments(base),
     L.countDocuments({ ...base, status: "hot" }),
     L.countDocuments({ ...base, status: "warm" }),
@@ -37,12 +37,13 @@ async function countBlock(campaign) {
     L.countDocuments({ ...base, email_status: "review" }),
     L.countDocuments({ ...base, email_status: "competitor" }),
     L.countDocuments({ ...base, recovered: true }),   // emails rescued by a hand-off retry
+    L.countDocuments({ ...base, dnc: true }),          // blocked AFTER reaching SendKit -> DNC'd
   ]);
   // SendKit stores ONE lead per EMAIL, but we store one doc per LinkedIn PROFILE — and two
   // profiles can resolve to the same address. So `verified` (docs) will always read higher
   // than SendKit. `verifiedEmails` is the distinct-email count: THAT is what SendKit can hold.
   const verifiedEmails = (await L.distinct("email", { ...base, email_status: "verified", email: { $ne: null } })).length;
-  return { total, hot, warm, cold, verified, verifiedEmails, noEmail, unverified, review, competitor, recovered };
+  return { total, hot, warm, cold, verified, verifiedEmails, noEmail, unverified, review, competitor, recovered, dnc };
 }
 
 // shared lead filter builder (used by /leads and /export)
@@ -54,6 +55,7 @@ function buildLeadFilter(query) {
   if (category) filter.categories = category;
   if (campaign) filter.campaigns = campaign;
   if (recovered === "1") filter.recovered = true;
+  if (S(query.dnc) === "1") filter.dnc = true;
   if (q) {
     const rx = escRegex(q); // escaped -> literal substring match, no ReDoS / regex injection
     filter.$or = [{ name: { $regex: rx, $options: "i" } }, { email: { $regex: rx, $options: "i" } }, { company: { $regex: rx, $options: "i" } }];
