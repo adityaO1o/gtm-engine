@@ -7,12 +7,19 @@ const ts = (d) => (d ? new Date(d).toLocaleString([], { month: "short", day: "nu
 const ic = (n) => `<svg class="ico"><use href="#i-${n}"/></svg>`;
 const cap = (x) => (x ? x[0].toUpperCase() + x.slice(1) : "");
 
-let VIEW = "overview", CAMPAIGNS = [], BAL = {};
+let VIEW = "overview", CAMPAIGNS = [], BAL = {}, STATS = {};
 let SIZE = 50, PAGE = 0;
 let F = { status: "", email: "", cat: "", campaign: "", q: "", sort: "score", recovered: "" };
 let SELECTED = new Set();
 let ACTIVE_CAMPAIGN = null;
 let CARD_METRICS = ["total", "verified", "hot", "noEmail"];
+let LAST_COUNT = 0;
+// Long-running jobs live on the SERVER, so a page refresh never loses their progress —
+// we just re-read these on load and keep painting.
+let JOBS = { retry: {}, sync: {}, sources: {} };
+
+const pctOf = (done, total) => (total ? Math.min(100, Math.round((done / total) * 100)) : 0);
+const bar = (pct, running) => `<div class="prog${running ? " on" : ""}"><i style="width:${Math.max(pct, running ? 3 : 0)}%"></i></div>`;
 
 const STATUS_ICON = { hot: "bolt", warm: "warn", cold: "" };
 const EMAIL_ICON = { verified: "check", "no-email": "x", review: "warn", competitor: "flag", unverified: "warn", "role-based": "x" };
@@ -29,17 +36,18 @@ const verifiedCell = (r) => r.email
 
 // ---------------- top bar ----------------
 async function loadTop() {
-  const d = await j("/api/campaigns");
-  CAMPAIGNS = d.campaigns || []; BAL = { trigify: d.trigify, prospeo: d.prospeo };
+  const [d, s] = await Promise.all([j("/api/campaigns"), j("/api/stats")]);
+  CAMPAIGNS = d.campaigns || []; BAL = { trigify: d.trigify, prospeo: d.prospeo }; STATS = s;
   let bh = "";
   if (d.trigify) { const pct = d.trigify.limit ? Math.min(100, d.trigify.used / d.trigify.limit * 100) : 0;
     bh += `<div class="balc">Trigify · <b>${num(d.trigify.remaining)}</b> left<div class="bar"><i style="width:${pct}%"></i></div></div>`; }
   if (d.prospeo) bh += `<div class="balc">Prospeo · <b>${num(d.prospeo.remaining)}</b> left</div>`;
   $("#bals").innerHTML = bh;
-  const sum = (k) => CAMPAIGNS.reduce((a, c) => a + (c[k] || 0), 0);
-  $("#c-leads").textContent = num(sum("total"));
-  $("#c-handoff").textContent = num(sum("noEmail"));
-  $("#c-comp").textContent = num(sum("competitor"));
+  // DISTINCT counts from /stats — NOT the sum of per-campaign totals. A lead can sit in two
+  // campaigns, so summing campaign rows double-counts it (that was the sidebar/overview mismatch).
+  $("#c-leads").textContent = num(s.total);
+  $("#c-handoff").textContent = num(s.noEmail);
+  $("#c-comp").textContent = num(s.competitor);
   $("#c-camp").textContent = num(CAMPAIGNS.length);
 }
 
@@ -83,16 +91,16 @@ async function renderOverview() {
     <div class="grid g-stat" style="margin-bottom:var(--s2)">
       ${card("users", "Total", s.total)}${card("bolt", "Hot", s.hot, "hot")}${card("warn", "Warm", s.warm, "warm")}
       ${card("users", "Cold", s.cold, "cold")}${card("mail", "Verified", s.verified, "good")}
-      ${card("inbox", "No-email", s.noEmail)}${card("warn", "Review", s.review, "warm")}${card("flag", "Competitors", s.competitor)}
+      ${card("inbox", "No-email", s.noEmail)}${card("refresh", "Recovered", s.recovered, "rec")}${card("warn", "Review", s.review, "warm")}${card("flag", "Competitors", s.competitor)}
     </div>
     <div class="charts">
-      <div class="chartbox"><h4>Status split</h4>${donut([{ value: a.status.hot, color: "#DC2B2B" }, { value: a.status.warm, color: "#B26B00" }, { value: a.status.cold, color: "#5B636E" }])}
-        <div class="legend"><span><i style="background:#DC2B2B"></i>Hot ${num(a.status.hot)}</span><span><i style="background:#B26B00"></i>Warm ${num(a.status.warm)}</span><span><i style="background:#5B636E"></i>Cold ${num(a.status.cold)}</span></div></div>
+      <div class="chartbox"><h4>Status split</h4>${donut([{ value: a.status.hot, color: "#DC2B2B" }, { value: a.status.warm, color: "#B26B00" }, { value: a.status.cold, color: "#2E90D9" }])}
+        <div class="legend"><span><i style="background:#DC2B2B"></i>Hot ${num(a.status.hot)}</span><span><i style="background:#B26B00"></i>Warm ${num(a.status.warm)}</span><span><i style="background:#2E90D9"></i>Cold ${num(a.status.cold)}</span></div></div>
       <div class="chartbox"><h4>Leads over time</h4>${area(a.series)}
         <div class="legend"><span><i style="background:#6C47FF"></i>Total</span><span><i style="background:#0C8A45"></i>Verified</span></div></div>
     </div>
     <div class="chartbox" style="margin-top:var(--s3)"><h4>Email funnel</h4>${funnel(a.funnel)}
-      <div class="legend"><span>No-email ${num(a.funnel.noEmail)}</span><span>Review ${num(a.funnel.review)}</span><span>Competitors ${num(a.funnel.competitor)}</span><span>Unverified ${num(a.funnel.unverified)}</span></div></div>`;
+      <div class="legend"><span>No-email ${num(a.funnel.noEmail)}</span><span><b style="color:var(--good)">Recovered by retry ${num(s.recovered)}</b></span><span>Review ${num(a.funnel.review)}</span><span>Competitors ${num(a.funnel.competitor)}</span><span>Unverified ${num(a.funnel.unverified)}</span></div></div>`;
 }
 
 // ---------------- table ----------------
@@ -119,7 +127,7 @@ function pagerHTML(count) {
     <button class="btn btn-ghost btn-sm" data-pg="prev" ${PAGE <= 0 ? "disabled" : ""}>Prev</button>
     <button class="btn btn-ghost btn-sm" data-pg="next" ${PAGE >= last ? "disabled" : ""}>Next</button></div>`;
 }
-function toolbarHTML(withCampaign) {
+function toolbarHTML(withCampaign, count = 0) {
   const opt = (v, l, cur) => `<option value="${v}" ${cur === v ? "selected" : ""}>${l}</option>`;
   const campSel = withCampaign ? `<select data-f="campaign"><option value="">All campaigns</option>${CAMPAIGNS.map((c) => opt(c.campaign, c.label, F.campaign)).join("")}</select>` : "";
   return `<div class="toolbar">
@@ -131,6 +139,8 @@ function toolbarHTML(withCampaign) {
     <select data-f="sort">${opt("score", "Sort · score", F.sort)}${opt("recent", "Sort · recent", F.sort)}</select>
     <input class="search" data-f="q" placeholder="Search name, email, company" value="${esc(F.q)}" />
     <div class="grow"></div>
+    <span class="resn"><b>${num(count)}</b> result${count === 1 ? "" : "s"}</span>
+    <button class="btn btn-ghost btn-sm" data-selpage>${ic("check")}Select all</button>
     <button class="btn btn-ghost btn-sm" data-export="filtered">${ic("download")}Export</button>
     <button class="btn btn-sm" data-export="selected">${ic("download")}Selected · <span id="selCount">${SELECTED.size}</span></button>
   </div>`;
@@ -144,23 +154,38 @@ function leadQuery(extra) {
 }
 async function renderLeads() {
   const { rows, count } = await j("/api/leads?" + leadQuery().toString());
-  $("#v-leads").innerHTML = toolbarHTML(true) + tableHTML(rows) + pagerHTML(count);
+  LAST_COUNT = count;
+  $("#v-leads").innerHTML = toolbarHTML(true, count) + tableHTML(rows) + pagerHTML(count);
 }
 
 // ---------------- Hand-off (campaign batches only) ----------------
+function updateBatchSel() {
+  const el = $("#batchSel"); if (!el) return;
+  const checked = [...document.querySelectorAll("[data-batch]:checked")];
+  const n = checked.reduce((a, c) => a + (+c.dataset.noemail || 0), 0);
+  el.innerHTML = checked.length
+    ? `<b>${checked.length}</b> campaign${checked.length === 1 ? "" : "s"} selected · <b>${num(n)}</b> leads to retry`
+    : `<span class="muted">0 selected — Retry will run <b>all</b> campaigns</span>`;
+}
 async function renderHandoff() {
-  const batches = CAMPAIGNS.filter((c) => c.noEmail > 0).sort((a, b) => b.noEmail - a.noEmail);
-  const rows = batches.map((c) => `<tr><td class="chkcol"><input type="checkbox" class="chk" data-batch="${esc(c.campaign)}"></td>
+  const batches = CAMPAIGNS.filter((c) => c.noEmail > 0 || c.recovered > 0).sort((a, b) => b.noEmail - a.noEmail);
+  const totRec = CAMPAIGNS.reduce((a, c) => a + (c.recovered || 0), 0);
+  const rows = batches.map((c) => `<tr><td class="chkcol"><input type="checkbox" class="chk" data-batch="${esc(c.campaign)}" data-noemail="${c.noEmail || 0}"></td>
     <td class="nm">${esc(c.label)}</td><td class="score">${num(c.noEmail)}</td>
+    <td class="num-c" style="color:var(--good);font-weight:600">${num(c.recovered || 0)}</td>
     <td class="muted">${num(c.total)}</td><td class="muted">${num(c.verified)}</td></tr>`).join("");
   $("#v-handoff").innerHTML = `
-    <div class="note">${ic("inbox")}<div>Leads whose email wasn't found. Pick campaigns below and <b>Retry</b> runs those batches through the Enrich-first waterfall (name+domain → URL → Prospeo).</div></div>
-    <div class="toolbar"><div class="grow"></div>
+    <div class="note">${ic("inbox")}<div>Leads whose email wasn't found. Tick campaigns and <b>Retry</b> re-runs those batches through the Enrich-first waterfall (name+domain → URL → Prospeo). <b>Recovered</b> = emails rescued by a retry — <b>${num(totRec)}</b> so far.</div></div>
+    <div class="toolbar">
+      <span class="resn" id="batchSel"></span>
+      <button class="btn btn-ghost btn-sm" data-batchallbtn>${ic("check")}Select all</button>
+      <div class="grow"></div>
       <button class="btn btn-ghost btn-sm" data-export="handoff">${ic("download")}Export list</button>
-      <button class="btn btn-sm" data-retry><span id="retryLbl">${ic("refresh")}Retry selected</span></button></div>
-    ${batches.length ? `<div class="tablewrap"><table><thead><tr><th class="chkcol"><input type="checkbox" class="chk" data-batchall></th><th>Campaign</th><th>No-email</th><th>Total</th><th>Verified</th></tr></thead><tbody>${rows}</tbody></table></div>`
-      : `<div class="tablewrap"><div class="empty">${ic("check")}<b>All caught up</b>No hand-off leads — every campaign's emails were found.</div></div>`}
-    <div class="muted" id="retryMsg" style="font-size:12px;margin-top:10px">Tip: leave all unticked to retry every campaign's no-email batch.</div>`;
+      <button class="btn btn-sm" data-retry>${ic("refresh")}Retry selected</button></div>
+    <div id="retryBox">${jobBox("retry", JOBS.retry)}</div>
+    ${batches.length ? `<div class="tablewrap"><table><thead><tr><th class="chkcol"><input type="checkbox" class="chk" data-batchall></th><th>Campaign</th><th>No-email</th><th>Recovered</th><th>Total</th><th>Verified</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : `<div class="tablewrap"><div class="empty">${ic("check")}<b>All caught up</b>No hand-off leads — every campaign's emails were found.</div></div>`}`;
+  updateBatchSel();
 }
 
 // ---------------- Competitors ----------------
@@ -168,7 +193,9 @@ async function renderCompetitors() {
   const { rows, count } = await j("/api/leads?" + leadQuery({ email: "competitor" }).toString());
   $("#v-competitors").innerHTML = `
     <div class="note">${ic("flag")}<div>Engagers who work at a competitor (matched by company or email domain). Saved for your review — <b>never sent to SendKit</b>.</div></div>
-    <div class="toolbar"><div class="grow"></div><button class="btn btn-ghost btn-sm" data-export="competitors">${ic("download")}Export</button></div>
+    <div class="toolbar"><div class="grow"></div><span class="resn"><b>${num(count)}</b> result${count === 1 ? "" : "s"}</span>
+      <button class="btn btn-ghost btn-sm" data-selpage>${ic("check")}Select all</button>
+      <button class="btn btn-ghost btn-sm" data-export="competitors">${ic("download")}Export</button></div>
     ${tableHTML(rows)}${pagerHTML(count)}`;
 }
 
@@ -177,12 +204,13 @@ function renderCampaignList() {
   setCrumb(`<h2 id="pageTitle">Campaigns</h2>`);
   const rows = CAMPAIGNS.map((c) => `<tr class="click" data-camp="${esc(c.campaign)}"><td class="nm">${esc(c.label)}</td>
     <td class="score">${num(c.total)}</td><td>${num(c.hot)}</td><td>${num(c.warm)}</td><td class="num-c" style="color:var(--good)">${num(c.verified)}</td>
-    <td>${num(c.noEmail)}</td><td>${num(c.competitor)}</td><td class="num-c">${num(c.credits.trigify)}</td><td class="num-c">${num(c.credits.prospeo)}</td><td class="num-c">${num(c.credits.sendkit)}</td></tr>`).join("");
+    <td>${num(c.noEmail)}</td><td class="num-c" style="color:var(--good)">${num(c.recovered || 0)}</td><td>${num(c.competitor)}</td>
+    <td class="num-c">${num(c.credits.trigify)}</td><td class="num-c">${num(c.credits.prospeo)}</td><td class="num-c">${num(c.credits.sendkit)}</td></tr>`).join("");
   $("#v-campaigns").innerHTML = CAMPAIGNS.length
-    ? `<div class="tablewrap"><table><thead><tr><th>Campaign</th><th>Leads</th><th>Hot</th><th>Warm</th><th>Verified</th><th>No-email</th><th>Competitors</th><th>Trigify</th><th>Prospeo</th><th>SendKit</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    ? `<div class="tablewrap"><table><thead><tr><th>Campaign</th><th>Leads</th><th>Hot</th><th>Warm</th><th>Verified</th><th>No-email</th><th title="Emails rescued by a hand-off retry">Recovered</th><th>Competitors</th><th>Trigify</th><th>Prospeo</th><th>SendKit</th></tr></thead><tbody>${rows}</tbody></table></div>`
     : `<div class="tablewrap"><div class="empty">${ic("mega")}<b>No campaigns yet</b>Leads will appear here as posts flow in.</div></div>`;
 }
-const METRICS = { total: "Leads", verified: "Verified", hot: "Hot", warm: "Warm", cold: "Cold", noEmail: "No-email", review: "Review", competitor: "Competitors", unverified: "Unverified", verifyRate: "Verify rate %" };
+const METRICS = { total: "Leads", verified: "Verified", hot: "Hot", warm: "Warm", cold: "Cold", noEmail: "No-email", recovered: "Recovered", review: "Review", competitor: "Competitors", unverified: "Unverified", verifyRate: "Verify rate %" };
 async function renderCampaignDetail(campaign) {
   const c = CAMPAIGNS.find((x) => x.campaign === campaign) || {};
   setCrumb(`<span class="crumb" data-back style="cursor:pointer">Campaigns</span>${ic("chev")}<b>${esc(c.label || campaign)}</b>`);
@@ -195,9 +223,10 @@ async function renderCampaignDetail(campaign) {
     <div class="toolbar"><button class="btn btn-ghost btn-sm" data-back>${ic("back")}All campaigns</button><div class="grow"></div>
       <button class="btn btn-ghost btn-sm" data-sync="${esc(campaign)}">${ic("sync")}Sync SendKit</button>
       <button class="btn btn-ghost btn-sm" data-pause="${esc(campaign)}">${ic("pause")}Pause</button></div>
-    <div class="muted" id="campMsg" style="font-size:12px;margin:-4px 0 var(--s3)"></div>
+    <div class="muted" id="campMsg" style="font-size:12px;margin:-4px 0 0"></div>
+    <div id="syncBox" style="margin:0 0 var(--s3)">${jobBox("sync", JOBS.sync)}</div>
     <div class="grid g-cred">${cards}</div>
-    ${toolbarHTML(false)}${tableHTML(rows)}${pagerHTML(count)}`;
+    ${toolbarHTML(false, count)}${tableHTML(rows)}${pagerHTML(count)}`;
 }
 
 // ---------------- reverify menu ----------------
@@ -241,32 +270,34 @@ async function renderSources() {
   $("#c-src") && ($("#c-src").textContent = (d.sources || []).length || "");
   const srcRows = (type) => {
     const rows = (d.sources || []).filter((s) => s.type === type);
-    if (!rows.length) return `<tr><td colspan="4" class="muted" style="padding:16px">None yet</td></tr>`;
+    if (!rows.length) return `<tr><td colspan="5" class="muted" style="padding:16px">None yet</td></tr>`;
     return rows.map((s) => `<tr>
-      <td class="nm">${esc(s.label || "—")}${s.harvestedFrom ? '<span class="tag-pers">harvested</span>' : ""}</td>
+      <td class="nm">${esc(s.label || "—")}${s.harvestedFrom
+        ? '<span class="tag-harv" title="Auto-discovered by us from a hub page">harvested</span>'
+        : '<span class="tag-man" title="Added by you">manual</span>'}</td>
       <td><span class="trunc mono muted" title="${esc(s.url)}">${esc(s.url)}</span></td>
+      <td class="num-c">${s.lastPosts != null ? num(s.lastPosts) : '<span class="muted">—</span>'}</td>
       <td class="tstamp">${s.lastRun ? ts(s.lastRun) : "never"}</td>
       <td><button class="btn btn-ghost btn-sm" data-delsrc="${s._id}">${ic("trash")}</button></td></tr>`).join("");
   };
-  const running = st.running;
+  const nInfl = (d.sources || []).filter((s) => s.type === "influencer").length;
+  const nHub = (d.sources || []).filter((s) => s.type === "hub").length;
   $("#v-sources").innerHTML = `
-    <div class="note">${ic("radio")}<div>Scrape big cold-email <b>influencers'</b> posts and LinkedIn <b>top-content hubs</b>. Each post is auto-classified (infra / sequencer / data / …) and its engagers routed to the Influencer/Hub campaigns with that category tag. Runs daily.</div></div>
-    <div class="toolbar"><div class="grow"></div>
-      <span class="muted" id="srcMsg" style="font-size:12px">${running ? `Running… ${st.phase || ""} · ${st.postsProcessed} posts · ${st.engagers} engagers · ${st.newlyFound || 0} sent` : (st.finishedAt ? `Last run: ${st.postsProcessed} posts · ${st.engagers} engagers · ${st.newlyFound || 0} leads sent` : "")}</span>
-      <button class="btn btn-sm" data-runsrc ${running ? "disabled" : ""}>${ic("refresh")}Run now</button></div>
+    <div class="note">${ic("radio")}<div>Scrape big cold-email <b>influencers'</b> posts and LinkedIn <b>top-content hubs</b>. Each post is auto-classified (infra / sequencer / data / …) and its engagers routed to the Influencer/Hub campaigns with that category tag. Runs daily.<br>
+      <span class="tag-harv">harvested</span> = we auto-found this person on a hub page · <span class="tag-man">manual</span> = you added them. Same thing either way — both get scraped every run.</div></div>
+    <div class="toolbar">
+      <span class="resn"><b>${nInfl}</b> influencers · <b>${nHub}</b> hubs</span>
+      <div class="grow"></div>
+      <button class="btn btn-sm" data-runsrc ${st.running ? "disabled" : ""}>${ic("refresh")}${st.running ? "Running…" : "Run now"}</button></div>
+    <div id="srcBox">${jobBox("sources", st)}</div>
     <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s3);align-items:start">
       <div class="chartbox" style="min-width:0;overflow:hidden"><h4>Influencers</h4>
         <div class="toolbar" style="margin-bottom:var(--s3)"><input class="search" id="in-infl" placeholder="LinkedIn profile URL or handle" style="flex:1;min-width:0"><button class="btn btn-sm" data-addsrc="influencer">${ic("plus")}Add</button></div>
-        <div class="tablewrap" style="border:none"><table><thead><tr><th>Name</th><th>Profile</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("influencer")}</tbody></table></div></div>
+        <div class="tablewrap" style="border:none"><table><thead><tr><th>Name</th><th>Profile</th><th title="Posts found for this person on the last run">Posts</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("influencer")}</tbody></table></div></div>
       <div class="chartbox" style="min-width:0;overflow:hidden"><h4>Hubs</h4>
         <div class="toolbar" style="margin-bottom:var(--s3)"><input class="search" id="in-hub" placeholder="linkedin.com/top-content/... URL" style="flex:1;min-width:0"><button class="btn btn-sm" data-addsrc="hub">${ic("plus")}Add</button></div>
-        <div class="tablewrap" style="border:none"><table><thead><tr><th>Hub</th><th>URL</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("hub")}</tbody></table></div></div>
+        <div class="tablewrap" style="border:none"><table><thead><tr><th>Hub</th><th>URL</th><th>Posts</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("hub")}</tbody></table></div></div>
     </div>`;
-}
-async function pollSources() {
-  const s = await j("/api/sources/status"); const el = $("#srcMsg"); if (!el) return;
-  if (s.running) { el.textContent = `Running… ${s.phase || ""} · ${s.postsProcessed} posts · ${s.engagers} engagers · ${s.newlyFound || 0} sent`; setTimeout(pollSources, 2500); }
-  else { loadTop(); renderSources(); }
 }
 
 // ---------------- events (CSP-safe delegation) ----------------
@@ -296,12 +327,22 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.camp) { ACTIVE_CAMPAIGN = t.dataset.camp; PAGE = 0; return renderCampaignDetail(t.dataset.camp); }
   if (t.hasAttribute("data-back")) { ACTIVE_CAMPAIGN = null; F.campaign = ""; PAGE = 0; return renderCampaignList(); }
   if (t.dataset.pause) { const r = await post(`/api/campaigns/${encodeURIComponent(t.dataset.pause)}/pause`, { paused: true }); $("#campMsg").textContent = r.ok ? "✓ Trigify workflow paused." : "Pause failed: " + (r.error || ""); return; }
-  if (t.dataset.sync) { $("#campMsg").textContent = "Syncing…"; await post("/api/sync", { campaign: t.dataset.sync }); pollSync(); return; }
+  if (t.dataset.sync) { await post("/api/sync", { campaign: t.dataset.sync }); return pollJobs(); }
   if (t.hasAttribute("data-retry")) {
     const camps = [...document.querySelectorAll("[data-batch]:checked")].map((c) => c.dataset.batch);
-    $("#retryLbl").textContent = "Starting…";
     await post("/api/reprocess", { campaign: camps.length === 1 ? camps[0] : "" });
-    pollRetry(); return;
+    return pollJobs();
+  }
+  if (t.hasAttribute("data-selpage")) {
+    document.querySelectorAll("[data-sel]").forEach((c) => { c.checked = true; SELECTED.add(c.dataset.sel); });
+    const el = $("#selCount"); if (el) el.textContent = SELECTED.size;
+    const all = document.querySelector("[data-selall]"); if (all) all.checked = true;
+    return;
+  }
+  if (t.hasAttribute("data-batchallbtn")) {
+    document.querySelectorAll("[data-batch]").forEach((c) => { c.checked = true; });
+    const all = document.querySelector("[data-batchall]"); if (all) all.checked = true;
+    return updateBatchSel();
   }
   if (t.dataset.addsrc) {
     const inp = $(t.dataset.addsrc === "hub" ? "#in-hub" : "#in-infl");
@@ -310,7 +351,7 @@ document.addEventListener("click", async (e) => {
     renderSources(); return;
   }
   if (t.dataset.delsrc) { await fetch("/api/sources/" + t.dataset.delsrc, { method: "DELETE" }); renderSources(); return; }
-  if (t.hasAttribute("data-runsrc")) { $("#srcMsg").textContent = "Starting…"; await post("/api/sources/run", {}); pollSources(); return; }
+  if (t.hasAttribute("data-runsrc")) { await post("/api/sources/run", {}); return pollJobs(); }
 });
 document.addEventListener("change", (e) => {
   const t = e.target;
@@ -318,20 +359,48 @@ document.addEventListener("change", (e) => {
   if (t.hasAttribute("data-size")) { SIZE = +t.value; PAGE = 0; return render(); }
   if (t.hasAttribute("data-selall")) { document.querySelectorAll("[data-sel]").forEach((c) => { c.checked = t.checked; c.checked ? SELECTED.add(c.dataset.sel) : SELECTED.delete(c.dataset.sel); }); const el = $("#selCount"); if (el) el.textContent = SELECTED.size; return; }
   if (t.dataset.sel) { t.checked ? SELECTED.add(t.dataset.sel) : SELECTED.delete(t.dataset.sel); const el = $("#selCount"); if (el) el.textContent = SELECTED.size; return; }
-  if (t.hasAttribute("data-batchall")) { document.querySelectorAll("[data-batch]").forEach((c) => c.checked = t.checked); return; }
+  if (t.hasAttribute("data-batchall")) { document.querySelectorAll("[data-batch]").forEach((c) => c.checked = t.checked); return updateBatchSel(); }
+  if (t.dataset.batch) return updateBatchSel();
   if (t.dataset.card !== undefined) { CARD_METRICS[+t.dataset.card] = t.value; return renderCampaignDetail(ACTIVE_CAMPAIGN); }
 });
 let qt; document.addEventListener("input", (e) => { if (e.target.dataset.f === "q") { F.q = e.target.value; clearTimeout(qt); qt = setTimeout(() => { PAGE = 0; render(); }, 300); } });
 
-async function pollRetry() {
-  const s = await j("/api/reprocess/status"); const el = $("#retryLbl"); if (!el) return;
-  if (s.running) { el.textContent = `Retrying ${s.processed}/${s.total} · ${s.newlyFound} found`; setTimeout(pollRetry, 2000); }
-  else { el.innerHTML = `${ic("refresh")}Retry selected`; const m = $("#retryMsg"); if (m) m.textContent = `Done · ${s.newlyFound} emails recovered`; loadTop(); render(); }
+// ---------------- jobs: retry / sync / sources ----------------
+// The SERVER owns each job's progress, so refreshing the page (or switching tabs) never
+// loses it — we simply re-read the status and keep painting.
+function jobBox(kind, s) {
+  if (!s || (!s.running && !s.finishedAt)) return "";
+  const C = {
+    retry: { done: s.processed, total: s.total, verb: "Retrying", extra: `<b class="ok">${num(s.newlyFound || 0)}</b> emails recovered` },
+    sync: { done: s.processed, total: s.total, verb: "Syncing", extra: `<b class="ok">${num(s.pushed || 0)}</b> pushed · ${num(s.reFound || 0)} re-found` },
+    sources: { done: s.postsProcessed, total: s.totalPosts, verb: "Scraping posts", extra: `<b>${num(s.uniqueEngagers || 0)}</b> unique people · <b class="ok">${num(s.newlyFound || 0)}</b> sent` },
+  }[kind];
+  const done = C.done || 0, total = C.total || 0, pct = pctOf(done, total);
+  const head = s.running
+    ? `${C.verb} <b>${num(done)}</b> / <b>${num(total)}</b> · ${pct}% · ${C.extra}${kind === "sources" && s.phase ? ` <span class="muted">(${esc(s.phase)})</span>` : ""}`
+    : `Done · ${num(done)} processed · ${C.extra}`;
+  return `<div class="jobbox${s.running ? " on" : ""}"><div class="jobh">${ic(s.running ? "refresh" : "check")}<span>${head}</span></div>${bar(s.running ? pct : 100, s.running)}</div>`;
 }
-async function pollSync() {
-  const s = await j("/api/sync/status"); const el = $("#campMsg"); if (!el) return;
-  if (s.running) { el.textContent = `Syncing ${s.processed}/${s.total} · ${s.pushed} pushed · ${s.reFound} methods re-found`; setTimeout(pollSync, 2000); }
-  else { el.textContent = `✓ Sync done · ${s.pushed} pushed · ${s.reFound} methods re-found`; loadTop(); }
+function paintJobs() {
+  const set = (sel, html) => { const el = $(sel); if (el) el.innerHTML = html; };
+  set("#retryBox", jobBox("retry", JOBS.retry));
+  set("#syncBox", jobBox("sync", JOBS.sync));
+  set("#srcBox", jobBox("sources", JOBS.sources));
+}
+let jobTimer = null;
+async function pollJobs() {
+  clearTimeout(jobTimer);                       // safe to call from a handler — never double-loops
+  const [retry, sync, sources] = await Promise.all([
+    j("/api/reprocess/status").catch(() => ({})),
+    j("/api/sync/status").catch(() => ({})),
+    j("/api/sources/status").catch(() => ({})),
+  ]);
+  const was = JOBS.retry.running || JOBS.sync.running || JOBS.sources.running;
+  JOBS = { retry, sync, sources };
+  paintJobs();
+  const now = retry.running || sync.running || sources.running;
+  if (was && !now) { await loadTop(); render(); }   // a job just finished — refresh the numbers
+  jobTimer = setTimeout(pollJobs, now ? 1500 : 10000);
 }
 
 async function openDrawer(url, name) {
@@ -346,5 +415,7 @@ async function openDrawer(url, name) {
 
 document.querySelectorAll(".nav-i").forEach((n) => n.addEventListener("click", () => show(n.dataset.v)));
 window.addEventListener("scroll", closeMenu, true);
-(async () => { await loadTop(); render(); })();
+// Boot. pollJobs() re-reads server-side job state, so a refresh mid-retry/mid-sync/mid-scrape
+// picks the progress bar right back up instead of losing it.
+(async () => { await loadTop(); render(); pollJobs(); })();
 setInterval(() => { loadTop(); if (VIEW === "overview") render(); }, 25000);

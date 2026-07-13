@@ -14,8 +14,11 @@ const MAX_POSTS_PER_RUN = 120;    // enough to cover ~14 influencers x 8 posts +
 const MAX_HARVEST_AUTHORS = 20;
 
 let running = false;
-let status = { running: false, phase: "idle", postsProcessed: 0, engagers: 0, newlyFound: 0, startedAt: null, finishedAt: null };
+let status = { running: false, phase: "idle", postsProcessed: 0, totalPosts: 0, engagers: 0, uniqueEngagers: 0, newlyFound: 0, startedAt: null, finishedAt: null };
 export function sourcesStatus() { return status; }
+
+// Same person often engages with several posts — count them ONCE for the unique tally.
+let seenEngagers = new Set();
 
 // classify from post text, falling back to the URL slug (LinkedIn slugs carry keywords)
 function classifyFrom(text, postUrl) {
@@ -35,6 +38,8 @@ async function processPost(postUrl, text, sourceType) {
     try {
       const r = await enrichLead({ ...e, campaign: sc.key, campaign_id: sc.sendkitId, category, source: sourceType, post_url: postUrl });
       status.engagers++;
+      const id = (e.linkedin_url || e.name || "").toLowerCase();
+      if (id && !seenEngagers.has(id)) { seenEngagers.add(id); status.uniqueEngagers++; }
       if (r?.outcome === "sent") status.newlyFound++;
     } catch (err) { log.warn("source enrich failed", { err: err.message }); }
   }
@@ -44,7 +49,8 @@ async function processPost(postUrl, text, sourceType) {
 export async function runSources() {
   if (running) return { alreadyRunning: true, ...status };
   running = true;
-  status = { running: true, phase: "starting", postsProcessed: 0, engagers: 0, newlyFound: 0, startedAt: new Date(), finishedAt: null };
+  seenEngagers = new Set();
+  status = { running: true, phase: "starting", postsProcessed: 0, totalPosts: 0, engagers: 0, uniqueEngagers: 0, newlyFound: 0, startedAt: new Date(), finishedAt: null };
   try {
     const queue = []; // { postUrl, text, source }
 
@@ -72,8 +78,12 @@ export async function runSources() {
       await sources().updateOne({ _id: s._id }, { $set: { lastRun: new Date(), lastPosts: posts.length } });
     }
 
+    // Dedup the queue by postUrl (two influencers can surface the same post) so the
+    // progress denominator reflects UNIQUE posts, not repeats.
+    const uniq = [...new Map(queue.map((p) => [p.postUrl, p])).values()].slice(0, MAX_POSTS_PER_RUN);
     status.phase = "processing";
-    for (const p of queue.slice(0, MAX_POSTS_PER_RUN)) {
+    status.totalPosts = uniq.length;
+    for (const p of uniq) {
       await processPost(p.postUrl, p.text, p.source);
     }
   } catch (e) {

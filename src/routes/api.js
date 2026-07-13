@@ -26,7 +26,7 @@ async function countBlock(campaign) {
   campaign = S(campaign);
   const L = leads();
   const base = campaign ? { campaigns: campaign } : {};
-  const [total, hot, warm, cold, verified, noEmail, unverified, review, competitor] = await Promise.all([
+  const [total, hot, warm, cold, verified, noEmail, unverified, review, competitor, recovered] = await Promise.all([
     L.countDocuments(base),
     L.countDocuments({ ...base, status: "hot" }),
     L.countDocuments({ ...base, status: "warm" }),
@@ -36,8 +36,9 @@ async function countBlock(campaign) {
     L.countDocuments({ ...base, email_status: "unverified" }),
     L.countDocuments({ ...base, email_status: "review" }),
     L.countDocuments({ ...base, email_status: "competitor" }),
+    L.countDocuments({ ...base, recovered: true }),   // emails rescued by a hand-off retry
   ]);
-  return { total, hot, warm, cold, verified, noEmail, unverified, review, competitor };
+  return { total, hot, warm, cold, verified, noEmail, unverified, review, competitor, recovered };
 }
 
 // shared lead filter builder (used by /leads and /export)
@@ -198,7 +199,9 @@ apiRouter.post("/campaigns/:key/pause", async (req, res) => {
 apiRouter.post("/reprocess", (req, res) => {
   const st = reprocessStatus();
   if (st.running) return res.json({ started: false, ...st });
-  reprocessNoEmail({ concurrency: 5, campaign: req.body?.campaign || "" }).catch((e) => console.error("reprocess error", e.message));
+  // concurrency 14: each lead is mostly network-wait (Clearbit -> Enrich -> proxy resolve -> Prospeo),
+  // so a wider pool is ~3x faster wall-clock without meaningfully more CPU.
+  reprocessNoEmail({ concurrency: 14, campaign: req.body?.campaign || "" }).catch((e) => console.error("reprocess error", e.message));
   res.json({ started: true });
 });
 apiRouter.get("/reprocess/status", (_req, res) => res.json(reprocessStatus()));
