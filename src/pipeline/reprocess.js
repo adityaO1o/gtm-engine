@@ -67,14 +67,24 @@ async function reprocessOne(d) {
   return true;
 }
 
-export async function reprocessNoEmail({ limit = 0, concurrency = 4, campaign = "" } = {}) {
+// `campaigns` is the exact set the user ticked. Leads are matched with $in, so a person who
+// sits in two selected campaigns is retried ONCE — the per-campaign totals overlap and must
+// never be summed.
+export function noEmailQuery(campaigns = []) {
+  const q = { email_status: "no-email" };
+  if (campaigns.length) q.campaigns = { $in: campaigns };
+  return q;
+}
+
+export async function reprocessNoEmail({ limit = 0, concurrency = 4, campaigns = [] } = {}) {
   if (running) return { alreadyRunning: true, ...status };
   running = true;
-  const q = { email_status: "no-email" };
-  if (campaign) q.campaigns = campaign;
-  const docs = await leads().find(q).toArray();
+  // Invariant: a lead with no email cannot also be flagged "recovered". Older builds could
+  // demote a recovered lead back to no-email without clearing the flag; heal that here.
+  await leads().updateMany({ email_status: "no-email", recovered: true }, { $set: { recovered: false } });
+  const docs = await leads().find(noEmailQuery(campaigns)).toArray();
   const list = limit ? docs.slice(0, limit) : docs;
-  status = { running: true, processed: 0, total: list.length, newlyFound: 0, campaign, startedAt: new Date(), finishedAt: null };
+  status = { running: true, processed: 0, total: list.length, newlyFound: 0, campaigns, startedAt: new Date(), finishedAt: null };
 
   let idx = 0;
   const worker = async () => {

@@ -159,13 +159,24 @@ async function renderLeads() {
 }
 
 // ---------------- Hand-off (campaign batches only) ----------------
+// The TRUE number of leads a retry will touch comes from the server (distinct count).
+// Never sum the per-campaign no-email columns — a lead in two campaigns appears in both.
+let batchT;
 function updateBatchSel() {
   const el = $("#batchSel"); if (!el) return;
   const checked = [...document.querySelectorAll("[data-batch]:checked")];
-  const n = checked.reduce((a, c) => a + (+c.dataset.noemail || 0), 0);
+  const camps = checked.map((c) => c.dataset.batch);
   el.innerHTML = checked.length
-    ? `<b>${checked.length}</b> campaign${checked.length === 1 ? "" : "s"} selected · <b>${num(n)}</b> leads to retry`
-    : `<span class="muted">0 selected — Retry will run <b>all</b> campaigns</span>`;
+    ? `<b>${checked.length}</b> campaign${checked.length === 1 ? "" : "s"} selected · <span class="muted">counting…</span>`
+    : `<span class="muted">0 selected — Retry runs <b>all</b> campaigns</span> · <b>${num(STATS.noEmail)}</b> leads`;
+  clearTimeout(batchT);
+  batchT = setTimeout(async () => {
+    const { count } = await j("/api/reprocess/count?campaigns=" + camps.map(encodeURIComponent).join(","));
+    const e2 = $("#batchSel"); if (!e2) return;
+    e2.innerHTML = checked.length
+      ? `<b>${checked.length}</b> campaign${checked.length === 1 ? "" : "s"} selected · <b>${num(count)}</b> leads to retry`
+      : `<span class="muted">0 selected — Retry runs <b>all</b> campaigns</span> · <b>${num(count)}</b> leads`;
+  }, 150);
 }
 async function renderHandoff() {
   const batches = CAMPAIGNS.filter((c) => c.noEmail > 0 || c.recovered > 0).sort((a, b) => b.noEmail - a.noEmail);
@@ -329,8 +340,10 @@ document.addEventListener("click", async (e) => {
   if (t.dataset.pause) { const r = await post(`/api/campaigns/${encodeURIComponent(t.dataset.pause)}/pause`, { paused: true }); $("#campMsg").textContent = r.ok ? "✓ Trigify workflow paused." : "Pause failed: " + (r.error || ""); return; }
   if (t.dataset.sync) { await post("/api/sync", { campaign: t.dataset.sync }); return pollJobs(); }
   if (t.hasAttribute("data-retry")) {
+    // send the EXACT selection — previously anything other than a single campaign silently
+    // fell back to retrying every campaign
     const camps = [...document.querySelectorAll("[data-batch]:checked")].map((c) => c.dataset.batch);
-    await post("/api/reprocess", { campaign: camps.length === 1 ? camps[0] : "" });
+    await post("/api/reprocess", { campaigns: camps });
     return pollJobs();
   }
   if (t.hasAttribute("data-selpage")) {

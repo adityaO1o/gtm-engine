@@ -14,7 +14,7 @@ import { validateEmail, isRoleBased, findEmailByLinkedin, findEmailByNameDomain 
 import { companyDomain } from "../services/clearbit.js";
 import { findOurLead, upsertLead, addToCampaign } from "../services/sendkit.js";
 import { scoreFromHistory } from "../services/score.js";
-import { CAMPAIGN_CATEGORY, isCompetitor } from "../services/campaigns.js";
+import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor } from "../services/campaigns.js";
 import { isCompanyPage, isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { bumpUsage } from "../services/usage.js";
 import { log } from "../lib/logger.js";
@@ -34,6 +34,17 @@ function buildTags({ status, score, timesSeen, categories, source }) {
     status + "-lead",
     ...(source ? ["source:" + source] : []),
   ];
+}
+
+// Log this engagement, then re-score from the person's FULL history (always correct,
+// and a repeat engager accumulates categories and climbs cold -> hot).
+async function recordEngagement(key, { name, headline, category, engagement_type, campaign, post_url, comment_text, now }) {
+  await engagements().insertOne({
+    linkedin_url: key, name, headline, category,
+    engagement: engagement_type, campaign, post_url, comment_text, created_at: now,
+  });
+  const history = await engagements().find({ linkedin_url: key }).toArray();
+  return scoreFromHistory(history.map((h) => ({ category: h.category, engagement: h.engagement })));
 }
 
 // ── Email FIND waterfall (Enrich-first; Prospeo last). Reused by /enrich and /reprocess.
@@ -101,23 +112,58 @@ export async function enrichLead(input) {
     return { outcome: "skipped_company", name };
   }
 
+  // Do we already know this person? Match on their vanity url OR on an obfuscated liker URN
+  // we resolved previously (we remember those in `urns`, so repeat likers are recognised too).
+  const known = linkedin_url
+    ? await leads().findOne({ $or: [{ linkedin_url }, { urns: linkedin_url }] })
+    : null;
+
+  // ── FAST PATH: this person's email is already settled. Do NOT re-run the waterfall.
+  // Re-running it costs email-provider credits on EVERY repeat engagement, and — far worse —
+  // a transient miss (blocked proxy, provider timeout, a headline with no "at Company") used
+  // to overwrite the good address with email:null / "no-email", dumping a verified lead back
+  // into hand-off. The next retry then "recovered" them again. That found -> lost -> recovered
+  // churn is exactly why later retries kept turning up "new" emails.
+  if (known && known.email && known.email_status !== "no-email") {
+    const key = known.linkedin_url;
+    const scored = await recordEngagement(key, { name, headline, category, engagement_type, campaign, post_url, comment_text, now });
+    const tags = buildTags({ status: scored.status, score: scored.score, timesSeen: scored.timesSeen, categories: scored.categories, source: source || known.source });
+    const add = { campaigns: campaign, posts_seen: post_url };
+    if (campaign_id) add.campaign_ids = campaign_id;
+    if (linkedin_url && isUrn(linkedin_url) && linkedin_url !== key) add.urns = linkedin_url;
+
+    await leads().updateOne({ linkedin_url: key }, {
+      $set: {
+        status: scored.status, score: scored.score, categories: scored.categories, times_seen: scored.timesSeen,
+        last_comment: comment_text || null, last_engagement_at: now, updated_at: now, tags,
+      },
+      $addToSet: add,
+    });
+    // keep SendKit in step with the new score / categories / campaign
+    if (known.email_status === "verified") {
+      const [f, ...r] = (name || known.name || "").split(" ");
+      await upsertLead({ email: known.email, firstName: f, lastName: r.join(" "), companyName: known.company || "", jobTitle: headline || known.headline || "", linkedinUrl: key, tags });
+      const cid = campaign_id || CAMPAIGN_ID[campaign] || "";
+      if (cid) await addToCampaign(cid, known.email);
+    }
+    await bumpUsage(campaign, { trigify_scraped: 1 }); // scraped only — zero email-provider spend
+    log.info("repeat engager (email already known)", { name, email: known.email, status: known.email_status, seen: scored.timesSeen });
+    return { outcome: "repeat", email: known.email, isRepeat: true, ...scored, name };
+  }
+
   const w = await findEmailWaterfall({ name, headline, linkedin_url });
   const { em, emailSource, emailMethod, preVerified, company } = w;
   let prospeoCalls = w.prospeoCalls;
   const key = w.key;
 
   // record the engagement now that we know the identity key
-  await engagements().insertOne({
-    linkedin_url: key, name, headline, category,
-    engagement: engagement_type, campaign, post_url, comment_text, created_at: now,
-  });
-
-  // recompute score from the full engagement history (always correct)
-  const history = await engagements().find({ linkedin_url: key }).toArray();
-  const scored = scoreFromHistory(history.map((h) => ({ category: h.category, engagement: h.engagement })));
+  const scored = await recordEngagement(key, { name, headline, category, engagement_type, campaign, post_url, comment_text, now });
 
   const addToSet = { campaigns: campaign, posts_seen: post_url };
   if (campaign_id) addToSet.campaign_ids = campaign_id;
+  // Remember the obfuscated liker URN we just resolved, so the next time this same person
+  // likes a post we recognise them immediately instead of re-resolving + re-buying their email.
+  if (linkedin_url && isUrn(linkedin_url) && linkedin_url !== key) addToSet.urns = linkedin_url;
 
   const setDoc = {
     linkedin_url: key, name, headline,
@@ -139,9 +185,21 @@ export async function enrichLead(input) {
     return { outcome: "competitor", ...scored, name };
   }
 
-  // no email found -> save for hand-off, stop here
+  // no email found this time
   if (!em.found || !em.email) {
-    setDoc.email = null; setDoc.email_status = "no-email"; setDoc.needs_email = true;
+    // NEVER clobber an address we already hold. The waterfall is non-deterministic (proxy /
+    // search-engine soft-blocks, provider timeouts), so a miss now does NOT mean the stored
+    // email is wrong. Overwriting it with null used to delete good emails and demote verified
+    // leads back into hand-off. Keep every email_* field; only refresh score/engagement data.
+    const prior = known || (key !== linkedin_url ? await leads().findOne({ linkedin_url: key }) : null);
+    if (prior?.email) {
+      const { email_source, email_method, personal_email, ...safe } = setDoc; // keep existing email fields
+      await leads().updateOne({ linkedin_url: key }, { $set: safe, $addToSet: addToSet }, { upsert: false });
+      await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
+      log.info("waterfall missed but email already known — kept", { name, email: prior.email, status: prior.email_status });
+      return { outcome: "repeat", email: prior.email, ...scored, name };
+    }
+    setDoc.email = null; setDoc.email_status = "no-email"; setDoc.needs_email = true; setDoc.recovered = false;
     await leads().updateOne({ linkedin_url: key }, { $set: setDoc, $addToSet: addToSet, $setOnInsert: { created_at: now } }, { upsert: true });
     await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
     log.info("no email", { name, key });

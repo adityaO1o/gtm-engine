@@ -8,7 +8,7 @@ import { trigifyBalance, setWorkflowEnabled } from "../services/trigify.js";
 import { prospeoBalance, verifyEmail } from "../services/prospeo.js";
 import { validateEmail } from "../services/enrich.js";
 import { findEmailWaterfall } from "../pipeline/enrichLead.js";
-import { reprocessNoEmail, reprocessStatus } from "../pipeline/reprocess.js";
+import { reprocessNoEmail, reprocessStatus, noEmailQuery } from "../pipeline/reprocess.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { campaignByKey, campaignLabel } from "../services/campaigns.js";
 import { safeEqual } from "../lib/auth.js";
@@ -195,16 +195,26 @@ apiRouter.post("/campaigns/:key/pause", async (req, res) => {
   res.json(r);
 });
 
-// POST /api/reprocess {campaign?} — re-run no-email leads through the Enrich-first waterfall (background)
+// POST /api/reprocess {campaigns:[]} — re-run no-email leads through the Enrich-first waterfall
+const campList = (v) => (Array.isArray(v) ? v.map(S).filter(Boolean) : []);
 apiRouter.post("/reprocess", (req, res) => {
   const st = reprocessStatus();
   if (st.running) return res.json({ started: false, ...st });
   // concurrency 14: each lead is mostly network-wait (Clearbit -> Enrich -> proxy resolve -> Prospeo),
   // so a wider pool is ~3x faster wall-clock without meaningfully more CPU.
-  reprocessNoEmail({ concurrency: 14, campaign: req.body?.campaign || "" }).catch((e) => console.error("reprocess error", e.message));
+  reprocessNoEmail({ concurrency: 14, campaigns: campList(req.body?.campaigns) })
+    .catch((e) => console.error("reprocess error", e.message));
   res.json({ started: true });
 });
 apiRouter.get("/reprocess/status", (_req, res) => res.json(reprocessStatus()));
+
+// GET /api/reprocess/count?campaigns=a,b — TRUE distinct no-email count for a selection.
+// The UI must never add up per-campaign no-email totals: a lead in two campaigns would be
+// counted twice (that's how "8,262 to retry" appeared next to a real hand-off of 7,048).
+apiRouter.get("/reprocess/count", async (req, res) => {
+  const camps = S(req.query.campaigns).split(",").map((x) => x.trim()).filter(Boolean);
+  res.json({ count: await leads().countDocuments(noEmailQuery(camps)) });
+});
 
 // ── Sources (LinkedIn hubs + influencers) ──────────────────────────────
 apiRouter.get("/sources", async (_req, res) => {
