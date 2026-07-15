@@ -60,6 +60,10 @@ function buildLeadFilter(query) {
   if (campaign) filter.campaigns = campaign;
   if (recovered === "1") filter.recovered = true;
   if (S(query.dnc) === "1") filter.dnc = true;
+  const src = S(query.source);
+  if (src === "keyword") filter.source = { $in: [null, ""] };   // keyword engagers carry no source
+  else if (src) filter.source = src;                            // influencer | hub
+  if (S(query.list)) filter.source_list = { $regex: escRegex(query.list), $options: "i" };
   if (q) {
     const rx = escRegex(q); // escaped -> literal substring match, no ReDoS / regex injection
     filter.$or = [{ name: { $regex: rx, $options: "i" } }, { email: { $regex: rx, $options: "i" } }, { company: { $regex: rx, $options: "i" } }];

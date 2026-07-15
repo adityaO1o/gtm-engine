@@ -15,10 +15,43 @@ export const CAMPAIGNS = [
   { key: "Cold Email Keyword Engagers - InboxKit",        label: "Cold Email",      category: "cold-email",       sendkitId: "6a4fc54e5fed5bfd2bfb3a30", keywords: ["cold email", "email outreach", "email deliverability", "cold email infrastructure"] },
   { key: "GTM Engineering Keyword Engagers - InboxKit",   label: "GTM Engineering", category: "gtm-eng",          sendkitId: "6a4fc55b5fed5bfd2bfb45fc", keywords: ["Clay", "GTM engineer", "GTM engineering", "Claygency"] },
   { key: "Data Tool Engagers - InboxKit",                 label: "Data Tools",      category: "data-tools",       sendkitId: "6a4fc8f95fed5bfd2bfe5510", keywords: ["Prospeo", "FullEnrich", "Apollo", "ZoomInfo"] },
-  // Source-based campaigns (v5): category is classified per-post, so the entry's category is only a neutral default.
+  // Infrastructure home for generic infra/deliverability posts (InboxKit's core pitch).
+  { key: "Infrastructure Engagers - InboxKit",            label: "Infrastructure",  category: "infra-competitor", sendkitId: "6a573d5b98fc993dafabcee0", keywords: [] },
+  // Legacy source-based campaigns (v5) — kept for the leads already in them; new source engagers
+  // now route by topic instead (see routeSourceEngager), so these no longer receive new leads.
   { key: "Influencer Engagers - InboxKit",                label: "Influencers",     category: "cold-email",       sendkitId: "6a53bb3d757679d541224126", keywords: [], source: "influencer" },
   { key: "LinkedIn Hub Engagers - InboxKit",              label: "LinkedIn Hubs",   category: "cold-email",       sendkitId: "6a53bb3e757679d54122419e", keywords: [], source: "hub" },
 ];
+
+// Route a SOURCE engager (influencer / hub / CSV) to the campaign whose EMAIL matches what the
+// post was about — so an infra-post engager gets the infra email, a Smartlead-post engager gets
+// the Smartlead email, etc. Keyword-search engagers are unaffected (their campaign is fixed).
+//   1) a specific brand named in the post wins (that brand's campaign has tailored copy)
+//   2) else the classified category maps to a theme campaign
+//   3) else Cold Email
+const BRAND_TO_CAMPAIGN = [
+  [/smartlead/, "Smartlead LinkedIn Engagers - InboxKit"],
+  [/\binstantly\b/, "Instantly LinkedIn Engagers - InboxKit"],
+  [/email\s*bison/, "EmailBison LinkedIn Engagers - InboxKit"],
+  [/plus\s*vibe/, "PlusVibe LinkedIn Engagers - InboxKit"],
+  [/premium\s*inboxes/, "PremiumInboxes LinkedIn Engagers - InboxKit"],
+  [/scaled\s*mail/, "ScaledMail LinkedIn Engagers - InboxKit"],
+  [/zap\s*mail/, "Zapmail LinkedIn Engagers - InboxKit"],
+  [/\bclay\b|apollo|zoominfo|prospeo|fullenrich/, "Data Tool Engagers - InboxKit"],
+];
+const CATEGORY_TO_CAMPAIGN = {
+  "infra-competitor": "Infrastructure Engagers - InboxKit",
+  "deliverability": "Infrastructure Engagers - InboxKit",
+  "cold-email": "Cold Email Keyword Engagers - InboxKit",
+  "sequencer": "Smartlead LinkedIn Engagers - InboxKit",
+  "data-tools": "Data Tool Engagers - InboxKit",
+  "gtm-eng": "GTM Engineering Keyword Engagers - InboxKit",
+};
+export function routeSourceEngager(postText = "", category = "cold-email") {
+  const t = (postText || "").toLowerCase();
+  for (const [rx, key] of BRAND_TO_CAMPAIGN) if (rx.test(t)) return byKey[key];
+  return byKey[CATEGORY_TO_CAMPAIGN[category] || "Cold Email Keyword Engagers - InboxKit"];
+}
 
 // source key -> its SendKit campaign name/id (used by the sources orchestrator)
 export const SOURCE_CAMPAIGN = {

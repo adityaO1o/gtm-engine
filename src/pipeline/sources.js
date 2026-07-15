@@ -5,7 +5,7 @@ import { sources, processedPosts } from "../db/mongo.js";
 import { getProfilePosts, getPostEngagements, getPostComments, trigifyOutOfCredits } from "../services/trigifyScrape.js";
 import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
-import { SOURCE_CAMPAIGN } from "../services/campaigns.js";
+import { routeSourceEngager } from "../services/campaigns.js";
 import { enrichLead } from "./enrichLead.js";
 import { log } from "../lib/logger.js";
 
@@ -24,16 +24,17 @@ export function sourcesStatus() { return status; }
 // Same person often engages with several posts — count them ONCE for the unique tally.
 let seenEngagers = new Set();
 
-// classify from post text, falling back to the URL slug (LinkedIn slugs carry keywords)
-function classifyFrom(text, postUrl) {
+// The text we classify + route on: the post body, or the URL slug when the body is thin
+// (hub posts arrive as just a URL; LinkedIn slugs carry the keywords).
+function routeText(text, postUrl) {
   const slug = decodeURIComponent(postUrl || "").replace(/^.*\/posts\//, "").replace(/[-/_]+/g, " ");
-  return classifyPost(text && text.length > 20 ? text : slug);
+  return text && text.length > 20 ? text : slug;
 }
 
 // Scrape one post's engagers + commenters and route each through the pipeline.
 // Returns "done" | "skip" (already processed) | "error" (Trigify fetch failed — NOT marked
 // processed, so it will be retried after a credit top-up).
-async function processPost(postUrl, text, sourceType) {
+async function processPost(postUrl, text, sourceType, sourceList) {
   if (!postUrl) return "skip";
   if (await processedPosts().findOne({ postUrl })) return "skip";
 
@@ -47,11 +48,14 @@ async function processPost(postUrl, text, sourceType) {
   }
   await processedPosts().insertOne({ postUrl, at: new Date() });
 
-  const category = classifyFrom(text, postUrl);
-  const sc = SOURCE_CAMPAIGN[sourceType];
+  // Classify the post, then route its engagers to the campaign whose EMAIL fits the topic
+  // (infra post -> Infrastructure email, Smartlead post -> Smartlead email, etc.).
+  const rt = routeText(text, postUrl);
+  const category = classifyPost(rt);
+  const camp = routeSourceEngager(rt, category);
   for (const e of engagers) {
     try {
-      const r = await enrichLead({ ...e, campaign: sc.key, campaign_id: sc.sendkitId, category, source: sourceType, post_url: postUrl });
+      const r = await enrichLead({ ...e, campaign: camp.key, campaign_id: camp.sendkitId, category, source: sourceType, source_list: sourceList, post_url: postUrl });
       status.engagers++;
       const id = (e.linkedin_url || e.name || "").toLowerCase();
       if (id && !seenEngagers.has(id)) { seenEngagers.add(id); status.uniqueEngagers++; }
@@ -80,7 +84,7 @@ export async function runSources() {
       }
       for (const p of posts) {
         if (status.postsProcessed >= MAX_POSTS_PER_RUN) break;
-        await processPost(p, "", "hub");
+        await processPost(p, "", "hub", s.label || s.url);
       }
       await sources().updateOne({ _id: s._id }, { $set: { lastRun: new Date() } });
     }
@@ -95,12 +99,14 @@ export async function runSources() {
     for (const s of infls) {
       if (status.postsProcessed >= MAX_POSTS_PER_RUN || trigifyOutOfCredits) break;
       status.phase = "influencer:" + (s.label || s.url);
+      // where this influencer came from — the CSV list(s), or their own label if hand-added
+      const sourceList = s.lists?.length ? s.lists.join(", ") : (s.harvestedFrom ? "harvested" : (s.label || "influencer"));
       let posts = [];
       try { posts = await getProfilePosts(s.url); }
       catch (e) { if (trigifyOutOfCredits) break; log.warn("profile posts failed", { url: s.url, err: e.message }); continue; }
       for (const p of posts) {
         if (status.postsProcessed >= MAX_POSTS_PER_RUN) break;
-        const r = await processPost(p.postUrl, p.text, "influencer");
+        const r = await processPost(p.postUrl, p.text, "influencer", sourceList);
         if (r === "error" && trigifyOutOfCredits) break; // credits gone — stop, leave rest un-marked
       }
       // Only mark this profile fully scraped if we didn't stop early on a credit outage.

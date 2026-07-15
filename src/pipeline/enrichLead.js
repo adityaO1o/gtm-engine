@@ -99,7 +99,7 @@ export async function enrichLead(input) {
     name = "", headline = "", linkedin_url = "",
     engagement_type = "like", comment_text = "",
     campaign = "", campaign_id = "", post_url = "",
-    category: categoryOverride = "", source = "",
+    category: categoryOverride = "", source = "", source_list = "",
   } = input;
 
   // classified sources pass an explicit category (their campaign isn't topic-named)
@@ -178,6 +178,7 @@ export async function enrichLead(input) {
     email_source: emailSource, email_method: emailMethod,
     personal_email: em.email ? isPersonalDomain(em.email) : false,
     source: source || null,
+    ...(source_list ? { source_list } : {}),
     last_comment: comment_text || null, last_engagement_at: now, updated_at: now,
   };
 

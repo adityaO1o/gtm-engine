@@ -9,7 +9,7 @@ const cap = (x) => (x ? x[0].toUpperCase() + x.slice(1) : "");
 
 let VIEW = "overview", CAMPAIGNS = [], BAL = {}, STATS = {};
 let SIZE = 50, PAGE = 0;
-let F = { status: "", email: "", cat: "", campaign: "", q: "", sort: "score", recovered: "", dnc: "" };
+let F = { status: "", email: "", cat: "", campaign: "", q: "", sort: "score", recovered: "", dnc: "", source: "", list: "" };
 let SELECTED = new Set();
 let ACTIVE_CAMPAIGN = null;
 let CARD_METRICS = ["total", "verified", "hot", "noEmail"];
@@ -117,12 +117,19 @@ function tableHTML(rows) {
     <td>${statusBadge(x.status)}</td><td class="score">${x.score ?? 0}</td>
     <td>${emailPill(x.email_status)}${x.recovered ? `<span class="tag-rec">${ic("check")}rec</span>` : ""}${x.personal_email ? '<span class="tag-pers">personal</span>' : ""}${x.dnc ? `<span class="tag-dnc" title="On SendKit DNC — will never be emailed">DNC</span>` : ""}</td>
     <td>${methodLabel(x.email_method)}</td><td>${verifiedCell(x)}</td>
+    <td>${sourceCell(x)}</td>
     <td><div class="cats">${(x.categories || []).map((c) => `<span class="cat">${c}</span>`).join("")}</div></td>
     <td class="tstamp">${x.times_seen || 1}×</td><td class="tstamp">${ts(x.last_engagement_at)}</td></tr>`;
   return `<div class="tablewrap"><table><thead><tr>
     <th class="chkcol"><input type="checkbox" class="chk" data-selall></th><th>Person</th><th>Company</th><th>Status</th><th>Score</th>
-    <th>Email</th><th>Found by</th><th>Verified</th><th>Categories</th><th>Seen</th><th>Last seen</th>
+    <th>Email</th><th>Found by</th><th>Verified</th><th>Source</th><th>Categories</th><th>Seen</th><th>Last seen</th>
   </tr></thead><tbody>${rows.map(r).join("")}</tbody></table></div>`;
+}
+// Where this lead came from: a CSV list / influencer / hub / keyword search.
+function sourceCell(x) {
+  if (x.source === "influencer") return `<span class="srcpill src-inf" title="Influencer post${x.source_list ? " · " + esc(x.source_list) : ""}">${x.source_list ? esc(x.source_list) : "Influencer"}</span>`;
+  if (x.source === "hub") return `<span class="srcpill src-hub" title="Hub: ${esc(x.source_list || "")}">Hub${x.source_list ? " · " + esc(x.source_list) : ""}</span>`;
+  return `<span class="srcpill src-kw">Keyword</span>`;
 }
 function pagerHTML(count) {
   const from = count ? PAGE * SIZE + 1 : 0, to = Math.min(count, (PAGE + 1) * SIZE), last = Math.max(0, Math.ceil(count / SIZE) - 1);
@@ -139,6 +146,7 @@ function toolbarHTML(withCampaign, count = 0) {
     <select data-f="status">${opt("", "All status", F.status)}${opt("hot", "Hot", F.status)}${opt("warm", "Warm", F.status)}${opt("cold", "Cold", F.status)}</select>
     <select data-f="email">${opt("", "All emails", F.email)}${opt("verified", "Verified", F.email)}${opt("no-email", "No email", F.email)}${opt("review", "Review", F.email)}${opt("unverified", "Unverified", F.email)}${opt("competitor", "Competitor", F.email)}${opt("discarded", "Discarded", F.email)}</select>
     <select data-f="cat">${opt("", "All categories", F.cat)}${["infra-competitor", "deliverability", "infra", "sequencer", "gtm-eng", "data-tools", "cold-email"].map((c) => opt(c, c, F.cat)).join("")}</select>
+    <select data-f="source">${opt("", "All sources", F.source)}${opt("keyword", "Keyword", F.source)}${opt("influencer", "Influencer/CSV", F.source)}${opt("hub", "Hub", F.source)}</select>
     <select data-f="recovered">${opt("", "All", F.recovered)}${opt("1", "Recovered", F.recovered)}</select>
     <select data-f="dnc">${opt("", "All (DNC)", F.dnc)}${opt("1", "DNC only", F.dnc)}</select>
     <select data-f="sort">${opt("score", "Sort · score", F.sort)}${opt("recent", "Sort · recent", F.sort)}</select>
@@ -152,7 +160,7 @@ function toolbarHTML(withCampaign, count = 0) {
 }
 function leadQuery(extra) {
   const p = new URLSearchParams(), f = { ...F, ...extra };
-  ["status", "campaign", "cat", "sort", "q", "recovered", "dnc"].forEach((k) => { if (f[k]) p.set(k === "cat" ? "category" : k, f[k]); });
+  ["status", "campaign", "cat", "sort", "q", "recovered", "dnc", "source", "list"].forEach((k) => { if (f[k]) p.set(k === "cat" ? "category" : k, f[k]); });
   if (f.email) p.set("email_status", f.email);
   p.set("limit", SIZE); p.set("skip", PAGE * SIZE);
   return p;
