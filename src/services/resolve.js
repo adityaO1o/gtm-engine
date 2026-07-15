@@ -65,12 +65,32 @@ function queriesFor(name, company) {
   return q;
 }
 
-// From a list of {url,title,description}, pick the best LinkedIn /in/ profile for this person.
+// Pull the company out of a LinkedIn SERP result. Titles/snippets read like
+// "Jane Doe - VP Marketing at Acme Corp | LinkedIn" — the company is right there, which lets us
+// find a domain (and an email) even when the person's own headline has no "at Company".
+function companyFromHit(title = "", description = "") {
+  for (const s of [title, description]) {
+    const m = String(s || "").replace(/\s*\|\s*LinkedIn.*$/i, "")
+      .match(/(?:\bat\b|@)\s+([A-Z][\w&.,'’\- ]{1,45})/);
+    if (m) {
+      const co = m[1].split(/[|·•]|\s[-–]\s/)[0].trim().replace(/[.,]+$/, "");
+      if (co.length >= 2 && !/^linkedin$/i.test(co)) return co;
+    }
+  }
+  return null;
+}
+
+// From a list of {url,title,description}, pick the best LinkedIn /in/ profile for this person,
+// and return its company if the snippet exposes one. -> { url, company } | null
 function bestHit(name, rows) {
   const hits = (rows || []).filter((r) => /linkedin\.com\/in\//i.test(r.url || ""));
   if (!hits.length) return null;
   const good = hits.filter((r) => matchesPerson(name, `${r.title} ${r.url} ${r.description}`));
-  return pickVanity((good.length ? good : hits).map((r) => r.url));
+  const pool = good.length ? good : hits;
+  const url = pickVanity(pool.map((r) => r.url));
+  if (!url) return null;
+  const chosen = pool.find((r) => (r.url || "").includes(url.split("/in/")[1])) || pool[0];
+  return { url, company: companyFromHit(chosen.title, chosen.description) };
 }
 
 // ── stats (surfaced on the dashboard so you can see which tier is doing the work) ────────────
@@ -219,24 +239,26 @@ async function resolveViaProxies({ name, company }) {
     const engine = ENGINES[i % ENGINES.length];
     try {
       const hit = await attempt(engine, query, UAS[i % UAS.length]);
-      if (hit) { log.info("resolved vanity (proxy)", { name, url: hit, engine: engine.name }); return hit; }
+      if (hit) { log.info("resolved vanity (proxy)", { name, url: hit, engine: engine.name }); return { url: hit, company: null }; }
     } catch { /* proxy/engine dead — rotate */ }
   }
   return null;
 }
 
-// ── public: Jina -> Serper -> proxies ────────────────────────────────────────
+// ── public: Jina -> Serper -> proxies. Returns { url, company } | null ────────
+// company is a bonus the SERP tiers can expose from the result snippet (proxies can't); the
+// caller uses it to find a domain when the person's own headline had no company.
 export async function resolveVanity({ name, company }) {
   if (!name) return null;
 
   try {
     const hit = await resolveViaJina({ name, company });
-    if (hit) { stats.jina++; log.info("resolved vanity (jina)", { name, url: hit }); return hit; }
+    if (hit) { stats.jina++; log.info("resolved vanity (jina)", { name, url: hit.url, company: hit.company }); return hit; }
   } catch (e) { log.warn("jina resolve threw", { err: e.message }); }
 
   try {
     const hit = await resolveViaSerper({ name, company });
-    if (hit) { stats.serper++; log.info("resolved vanity (serper)", { name, url: hit }); return hit; }
+    if (hit) { stats.serper++; log.info("resolved vanity (serper)", { name, url: hit.url, company: hit.company }); return hit; }
   } catch (e) { log.warn("serper resolve threw", { err: e.message }); }
 
   const hit = await resolveViaProxies({ name, company });

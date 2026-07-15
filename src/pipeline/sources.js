@@ -66,6 +66,37 @@ async function processPost(postUrl, text, sourceType, sourceList) {
   return "done";
 }
 
+// Scrape ONE specific post's engagers (all pages) into a chosen campaign — for a high-value
+// post you want fully harvested (e.g. a 5k-impression Instantly post -> Instantly campaign).
+let scrapeOneRunning = false;
+let scrapeOneStatus = { running: false, postUrl: "", campaign: "", engagers: 0, sent: 0, startedAt: null, finishedAt: null };
+export function scrapePostStatus() { return scrapeOneStatus; }
+
+export async function scrapeOnePost({ postUrl, campaignKey }) {
+  const { campaignByKey } = await import("../services/campaigns.js");
+  const camp = campaignByKey(campaignKey);
+  if (!camp || !postUrl) return { ok: false, error: "postUrl and a valid campaign required" };
+  if (scrapeOneRunning) return { ok: false, error: "already running", ...scrapeOneStatus };
+  scrapeOneRunning = true;
+  scrapeOneStatus = { running: true, postUrl, campaign: camp.label, engagers: 0, sent: 0, startedAt: new Date(), finishedAt: null };
+  (async () => {
+    try {
+      const engagers = [...(await getPostEngagements(postUrl)), ...(await getPostComments(postUrl))];
+      for (const e of engagers) {
+        try {
+          const r = await enrichLead({ ...e, campaign: camp.key, campaign_id: camp.sendkitId, category: camp.category, source: "influencer", source_list: "manual-post", post_url: postUrl });
+          scrapeOneStatus.engagers++;
+          if (r?.outcome === "sent") scrapeOneStatus.sent++;
+        } catch (err) { log.warn("scrapeOnePost enrich failed", { err: err.message }); }
+      }
+    } catch (e) { log.error("scrapeOnePost error", { err: e.message }); }
+    scrapeOneStatus = { ...scrapeOneStatus, running: false, finishedAt: new Date() };
+    scrapeOneRunning = false;
+    log.info("scrapeOnePost done", { postUrl, engagers: scrapeOneStatus.engagers, sent: scrapeOneStatus.sent });
+  })();
+  return { ok: true, started: true };
+}
+
 export async function runSources() {
   if (running) return { alreadyRunning: true, ...status };
   running = true;

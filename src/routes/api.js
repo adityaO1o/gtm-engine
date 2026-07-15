@@ -3,7 +3,8 @@
 import { Router } from "express";
 import { ObjectId } from "mongodb";
 import { leads, engagements, usage, sources, reprocessRuns } from "../db/mongo.js";
-import { runSources, sourcesStatus } from "../pipeline/sources.js";
+import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus } from "../pipeline/sources.js";
+import { rerouteSourceLeads, rerouteStatus } from "../pipeline/reroute.js";
 import { trigifyBalance, setWorkflowEnabled } from "../services/trigify.js";
 import { prospeoBalance, verifyEmail } from "../services/prospeo.js";
 import { jinaBalance } from "../services/jina.js";
@@ -415,6 +416,24 @@ apiRouter.post("/sources/run", (_req, res) => {
   res.json({ started: true });
 });
 apiRouter.get("/sources/status", (_req, res) => res.json(sourcesStatus()));
+
+// POST /api/sources/reroute — fix source leads that landed in the empty Influencer/Hub campaigns
+apiRouter.post("/sources/reroute", (_req, res) => {
+  const st = rerouteStatus();
+  if (st.running) return res.json({ started: false, ...st });
+  rerouteSourceLeads().catch((e) => console.error("reroute error", e.message));
+  res.json({ started: true });
+});
+apiRouter.get("/sources/reroute/status", (_req, res) => res.json(rerouteStatus()));
+
+// POST /api/sources/scrape-post { postUrl, campaign } — harvest one specific post into a campaign
+apiRouter.post("/sources/scrape-post", async (req, res) => {
+  const postUrl = S(req.body?.postUrl).trim();
+  const campaign = S(req.body?.campaign).trim();
+  const r = await scrapeOnePost({ postUrl, campaignKey: campaign });
+  res.json(r);
+});
+apiRouter.get("/sources/scrape-post/status", (_req, res) => res.json(scrapePostStatus()));
 
 // POST /api/reset — wipe all leads + engagements (guarded by the ingest token). For clearing test data.
 apiRouter.post("/reset", async (req, res) => {

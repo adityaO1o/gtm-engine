@@ -51,7 +51,7 @@ async function recordEngagement(key, { name, headline, category, engagement_type
 export async function findEmailWaterfall({ name = "", headline = "", linkedin_url = "" }) {
   let prospeoCalls = 0, emailSource = null, emailMethod = null, preVerified = false;
   let vanity = linkedin_url;
-  const company = companyFromHeadline(headline);
+  let company = companyFromHeadline(headline);
   const [firstName, ...restName] = name.split(" ");
   const lastName = restName.join(" ");
   let domain = company ? await companyDomain(company) : null;
@@ -62,10 +62,21 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
     const f = await findEmailByNameDomain(firstName, lastName, domain);
     if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:name+domain"; preVerified = f.verified; }
   }
-  // resolve liker URN -> vanity only when a url-based lookup is still needed
+  // resolve liker URN -> vanity. The SERP tiers also hand back the person's COMPANY from the
+  // result snippet — so if the headline had no company, we recover one here and retry the
+  // (highest-hit-rate) name+domain path. This is how we squeeze emails out of the ~3k leads
+  // whose headline was just "Founder | Helping SaaS scale" with no employer.
   if (!em.found && isUrn(linkedin_url)) {
     const resolved = await resolveVanity({ name, company });
-    if (resolved) vanity = resolved;
+    if (resolved?.url) vanity = resolved.url;
+    if (!company && resolved?.company) {
+      company = resolved.company;
+      domain = await companyDomain(company);
+      if (domain && firstName && lastName) {
+        const f = await findEmailByNameDomain(firstName, lastName, domain);
+        if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:name+domain"; preVerified = f.verified; }
+      }
+    }
   }
   // (b) Enrich linkedin-to-email by url
   if (!em.found && vanity && !isUrn(vanity)) {
