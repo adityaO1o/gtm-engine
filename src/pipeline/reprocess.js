@@ -37,7 +37,7 @@ const tagsFor = (d) => [
 async function reprocessOne(d) {
   const hadUrn = isUrn(d.linkedin_url || "");
   const company = companyFromHeadline(d.headline || "");
-  const w = await findEmailWaterfall({ name: d.name, headline: d.headline, linkedin_url: d.linkedin_url });
+  const w = await findEmailWaterfall({ name: d.name, headline: d.headline, linkedin_url: d.linkedin_url, usePaidProfile: true });
   const { em, emailSource, emailMethod, preVerified } = w;
   const campaign = (d.campaigns || [])[0] || "";
   await bumpUsage(campaign, { prospeo_calls: w.prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });

@@ -50,7 +50,11 @@ async function recordEngagement(key, { name, headline, category, engagement_type
 }
 
 // ── Email FIND waterfall (Enrich-first; Prospeo last). Reused by /enrich and /reprocess.
-export async function findEmailWaterfall({ name = "", headline = "", linkedin_url = "" }) {
+// usePaidProfile: whether the paid LinkedIn profile API (get-personal-profile, ~1 credit/call)
+// may run as a last-resort company getter. OFF on the live /enrich firehose (thousands of
+// engagers/day would drain the 500-credit plan in an hour); ON for the user-triggered hand-off
+// retry, which is bounded and deliberate.
+export async function findEmailWaterfall({ name = "", headline = "", linkedin_url = "", usePaidProfile = false }) {
   let prospeoCalls = 0, emailSource = null, emailMethod = null, preVerified = false;
   let vanity = linkedin_url;
   let company = companyFromHeadline(headline);
@@ -58,53 +62,35 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
   const lastName = restName.join(" ");
   let domain = company ? await companyDomain(company) : null;
   let em = { found: false };
+  const paidOn = usePaidProfile && !!config.linkedinApiKey;
+
+  const tryNameDomain = async (method) => {
+    if (em.found || !domain || !firstName || !lastName) return;
+    const f = await findEmailByNameDomain(firstName, lastName, domain);
+    if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = method; preVerified = f.verified; }
+  };
 
   // (a) Enrich email-finder by name + domain — no url needed, so even unresolved likers get covered
-  if (domain && firstName && lastName) {
-    const f = await findEmailByNameDomain(firstName, lastName, domain);
-    if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:name+domain"; preVerified = f.verified; }
-  }
-  // (a1) URN + LinkedIn API configured? Feed the obfuscated liker URN STRAIGHT to the profile
-  // API — it accepts URN format — so we get the person's real vanity URL + CURRENT COMPANY +
-  // DOMAIN in one call and skip the whole (slow, SERP-credit-burning) resolve step. This is the
-  // strongest path for likers: URN -> company+domain -> name+domain email.
-  if (!em.found && isUrn(linkedin_url) && config.linkedinApiKey) {
-    const pc = await profileCompany(linkedin_url);
-    if (pc?.vanity) vanity = pc.vanity;
-    if (pc?.company && !company) company = pc.company;
-    if (pc?.domain && !domain) domain = pc.domain;
-    else if (company && !domain) domain = await companyDomain(company);
-    if (!em.found && domain && firstName && lastName) {
-      const f = await findEmailByNameDomain(firstName, lastName, domain);
-      if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:linkedin-api"; preVerified = f.verified; }
-    }
-  }
-  // resolve liker URN -> vanity (free tiers), when the LinkedIn API didn't already give us one.
-  // The SERP tiers also hand back the person's COMPANY from the result snippet — if the headline
-  // had no company we recover one here and retry name+domain.
+  await tryNameDomain("enrich:name+domain");
+
+  // resolve liker URN -> vanity (FREE tiers first: Jina/Serper/proxy). The SERP tiers also hand
+  // back the person's COMPANY from the result snippet — if the headline had none, recover it here.
   if (!em.found && isUrn(vanity)) {
     const resolved = await resolveVanity({ name, company });
     if (resolved?.url) vanity = resolved.url;
-    if (!company && resolved?.company) {
-      company = resolved.company;
-      domain = await companyDomain(company);
-      if (domain && firstName && lastName) {
-        const f = await findEmailByNameDomain(firstName, lastName, domain);
-        if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:name+domain"; preVerified = f.verified; }
-      }
-    }
+    if (!company && resolved?.company) { company = resolved.company; domain = await companyDomain(company); await tryNameDomain("enrich:name+domain"); }
   }
-  // (a2) Have a real profile URL but STILL no company? Last-resort profile lookup (also covers
-  // commenters, who arrive with a vanity URL and never hit the URN path above).
-  if (!em.found && !domain && vanity && !isUrn(vanity) && config.linkedinApiKey) {
-    const pc = await profileCompany(vanity);
+
+  // (a2) LAST-RESORT company getter (PAID, retry-only): still no company/domain but we have a
+  // profile reference. get-personal-profile accepts a vanity URL OR the raw URN, so it also
+  // resolves an unresolved liker. Runs at most once per lead and only when nothing free worked.
+  if (!em.found && !domain && paidOn && (vanity && !isUrn(vanity) || isUrn(linkedin_url))) {
+    const pc = await profileCompany(!isUrn(vanity) ? vanity : linkedin_url);
     if (pc) {
-      if (!company && pc.company) company = pc.company;
-      domain = pc.domain || (pc.company ? await companyDomain(pc.company) : null);
-      if (domain && firstName && lastName) {
-        const f = await findEmailByNameDomain(firstName, lastName, domain);
-        if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:linkedin-api"; preVerified = f.verified; }
-      }
+      if (pc.vanity) vanity = pc.vanity;
+      if (pc.company && !company) company = pc.company;
+      domain = pc.domain || (company ? await companyDomain(company) : null);
+      await tryNameDomain("enrich:linkedin-api");
     }
   }
   // (b) Enrich linkedin-to-email by url

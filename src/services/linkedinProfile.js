@@ -14,6 +14,17 @@ let outOfQuota = false; // 429/402/403 -> stop calling for the rest of the run
 const stats = { calls: 0, hits: 0, quota: 0 };
 export function linkedinProfileStats() { return { ...stats, outOfQuota }; }
 
+// Shared rate limiter — the Basic plan allows 20 req/min, but a hand-off retry runs many workers
+// concurrently. Space calls ~3.3s apart (≈18/min) across all of them so we never trip a 429.
+const MIN_GAP_MS = 3300;
+let nextSlot = 0;
+async function slot() {
+  const now = Date.now();
+  const wait = Math.max(0, nextSlot - now);
+  nextSlot = Math.max(now, nextSlot) + MIN_GAP_MS;
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+}
+
 // Confirmed shape (freshdata web-scraping-api2 /get-personal-profile): the person's current
 // employer + domain sit at data.company / data.company_domain. We still check a few aliases in
 // case the provider tweaks field names.
@@ -46,6 +57,7 @@ function pickName(d) { return clean2(d?.full_name) || [clean2(d?.first_name), cl
 export async function profileCompany(linkedinUrlOrUrn) {
   if (!config.linkedinApiKey || outOfQuota || !linkedinUrlOrUrn) return null;
   try {
+    await slot();
     stats.calls++;
     const r = await axios.get(`https://${config.linkedinApiHost}/get-personal-profile`, {
       params: { linkedin_url: linkedinUrlOrUrn },
