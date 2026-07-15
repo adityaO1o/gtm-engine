@@ -37,7 +37,7 @@ export const config = {
 
   // RapidAPI LinkedIn profile lookup (last-resort company/domain getter). Empty = skip the tier.
   linkedinApiKey: process.env.LINKEDIN_API_KEY || "",
-  linkedinApiHost: process.env.LINKEDIN_API_HOST || "fresh-linkedin-profile-data.p.rapidapi.com",
+  linkedinApiHost: process.env.LINKEDIN_API_HOST || "web-scraping-api2.p.rapidapi.com",
 
   sendkit: {
     key: req("SENDKIT_KEY"),
