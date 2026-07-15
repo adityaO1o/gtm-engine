@@ -14,25 +14,15 @@ let outOfQuota = false; // 429/402/403 -> stop calling for the rest of the run
 const stats = { calls: 0, hits: 0, quota: 0 };
 export function linkedinProfileStats() { return { ...stats, outOfQuota }; }
 
-// The exact JSON shape varies by provider, so pull company + domain from any of the common
-// field names / nesting these APIs use.
+// Confirmed shape (freshdata web-scraping-api2 /get-personal-profile): the person's current
+// employer + domain sit at data.company / data.company_domain. We still check a few aliases in
+// case the provider tweaks field names.
+const clean = (v) => (typeof v === "string" && v.trim().length > 1 ? v.trim() : null);
 function pickCompany(d) {
-  const cands = [
-    d?.company, d?.company_name, d?.current_company, d?.current_company_name,
-    d?.experiences?.[0]?.company, d?.experience?.[0]?.company,
-    d?.data?.company, d?.data?.company_name, d?.position, d?.occupation,
-    d?.current_company?.name, d?.company?.name,
-  ];
-  const c = cands.find((x) => typeof x === "string" && x.trim().length > 1);
-  return c ? c.trim() : null;
+  return clean(d?.company) || clean(d?.company_name) || clean(d?.current_company) || clean(d?.current_company?.name) || null;
 }
 function pickDomain(d) {
-  const cands = [
-    d?.company_domain, d?.company_website, d?.website, d?.current_company?.website,
-    d?.company?.domain, d?.company?.website, d?.data?.company_domain,
-    d?.experiences?.[0]?.company_domain,
-  ];
-  for (const v of cands) {
+  for (const v of [d?.company_domain, d?.company_website, d?.website, d?.company?.domain]) {
     if (typeof v === "string" && v.includes(".")) {
       const m = v.replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[/?#]/)[0];
       if (/\.[a-z]{2,}$/i.test(m)) return m.toLowerCase();
@@ -46,7 +36,7 @@ export async function profileCompany(linkedinUrl) {
   if (!config.linkedinApiKey || outOfQuota || !linkedinUrl) return null;
   try {
     stats.calls++;
-    const r = await axios.get(`https://${config.linkedinApiHost}/get-linkedin-profile`, {
+    const r = await axios.get(`https://${config.linkedinApiHost}/get-personal-profile`, {
       params: { linkedin_url: linkedinUrl },
       headers: { "x-rapidapi-host": config.linkedinApiHost, "x-rapidapi-key": config.linkedinApiKey },
       timeout: 25000, validateStatus: () => true,
