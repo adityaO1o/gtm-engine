@@ -46,6 +46,9 @@ export const config = {
   linkedinApiHost: process.env.LINKEDIN_API_HOST || "web-scraping-api2.p.rapidapi.com",
   // Post/engager scraping host — default FRESH so its $10/500 credits are drained first.
   scrapeApiHost: process.env.SCRAPE_API_HOST || "fresh-linkedin-profile-data.p.rapidapi.com",
+  // Spacing between scrape API calls (ms) — a shared limiter so we don't burst the plan's
+  // per-minute cap and trip 429s. 700ms ≈ 85/min (safe on Ultra); raise on smaller plans.
+  scrapeMinGapMs: parseInt(process.env.SCRAPE_MIN_GAP_MS || "700", 10),
 
   sendkit: {
     key: req("SENDKIT_KEY"),
