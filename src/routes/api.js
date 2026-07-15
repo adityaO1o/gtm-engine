@@ -303,8 +303,29 @@ apiRouter.get("/reprocess/count", async (req, res) => {
 
 // ── Sources (LinkedIn hubs + influencers) ──────────────────────────────
 apiRouter.get("/sources", async (_req, res) => {
-  const rows = await sources().find({}).sort({ addedAt: -1 }).toArray();
-  res.json({ sources: rows, status: sourcesStatus() });
+  // Only the hand-managed sources are returned in full (hubs + manual/harvested influencers).
+  // Imported CSV lists can be thousands of rows, so they come back as a per-list SUMMARY and
+  // the members are fetched on demand via /sources/list/:list.
+  const rows = await sources().find({ list: { $in: [null, ""] } }).sort({ addedAt: -1 }).toArray();
+  const agg = await sources().aggregate([
+    { $match: { list: { $nin: [null, ""] } } },
+    { $group: { _id: "$list", count: { $sum: 1 }, active: { $sum: { $cond: [{ $eq: ["$active", true] }, 1, 0] } }, ran: { $sum: { $cond: [{ $ifNull: ["$lastRun", false] }, 1, 0] } } } },
+    { $sort: { count: -1 } },
+  ]).toArray();
+  const lists = agg.map((a) => ({ list: a._id, count: a.count, active: a.active, ran: a.ran }));
+  res.json({ sources: rows, lists, status: sourcesStatus() });
+});
+
+// GET /api/sources/list/:list?skip=&limit= — members of one imported list (paginated)
+apiRouter.get("/sources/list/:list", async (req, res) => {
+  const list = decodeURIComponent(req.params.list);
+  const limit = Math.min(parseInt(req.query.limit || "100", 10), 500);
+  const skip = parseInt(req.query.skip || "0", 10);
+  const [rows, count] = await Promise.all([
+    sources().find({ list }).sort({ label: 1 }).skip(skip).limit(limit).toArray(),
+    sources().countDocuments({ list }),
+  ]);
+  res.json({ rows, count });
 });
 apiRouter.post("/sources", async (req, res) => {
   const type = req.body?.type === "hub" ? "hub" : "influencer";
@@ -320,6 +341,59 @@ apiRouter.post("/sources", async (req, res) => {
 apiRouter.delete("/sources/:id", async (req, res) => {
   try { await sources().deleteOne({ _id: new ObjectId(req.params.id) }); } catch { /* ignore bad id */ }
   res.json({ ok: true });
+});
+
+// POST /api/sources/import { list, items:[{url,label,title}] } — bulk import a CSV of influencers.
+// Imported profiles start PAUSED (active:false): scraping ~4.7k profiles' posts would blow the
+// Trigify budget many times over, so nothing is scraped until you enable a list. Grouped by
+// `list` (the CSV name) so the dashboard can show each CSV separately.
+const normProfile = (u) => {
+  u = S(u).trim().replace(/\?.*$/, "").replace(/\/$/, "");
+  if (!u) return "";
+  if (!/linkedin\.com/i.test(u)) u = "https://www.linkedin.com/in/" + u.replace(/^@/, "");
+  return u.replace(/^http:/, "https:");
+};
+apiRouter.post("/sources/import", async (req, res) => {
+  const list = S(req.body?.list).trim().slice(0, 80);
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  if (!list || !items.length) return res.status(400).json({ ok: false, error: "list and items required" });
+
+  const seen = new Set();
+  const ops = [];
+  for (const it of items) {
+    const url = normProfile(it?.url);
+    if (!url || !/\/in\//.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    ops.push({
+      updateOne: {
+        filter: { url },
+        // never un-pause or relabel a source the user is already actively using
+        update: {
+          $set: { url, type: "influencer", list, label: S(it?.label).trim() || (url.split("/in/")[1] || ""), title: S(it?.title).trim() || null },
+          $setOnInsert: { active: false, addedAt: new Date() },
+        },
+        upsert: true,
+      },
+    });
+  }
+  if (!ops.length) return res.json({ ok: true, imported: 0, list });
+  const r = await sources().bulkWrite(ops, { ordered: false });
+  res.json({ ok: true, list, imported: ops.length, added: r.upsertedCount, updated: r.modifiedCount });
+});
+
+// POST /api/sources/list/:list/active { active } — enable/disable a whole imported list at once.
+apiRouter.post("/sources/list/:list/active", async (req, res) => {
+  const list = decodeURIComponent(req.params.list);
+  const active = !!req.body?.active;
+  const r = await sources().updateMany({ list }, { $set: { active } });
+  res.json({ ok: true, list, active, matched: r.matchedCount });
+});
+
+// DELETE /api/sources/list/:list — remove a whole imported list.
+apiRouter.delete("/sources/list/:list", async (req, res) => {
+  const list = decodeURIComponent(req.params.list);
+  const r = await sources().deleteMany({ list });
+  res.json({ ok: true, list, deleted: r.deletedCount });
 });
 apiRouter.post("/sources/run", (_req, res) => {
   const st = sourcesStatus();

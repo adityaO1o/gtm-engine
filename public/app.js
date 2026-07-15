@@ -342,11 +342,36 @@ function render() {
   else if (VIEW === "campaigns") ACTIVE_CAMPAIGN ? renderCampaignDetail(ACTIVE_CAMPAIGN) : renderCampaignList();
 }
 
-// ---------------- Sources (hubs + influencers) ----------------
+// ---------------- Sources (hubs + influencers + imported lists) ----------------
+let SRC_LIST = null;      // which imported list is expanded (null = overview)
+let SRC_LIST_PAGE = 0;
+
+// Drill-in view: one imported list's influencers.
+async function renderSourceList(list) {
+  const { rows, count } = await j(`/api/sources/list/${encodeURIComponent(list)}?skip=${SRC_LIST_PAGE * 100}&limit=100`);
+  const body = rows.map((s) => `<tr>
+    <td class="nm">${esc(s.label || "—")}${s.active ? '<span class="tag-harv">on</span>' : '<span class="tag-man">paused</span>'}</td>
+    <td><span class="trunc sm muted" title="${esc(s.title || "")}">${esc(s.title || "")}</span></td>
+    <td><span class="trunc mono muted" title="${esc(s.url)}">${esc(s.url)}</span></td>
+    <td class="num-c">${s.lastPosts != null ? num(s.lastPosts) : '<span class="muted">—</span>'}</td>
+    <td class="tstamp">${s.lastRun ? ts(s.lastRun) : "never"}</td>
+    <td><button class="btn btn-ghost btn-sm" data-delsrc="${s._id}" data-inlist="${esc(list)}">${ic("trash")}</button></td></tr>`).join("");
+  const from = count ? SRC_LIST_PAGE * 100 + 1 : 0, to = Math.min(count, (SRC_LIST_PAGE + 1) * 100), last = Math.max(0, Math.ceil(count / 100) - 1);
+  $("#v-sources").innerHTML = `
+    <div class="toolbar"><button class="btn btn-ghost btn-sm" data-srcback>${ic("back")}All sources</button>
+      <div class="grow"></div><span class="resn"><b>${num(count)}</b> influencers in “${esc(list)}”</span></div>
+    <div class="tablewrap"><table><thead><tr><th>Name</th><th>Title</th><th>Profile</th><th>Posts</th><th>Last run</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
+    <div class="pager"><span>${num(from)}–${num(to)} of ${num(count)}</span>
+      <button class="btn btn-ghost btn-sm" data-srcpg="prev" ${SRC_LIST_PAGE <= 0 ? "disabled" : ""}>Prev</button>
+      <button class="btn btn-ghost btn-sm" data-srcpg="next" ${SRC_LIST_PAGE >= last ? "disabled" : ""}>Next</button></div>`;
+}
+
 async function renderSources() {
+  if (SRC_LIST) return renderSourceList(SRC_LIST);
   const d = await j("/api/sources");
   const st = d.status || {};
-  $("#c-src") && ($("#c-src").textContent = (d.sources || []).length || "");
+  const listCount = (d.lists || []).reduce((a, l) => a + l.count, 0);
+  $("#c-src") && ($("#c-src").textContent = num(((d.sources || []).filter((s) => s.type === "influencer").length) + listCount));
   const srcRows = (type) => {
     const rows = (d.sources || []).filter((s) => s.type === type);
     if (!rows.length) return `<tr><td colspan="5" class="muted" style="padding:16px">None yet</td></tr>`;
@@ -369,6 +394,7 @@ async function renderSources() {
       <div class="grow"></div>
       <button class="btn btn-sm" data-runsrc ${st.running ? "disabled" : ""}>${ic("refresh")}${st.running ? "Running…" : "Run now"}</button></div>
     <div id="srcBox">${jobBox("sources", st)}</div>
+    ${listsHTML(d.lists || [])}
     <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s3);align-items:start">
       <div class="chartbox" style="min-width:0;overflow:hidden"><h4>Influencers</h4>
         <div class="toolbar" style="margin-bottom:var(--s3)"><input class="search" id="in-infl" placeholder="LinkedIn profile URL or handle" style="flex:1;min-width:0"><button class="btn btn-sm" data-addsrc="influencer">${ic("plus")}Add</button></div>
@@ -379,10 +405,34 @@ async function renderSources() {
     </div>`;
 }
 
+// Imported CSV lists — each shown separately, with enable/pause/view/delete. PAUSED by default
+// because scraping every profile's posts would blow the Trigify budget; you turn a list on when
+// you want it scraped (it then joins the daily run, capped per run).
+function listsHTML(lists) {
+  const rows = lists.map((l) => `<tr class="click" data-srcopen="${esc(l.list)}">
+    <td class="nm">${esc(l.list)}</td>
+    <td class="score">${num(l.count)}</td>
+    <td>${l.active ? `<span class="tag-harv">${num(l.active)} on</span>` : '<span class="tag-man">paused</span>'}</td>
+    <td class="muted">${l.ran ? num(l.ran) + " scraped" : "—"}</td>
+    <td><div class="rowact">
+      ${l.active
+        ? `<button class="btn btn-no btn-sm" data-listactive="0" data-list="${esc(l.list)}">${ic("pause")}Pause</button>`
+        : `<button class="btn btn-ok btn-sm" data-listactive="1" data-list="${esc(l.list)}" title="Enable scraping — uses Trigify credits">${ic("bolt")}Enable</button>`}
+      <button class="btn btn-ghost btn-sm" data-listdel="${esc(l.list)}">${ic("trash")}</button>
+    </div></td></tr>`).join("");
+  return `<div class="chartbox" style="margin-bottom:var(--s3)">
+    <div class="toolbar" style="margin-bottom:var(--s3)"><h4 style="margin:0">Imported lists</h4><div class="grow"></div>
+      <span class="muted" style="font-size:12px">Imported from CSV · <b>paused</b> until you enable them (enabling spends Trigify credits)</span></div>
+    ${lists.length
+      ? `<div class="tablewrap" style="border:none"><table><thead><tr><th>List</th><th>Influencers</th><th>Status</th><th>Progress</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : `<div class="muted" style="padding:14px">No imported lists yet.</div>`}
+    <div id="listMsg" class="muted" style="font-size:12px;margin-top:8px"></div></div>`;
+}
+
 // ---------------- events (CSP-safe delegation) ----------------
 document.addEventListener("click", async (e) => {
   if (!e.target.closest(".menu")) closeMenu();
-  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-addsrc],[data-delsrc],[data-runsrc],[data-decide],[data-selpage],[data-batchallbtn]");
+  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-addsrc],[data-delsrc],[data-runsrc],[data-decide],[data-selpage],[data-batchallbtn],[data-srcopen],[data-srcback],[data-srcpg],[data-listactive],[data-listdel]");
   if (!t) return;
   if (t.dataset.v) return show(t.dataset.v);
   if (t.hasAttribute("data-x")) return $("#drawer").classList.remove("open");
@@ -449,6 +499,22 @@ document.addEventListener("click", async (e) => {
   }
   if (t.dataset.delsrc) { await fetch("/api/sources/" + t.dataset.delsrc, { method: "DELETE" }); renderSources(); return; }
   if (t.hasAttribute("data-runsrc")) { await post("/api/sources/run", {}); return pollJobs(); }
+  // imported lists
+  if (t.dataset.srcopen) { SRC_LIST = t.dataset.srcopen; SRC_LIST_PAGE = 0; return renderSources(); }
+  if (t.hasAttribute("data-srcback")) { SRC_LIST = null; return renderSources(); }
+  if (t.dataset.srcpg) { SRC_LIST_PAGE += t.dataset.srcpg === "next" ? 1 : -1; if (SRC_LIST_PAGE < 0) SRC_LIST_PAGE = 0; return renderSources(); }
+  if (t.dataset.listactive !== undefined) {
+    const on = t.dataset.listactive === "1";
+    const m = $("#listMsg"); if (m) m.textContent = on ? "Enabling…" : "Pausing…";
+    const r = await post(`/api/sources/list/${encodeURIComponent(t.dataset.list)}/active`, { active: on });
+    if (m) m.textContent = `✓ ${on ? "Enabled" : "Paused"} “${t.dataset.list}” · ${num(r.matched)} influencers${on ? " — will scrape on the next run" : ""}`;
+    return renderSources();
+  }
+  if (t.dataset.listdel) {
+    if (!confirm(`Delete the whole list “${t.dataset.listdel}”? This removes those influencers from Sources (leads already collected stay).`)) return;
+    await fetch(`/api/sources/list/${encodeURIComponent(t.dataset.listdel)}`, { method: "DELETE" });
+    SRC_LIST = null; return renderSources();
+  }
 });
 document.addEventListener("change", (e) => {
   const t = e.target;
