@@ -306,10 +306,11 @@ apiRouter.get("/sources", async (_req, res) => {
   // Only the hand-managed sources are returned in full (hubs + manual/harvested influencers).
   // Imported CSV lists can be thousands of rows, so they come back as a per-list SUMMARY and
   // the members are fetched on demand via /sources/list/:list.
-  const rows = await sources().find({ list: { $in: [null, ""] } }).sort({ addedAt: -1 }).toArray();
+  const rows = await sources().find({ lists: { $in: [null, []] } }).sort({ addedAt: -1 }).toArray();
   const agg = await sources().aggregate([
-    { $match: { list: { $nin: [null, ""] } } },
-    { $group: { _id: "$list", count: { $sum: 1 }, active: { $sum: { $cond: [{ $eq: ["$active", true] }, 1, 0] } }, ran: { $sum: { $cond: [{ $ifNull: ["$lastRun", false] }, 1, 0] } } } },
+    { $match: { lists: { $nin: [null, []] } } },
+    { $unwind: "$lists" },
+    { $group: { _id: "$lists", count: { $sum: 1 }, active: { $sum: { $cond: [{ $eq: ["$active", true] }, 1, 0] } }, ran: { $sum: { $cond: [{ $ifNull: ["$lastRun", false] }, 1, 0] } } } },
     { $sort: { count: -1 } },
   ]).toArray();
   const lists = agg.map((a) => ({ list: a._id, count: a.count, active: a.active, ran: a.ran }));
@@ -322,8 +323,8 @@ apiRouter.get("/sources/list/:list", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || "100", 10), 500);
   const skip = parseInt(req.query.skip || "0", 10);
   const [rows, count] = await Promise.all([
-    sources().find({ list }).sort({ label: 1 }).skip(skip).limit(limit).toArray(),
-    sources().countDocuments({ list }),
+    sources().find({ lists: list }).sort({ label: 1 }).skip(skip).limit(limit).toArray(),
+    sources().countDocuments({ lists: list }),
   ]);
   res.json({ rows, count });
 });
@@ -367,10 +368,14 @@ apiRouter.post("/sources/import", async (req, res) => {
     ops.push({
       updateOne: {
         filter: { url },
-        // never un-pause or relabel a source the user is already actively using
+        // `lists` is an ARRAY: the same influencer can appear in several CSVs (cold-email people
+        // overlap a lot), and each list should show its full membership. $addToSet dedups.
+        // never un-pause a source the user is already actively using ($setOnInsert on active).
         update: {
-          $set: { url, type: "influencer", list, label: S(it?.label).trim() || (url.split("/in/")[1] || ""), title: S(it?.title).trim() || null },
+          $set: { url, type: "influencer", imported: true, label: S(it?.label).trim() || (url.split("/in/")[1] || ""), title: S(it?.title).trim() || null },
+          $addToSet: { lists: list },
           $setOnInsert: { active: false, addedAt: new Date() },
+          $unset: { list: "" }, // drop the old single-list field from the first import pass
         },
         upsert: true,
       },
@@ -385,15 +390,19 @@ apiRouter.post("/sources/import", async (req, res) => {
 apiRouter.post("/sources/list/:list/active", async (req, res) => {
   const list = decodeURIComponent(req.params.list);
   const active = !!req.body?.active;
-  const r = await sources().updateMany({ list }, { $set: { active } });
+  const r = await sources().updateMany({ lists: list }, { $set: { active } });
   res.json({ ok: true, list, active, matched: r.matchedCount });
 });
 
-// DELETE /api/sources/list/:list — remove a whole imported list.
+// DELETE /api/sources/list/:list — remove a list. A profile in several lists is kept (just
+// dropped from this one); a profile that was ONLY in this list is removed entirely.
 apiRouter.delete("/sources/list/:list", async (req, res) => {
   const list = decodeURIComponent(req.params.list);
-  const r = await sources().deleteMany({ list });
-  res.json({ ok: true, list, deleted: r.deletedCount });
+  await sources().updateMany({ lists: list }, { $pull: { lists: list } });
+  // only remove profiles that came from a CSV import and now belong to no list — never a
+  // manually-added or hub-harvested influencer.
+  const r = await sources().deleteMany({ lists: { $in: [null, []] }, imported: true });
+  res.json({ ok: true, list, removed: r.deletedCount });
 });
 apiRouter.post("/sources/run", (_req, res) => {
   const st = sourcesStatus();
