@@ -489,21 +489,23 @@ function scrapedPostsHTML(posts) {
 }
 
 // Live status of a "Scrape via post" run — phase, counts, and Pause / Resume controls.
-const SCR_PHASE = { scraping: "Scraping engagers", enriching: "Finding emails", done: "Done", paused: "Paused", stopped: "Stopped", error: "Error" };
+const SCR_PHASE = { working: "Scraping + finding emails", done: "Done", paused: "Paused", stopped: "Stopped", error: "Error" };
 function scrapePostBox(s) {
   if (!s || !s.postUrl || s.phase === "idle" || !s.phase) return "";
   const id = (s.postUrl.match(/activity[:-](\d+)/) || [])[1] || s.postUrl.slice(-24);
   const stat = (l, v, cls) => `<span class="scstat"><b class="${cls || ""}">${num(v)}</b>${l}</span>`;
   const icon = s.running ? "refresh" : s.phase === "paused" ? "pause" : s.phase === "done" ? "check" : "warn";
-  const pct = s.total ? Math.round((s.enriched / s.total) * 100) : 0;
-  const showBar = s.phase === "enriching" || s.phase === "paused";
+  // Progress against the post's EXPECTED engager count (stable denominator), else vs scraped-so-far.
+  const denom = s.expected || s.total || 0;
+  const pct = denom ? Math.min(100, Math.round((s.enriched / denom) * 100)) : 0;
+  const ofY = s.expected ? ` of ~${num(s.expected)}` : "";
   const ctrl = s.running
     ? `<button class="btn btn-ghost btn-sm" data-pausescrape>${ic("pause")}Pause</button>`
     : (s.phase !== "done" ? `<button class="btn btn-sm" data-resumescrape="${esc(s.postUrl)}">${ic("bolt")}Resume</button>` : "");
   return `<div class="jobbox${s.running ? " on" : ""}">
     <div class="jobh">${ic(icon)}<span><b>${esc(SCR_PHASE[s.phase] || s.phase)}</b> <span class="mono muted">activity:${esc(id)}</span>${s.campaign ? ` → <b>${esc(s.campaign)}</b>` : ""}</span></div>
-    <div class="scrow">${stat("engagers scraped", s.total)}${stat("processed", s.enriched)}${stat("verified &amp; sent", s.sent, "ok")}${showBar ? `<span class="scstat"><b>${pct}%</b>done</span>` : ""}${s.outOfCredits ? '<span class="scstat"><b style="color:var(--hot)">Fresh</b>out of credits</span>' : ""}</div>
-    ${showBar ? bar(pct, s.running) : ""}
+    <div class="scrow">${stat("engagers scraped", s.total)}${stat("processed", s.enriched)}${stat("verified &amp; sent", s.sent, "ok")}<span class="scstat"><b>${pct}%</b>done${esc(ofY)}</span>${s.outOfCredits ? '<span class="scstat"><b style="color:var(--hot)">Fresh</b>out of credits</span>' : ""}</div>
+    ${bar(pct, s.running)}
     ${ctrl ? `<div class="toolbar" style="margin-top:8px">${ctrl}</div>` : ""}
   </div>`;
 }

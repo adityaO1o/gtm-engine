@@ -453,6 +453,7 @@ apiRouter.get("/sources/scrape-post/status", async (_req, res) => {
     total: live ? mem.total : (doc.engager_total || 0),
     enriched: live ? mem.enriched : (doc.enriched_count || 0),
     sent: live ? mem.sent : (doc.sent || 0),
+    expected: (doc.expected_reactions || 0) + (doc.expected_comments || 0),
     paused: !live && (doc.paused || false), scrapeDone: !!doc.scrape_done, outOfCredits: doc.out_of_credits || false,
     rapid: rapidScrapeStats(),
   });

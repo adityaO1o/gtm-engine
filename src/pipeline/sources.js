@@ -93,25 +93,74 @@ export function pauseScrapePost() {
   return { paused: true, postUrl: scrapeCtl.postUrl };
 }
 
+const ENRICH_CONCURRENCY = 4; // per page — the provider rate-limiters cap the real API rate, so this never spikes
+
 const ekeyOf = (e) => (e.linkedin_url || e.name || "").toLowerCase();
+// Upsert a page's engagers into the queue; returns the ekeys seen (so we can enrich THIS page now).
 async function queueUpsert(postUrl, engagers) {
-  const ops = [];
+  const ops = [], ekeys = [];
   for (const e of engagers) {
     const ekey = ekeyOf(e);
     if (!ekey) continue;
+    ekeys.push(ekey);
     ops.push({ updateOne: { filter: { postUrl, ekey }, update: { $setOnInsert: {
       postUrl, ekey, name: e.name || "", linkedin_url: e.linkedin_url || "", headline: e.headline || "",
       engagement_type: e.engagement_type || "like", comment_text: e.comment_text || "", enriched: false, at: new Date(),
     } }, upsert: true } });
   }
   if (ops.length) await scrapeEngagers().bulkWrite(ops, { ordered: false }).catch((e) => log.warn("scrape queue upsert failed", { err: e.message }));
+  return ekeys;
 }
 const saveCp = (postUrl, cp) => scrapedPosts().updateOne({ postUrl }, { $set: { scrape_cp: cp } }).catch(() => {});
 
-// PHASE 1 — scrape into the queue, resuming from the saved checkpoint. -> "done" | "paused" | "stopped"
-async function scrapeToQueue(postUrl) {
+// Enrich a set of queued docs, small concurrency; each marked done as it finishes. Leads land here.
+async function enrichDocs(docs, camp, category, postUrl) {
+  let i = 0;
+  const worker = async () => {
+    while (i < docs.length && !scrapeCtl.paused) {
+      const e = docs[i++];
+      let outcome = null;
+      try {
+        const r = await enrichLead({ name: e.name, linkedin_url: e.linkedin_url, headline: e.headline, engagement_type: e.engagement_type, comment_text: e.comment_text, campaign: camp.key, campaign_id: camp.sendkitId, category, source: "influencer", source_list: "manual-post", post_url: postUrl });
+        outcome = r?.outcome || null;
+        if (outcome === "sent") scrapeOneStatus.sent++;
+      } catch (err) { outcome = "error"; log.warn("scrape enrich failed", { err: err.message }); }
+      await scrapeEngagers().updateOne({ _id: e._id }, { $set: { enriched: true, outcome, enriched_at: new Date() } });
+      scrapeOneStatus.enriched++;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(ENRICH_CONCURRENCY, docs.length || 1) }, worker));
+  await scrapedPosts().updateOne({ postUrl }, { $set: { enriched_count: scrapeOneStatus.enriched, sent: scrapeOneStatus.sent } });
+}
+
+// Enrich THIS page's engagers (the ones not already done). Called right after each page is scraped.
+async function enrichPage(postUrl, ekeys, camp, category) {
+  if (!ekeys.length) return;
+  const docs = await scrapeEngagers().find({ postUrl, ekey: { $in: ekeys }, enriched: { $ne: true } }).toArray();
+  if (docs.length) await enrichDocs(docs, camp, category, postUrl);
+}
+
+// Drain ALL still-pending queued engagers — used on resume to finish a half-processed page/queue.
+async function enrichPending(postUrl, camp, category) {
+  while (!scrapeCtl.paused) {
+    const docs = await scrapeEngagers().find({ postUrl, enriched: { $ne: true } }).limit(50).toArray();
+    if (!docs.length) break;
+    await enrichDocs(docs, camp, category, postUrl);
+    await meterFlush();
+  }
+}
+
+// INTERLEAVED scrape + enrich: each page is scraped, then its engagers are enriched immediately —
+// so leads flow from page 1 and the enrichment load is paced by scraping (no 5k-at-once spike).
+// Fully resumable (checkpoint + queue) and pausable. -> "done" | "paused" | "stopped"
+async function scrapeAndEnrich(postUrl, camp, category) {
   const urn = activityUrn(postUrl);
+  // On resume, first finish anything already scraped but not yet enriched.
+  await enrichPending(postUrl, camp, category);
+  if (scrapeCtl.paused) return "paused";
+
   const rec = (await scrapedPosts().findOne({ postUrl })) || {};
+  if (rec.scrape_done) return "done"; // everything scraped already; the drain above finished enrichment
   const cp = rec.scrape_cp || { typeIdx: 0, page: 1, token: null, commentsDone: false };
 
   for (let ti = cp.typeIdx; ti < REACTION_TYPES.length; ti++) {
@@ -121,11 +170,12 @@ async function scrapeToQueue(postUrl) {
       if (scrapeCtl.paused) { await saveCp(postUrl, { typeIdx: ti, page, token: null, commentsDone: false }); return "paused"; }
       const r = await reactionPage(urn, REACTION_TYPES[ti], page);
       if (r === null) { await saveCp(postUrl, { typeIdx: ti, page, token: null, commentsDone: false }); return "stopped"; }
-      await queueUpsert(postUrl, r.engagers);
+      const ekeys = await queueUpsert(postUrl, r.engagers);
+      scrapeOneStatus.total = await scrapeEngagers().countDocuments({ postUrl });
+      await enrichPage(postUrl, ekeys, camp, category);        // enrich THIS page now (interleaved)
+      await saveCp(postUrl, { typeIdx: ti, page: page + 1, token: null, commentsDone: false });
       collected += r.count;
       if (typeof r.total === "number") total = r.total;
-      await saveCp(postUrl, { typeIdx: ti, page: page + 1, token: null, commentsDone: false });
-      scrapeOneStatus.total = await scrapeEngagers().countDocuments({ postUrl });
       if (!r.count || collected >= total) break;
     }
   }
@@ -136,36 +186,15 @@ async function scrapeToQueue(postUrl) {
       if (scrapeCtl.paused) { await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: false }); return "paused"; }
       const r = await commentPage(urn, token);
       if (r === null) { await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: false }); return "stopped"; }
-      await queueUpsert(postUrl, r.engagers);
+      const ekeys = await queueUpsert(postUrl, r.engagers);
+      scrapeOneStatus.total = await scrapeEngagers().countDocuments({ postUrl });
+      await enrichPage(postUrl, ekeys, camp, category);
       token = r.token;
       await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: !token || !r.count });
-      scrapeOneStatus.total = await scrapeEngagers().countDocuments({ postUrl });
       if (!token || !r.count) break;
     }
   }
   return "done";
-}
-
-// PHASE 2 — drain the queue through enrichLead. Incremental + resumable (only enriched:false) + pausable.
-async function enrichFromQueue(postUrl, camp, category) {
-  while (true) {
-    if (scrapeCtl.paused) return "paused";
-    const batch = await scrapeEngagers().find({ postUrl, enriched: { $ne: true } }).limit(25).toArray();
-    if (!batch.length) return "done";
-    for (const e of batch) {
-      if (scrapeCtl.paused) return "paused";
-      let outcome = null;
-      try {
-        const r = await enrichLead({ name: e.name, linkedin_url: e.linkedin_url, headline: e.headline, engagement_type: e.engagement_type, comment_text: e.comment_text, campaign: camp.key, campaign_id: camp.sendkitId, category, source: "influencer", source_list: "manual-post", post_url: postUrl });
-        outcome = r?.outcome || null;
-        if (outcome === "sent") scrapeOneStatus.sent++;
-      } catch (err) { outcome = "error"; log.warn("scrape enrich failed", { err: err.message }); }
-      await scrapeEngagers().updateOne({ _id: e._id }, { $set: { enriched: true, outcome, enriched_at: new Date() } });
-      scrapeOneStatus.enriched++;
-    }
-    await scrapedPosts().updateOne({ postUrl }, { $set: { enriched_count: scrapeOneStatus.enriched, sent: scrapeOneStatus.sent } });
-    await meterFlush();
-  }
 }
 
 async function finalizeScrape(postUrl, phase) {
@@ -199,13 +228,13 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
 
       const enrichedSoFar = await scrapeEngagers().countDocuments({ postUrl, enriched: true });
       scrapeOneStatus = {
-        running: true, phase: rec.scrape_done ? "enriching" : "scraping", postUrl, campaign: camp.label,
+        running: true, phase: "working", postUrl, campaign: camp.label,
         total: await scrapeEngagers().countDocuments({ postUrl }), enriched: enrichedSoFar, sent: rec.sent || 0,
         paused: false, outOfCredits: false, startedAt: new Date(), finishedAt: null,
       };
       await scrapedPosts().updateOne({ postUrl }, { $set: {
         postUrl, activityId: activityUrn(postUrl), campaign: camp.label, campaign_key: camp.key, category,
-        running: true, paused: false, phase: scrapeOneStatus.phase, startedAt: rec.startedAt || new Date(),
+        running: true, paused: false, phase: "working", startedAt: rec.startedAt || new Date(),
       }, $unset: { backfilled: "", finishedAt: "" } }, { upsert: true });
 
       // title/expected counts (once)
@@ -216,19 +245,11 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
         scrapedPosts().updateOne({ postUrl }, { $set: set }).catch(() => {});
       }).catch(() => {});
 
-      // PHASE 1 — scrape into the queue (skip if already fully scraped)
-      if (!rec.scrape_done) {
-        const res = await scrapeToQueue(postUrl);
-        scrapeOneStatus.outOfCredits = rapidScrapeOutOfCredits();
-        if (res !== "done") return await finalizeScrape(postUrl, res === "paused" ? "paused" : "stopped");
-        await scrapedPosts().updateOne({ postUrl }, { $set: { scrape_done: true, engager_total: await scrapeEngagers().countDocuments({ postUrl }) } });
-      }
-
-      // PHASE 2 — enrich the queue
-      scrapeOneStatus.phase = "enriching";
-      await scrapedPosts().updateOne({ postUrl }, { $set: { phase: "enriching" } });
-      const res2 = await enrichFromQueue(postUrl, camp, category);
-      return await finalizeScrape(postUrl, res2 === "paused" ? "paused" : "done");
+      // INTERLEAVED: scrape a page -> enrich that page -> next page. Leads flow from the start.
+      const res = await scrapeAndEnrich(postUrl, camp, category);
+      scrapeOneStatus.outOfCredits = rapidScrapeOutOfCredits();
+      if (res === "done") await scrapedPosts().updateOne({ postUrl }, { $set: { scrape_done: true, engager_total: await scrapeEngagers().countDocuments({ postUrl }) } });
+      return await finalizeScrape(postUrl, res === "paused" ? "paused" : res === "stopped" ? "stopped" : "done");
     } catch (e) {
       log.error("scrapeOnePost error", { err: e.message });
       return await finalizeScrape(postUrl, "error");
