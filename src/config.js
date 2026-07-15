@@ -32,6 +32,8 @@ export const config = {
   // Jina SERP (s.jina.ai) — primary resolver for obfuscated liker URNs. Empty = skip straight
   // to the proxy engines, so a missing key degrades gracefully instead of breaking.
   jinaKey: process.env.JINA_KEY || "",
+  // Serper.dev SERP keys (comma-separated), used after Jina runs out. 1 credit per query.
+  serperKeys: (process.env.SERPER_KEYS || "").split(",").map((s) => s.trim()).filter(Boolean),
 
   sendkit: {
     key: req("SENDKIT_KEY"),

@@ -1,20 +1,18 @@
 // Resolve a LinkedIn engager to a usable vanity URL.
 //
-// Likers come back from the scraper with an OBFUSCATED URN url:
-//   https://www.linkedin.com/in/ACoAAD-xehoBx5E5fNGslIkeVhcIM00znK6taKo
-// Prospeo/Enrich reject those. Commenters already have a real vanity url and skip this.
+// Likers arrive with an OBFUSCATED URN (/in/ACoAA...) that no email provider accepts, so we
+// have to turn it into a real vanity URL before we can look up an email. This is the single
+// slowest step in the pipeline and it gates the hand-off retry.
 //
-// TWO TIERS:
-//  1. Jina SERP (s.jina.ai) — a real search API. Fast, reliable, and it hands back the result
-//     TITLE, so we can check the profile actually belongs to this person before we go and buy
-//     their email. Costs ~10k tokens per query, so the quota is finite.
-//  2. Free engines (Brave / DDG Lite / Bing) through the rotating residential proxies. They
-//     bot-detect our proxy IPs PER REQUEST — an IP is "trusted" or "flagged" and it flips each
-//     time — so we rotate BOTH engine and proxy every attempt. ~80% hit rate on its own.
+// FOUR TIERS, each used until its quota runs out, then the next takes over:
+//   1. Jina SERP   (s.jina.ai)          ~1,000 lookups   (~10k tokens each)
+//   2. Serper.dev  (google.serper.dev)  ~2,500 per key × N keys   (1 credit each)
+//   3. proxies     (Brave/DDG/Bing through the rotating residential pool) — free, slow, ~80%
 //
-// Tier 2 is not just a backstop for outages: it is what carries the volume once Jina's token
-// balance runs out. A quota/auth error trips a circuit breaker so we stop paying the latency
-// cost of a doomed Jina call on every single lead.
+// The paid tiers hand back result TITLES, so we can check the profile actually belongs to this
+// person before buying their email — resolving to the WRONG profile is worse than not
+// resolving, because it feeds the Review bucket. A quota/auth error retires a tier for the rest
+// of the run; a 429 is a temporary throttle and only pauses that tier briefly.
 
 import axios from "axios";
 import { nextWorkingAgent } from "../lib/proxies.js";
@@ -26,6 +24,8 @@ const UAS = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
   "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
 ];
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function isUrn(url = "") {
   return /\/in\/ACoAA/i.test(url);
@@ -39,25 +39,58 @@ function pickVanity(urls) {
   return null;
 }
 
-// ── stats (surfaced on the dashboard so you can see which tier is doing the work)
-const stats = { jina: 0, proxy: 0, miss: 0, jina429: 0, jinaDisabled: false };
-export function resolveStats() { return { ...stats, jinaCoolingDown: Date.now() < jinaCooldownUntil }; }
+const alpha = (s) => String(s || "").toLowerCase().normalize("NFKD").replace(/[^a-z]/g, "");
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Does this hit actually look like the person we searched for? Require a real name token to
+// appear in the title/url/snippet — otherwise we'd resolve to a stranger and buy their email.
+function matchesPerson(name, hitStr) {
+  const toks = String(name || "").split(/\s+/).map(alpha).filter((t) => t.length >= 3);
+  if (!toks.length) return true;
+  const hay = alpha(hitStr);
+  return toks.some((t) => hay.includes(t));
+}
+
+// Headlines carry junk ("Mission Hills CC Dinah Shore Tournament Course") — long tails make the
+// query so specific the SERP finds nothing. Keep the leading words only.
+const cleanCompany = (c) =>
+  String(c || "").replace(/[^\w\s&.-]/g, " ").trim().split(/\s+/).slice(0, 3).join(" ");
+
+// narrow (name+company) then wide (name only). A name+company query that returns nothing used
+// to fall straight through to a 2-minute proxy miss even though name-only finds the person.
+function queriesFor(name, company) {
+  const co = cleanCompany(company);
+  const q = [];
+  if (co) q.push(`"${name}" ${co} site:linkedin.com/in`);
+  q.push(`"${name}" site:linkedin.com/in`);
+  return q;
+}
+
+// From a list of {url,title,description}, pick the best LinkedIn /in/ profile for this person.
+function bestHit(name, rows) {
+  const hits = (rows || []).filter((r) => /linkedin\.com\/in\//i.test(r.url || ""));
+  if (!hits.length) return null;
+  const good = hits.filter((r) => matchesPerson(name, `${r.title} ${r.url} ${r.description}`));
+  return pickVanity((good.length ? good : hits).map((r) => r.url));
+}
+
+// ── stats (surfaced on the dashboard so you can see which tier is doing the work) ────────────
+const stats = { jina: 0, serper: 0, proxy: 0, miss: 0, jina429: 0, serper429: 0 };
+export function resolveStats() {
+  return {
+    ...stats,
+    jinaDead: jinaOutOfTokens,
+    jinaCoolingDown: Date.now() < jinaCooldownUntil,
+    serperKeysLive: SERPER.filter((k) => !k.dead).length,
+    serperKeysTotal: SERPER.length,
+    serperCreditsLeft: SERPER.reduce((a, k) => a + Math.max(0, k.left), 0),
+  };
+}
 
 // ── Tier 1: Jina SERP ────────────────────────────────────────────────────────
-//
-// TWO kinds of "Jina says no", and conflating them cost us the whole feature once:
-//   402 / 401  -> out of tokens or bad key. PERMANENT: stop calling it.
-//   429        -> throttled. TEMPORARY: back off and come back.
-// The hand-off retry runs 14 workers; with no shared limiter they all hit s.jina.ai at once,
-// Jina 429s within seconds, and a permanent kill-switch then loses the fastest resolver for the
-// entire run (we burned 1,000+ leads on 100s proxy lookups with 8.8M tokens still in the wallet).
-let jinaOutOfTokens = false;   // permanent
-let jinaCooldownUntil = 0;     // temporary (429)
+let jinaOutOfTokens = false; // permanent (402/401)
+let jinaCooldownUntil = 0;   // temporary (429)
 
-// Shared rate limiter — one request per JINA_MIN_GAP_MS across every concurrent worker.
-const JINA_MIN_GAP_MS = 1600;  // ~37 req/min, comfortably under the throttle
+const JINA_MIN_GAP_MS = 1600; // shared limiter: ~37 req/min across all workers, under the throttle
 let jinaNextSlot = 0;
 async function jinaSlot() {
   const now = Date.now();
@@ -66,167 +99,150 @@ async function jinaSlot() {
   if (wait > 0) await sleep(wait);
 }
 
-const alpha = (s) => String(s || "").toLowerCase().normalize("NFKD").replace(/[^a-z]/g, "");
-
-// Does this hit actually look like the person we searched for? Resolving to the WRONG profile
-// is worse than not resolving at all — we'd go on to buy the wrong person's email, which is
-// exactly what fills the Review bucket. Require at least one real name token to appear.
-function matchesPerson(name, row) {
-  const toks = String(name || "").split(/\s+/).map(alpha).filter((t) => t.length >= 3);
-  if (!toks.length) return true;
-  const hay = alpha(row.title) + alpha(row.url) + alpha(row.description);
-  return toks.some((t) => hay.includes(t));
-}
-
-// Returns: rows[] on success · [] when the query simply had no results · null when Jina itself
-// is unusable (out of tokens / bad key / throttled), which trips the breaker.
+// rows[] on success · [] when the query had no results · null when Jina is unusable this run
 async function jinaSearch(query) {
-  if (!config.jinaKey || jinaOutOfTokens) return null;
-  if (Date.now() < jinaCooldownUntil) return null; // mid-cooldown — let the proxies take this one
-
+  if (!config.jinaKey || jinaOutOfTokens || Date.now() < jinaCooldownUntil) return null;
   for (let attempt = 0; attempt < 3; attempt++) {
     await jinaSlot();
     const r = await axios.get("https://s.jina.ai/", {
       params: { q: query },
-      headers: {
-        Authorization: `Bearer ${config.jinaKey}`,
-        Accept: "application/json",
-        "X-Respond-With": "no-content", // titles + urls only — don't pay to fetch page bodies
-      },
-      timeout: 30000,
-      validateStatus: () => true,
+      headers: { Authorization: `Bearer ${config.jinaKey}`, Accept: "application/json", "X-Respond-With": "no-content" },
+      timeout: 30000, validateStatus: () => true,
     });
-
-    // Throttled — back off and retry. Do NOT kill Jina: the quota is usually fine.
     if (r.status === 429) {
       stats.jina429++;
-      const backoff = 2000 * 2 ** attempt; // 2s, 4s, 8s
-      if (attempt === 2) {
-        jinaCooldownUntil = Date.now() + 30_000; // still throttled: pause Jina 30s for everyone
-        log.warn("jina throttled — cooling down 30s, proxies cover the gap", { jina429: stats.jina429 });
-        return null;
-      }
-      await sleep(backoff);
-      continue;
+      if (attempt === 2) { jinaCooldownUntil = Date.now() + 30_000; log.warn("jina throttled — cooling 30s", { jina429: stats.jina429 }); return null; }
+      await sleep(2000 * 2 ** attempt); continue;
     }
-    // Genuinely unusable — out of tokens or a bad key. This one IS permanent.
-    if (r.status === 402 || r.status === 401) {
-      jinaOutOfTokens = true;
-      stats.jinaDisabled = true;
-      log.warn("jina disabled (out of tokens / bad key)", { status: r.status });
-      return null;
-    }
-    // 422 = "No search results available for query". NOT an error and NOT a quota problem —
-    // the query was just too specific. Report it as empty so the caller can widen and retry.
-    if (r.status === 422) return [];
-    if (r.status !== 200) {
-      log.warn("jina non-200", { status: r.status });
-      return [];
-    }
-    return r.data?.data || [];
+    if (r.status === 402 || r.status === 401) { jinaOutOfTokens = true; log.warn("jina out of tokens — moving to serper", { status: r.status }); return null; }
+    if (r.status === 422) return [];           // "no results" — not an error, not a quota issue
+    if (r.status !== 200) { log.warn("jina non-200", { status: r.status }); return []; }
+    return (r.data?.data || []).map((x) => ({ url: x.url, title: x.title, description: x.description }));
   }
   return null;
 }
 
-// Headlines give us junk like "Mission Hills CC Dinah Shore Tournament Course" — long tails
-// make the query so specific that Jina finds nothing. Keep it to the leading words.
-const cleanCompany = (c) =>
-  String(c || "").replace(/[^\w\s&.-]/g, " ").trim().split(/\s+/).slice(0, 3).join(" ");
-
 async function resolveViaJina({ name, company }) {
-  // Two shots, narrow then wide. A name+company query that returns nothing used to fall
-  // straight through to a ~2-minute proxy miss, even though name-only finds the person.
-  const co = cleanCompany(company);
-  const queries = co
-    ? [`"${name}" ${co} site:linkedin.com/in`, `"${name}" site:linkedin.com/in`]
-    : [`"${name}" site:linkedin.com/in`];
-
-  for (const q of queries) {
+  for (const q of queriesFor(name, company)) {
     const rows = await jinaSearch(q);
-    if (rows === null) return null;   // Jina unusable -> proxies
-    if (!rows.length) continue;       // no results -> widen the query
-    const hits = rows.filter((r) => /linkedin\.com\/in\//i.test(r.url || ""));
-    if (!hits.length) continue;
-    const good = hits.filter((r) => matchesPerson(name, r));
-    // prefer a name-matched hit; only take the top LinkedIn result if nothing matched
-    const pick = pickVanity((good.length ? good : hits).map((r) => r.url));
+    if (rows === null) return null;   // Jina unusable -> next tier
+    const pick = bestHit(name, rows);
     if (pick) return pick;
   }
   return null;
 }
 
-// ── Tier 2: free engines behind rotating proxies ─────────────────────────────
+// ── Tier 2: Serper.dev (rotating keys) ───────────────────────────────────────
+// Each key ~2,500 credits (1 per query). We drain key 0, then 1, ... marking a key dead on a
+// 402/403/insufficient-credits and rotating to the next. 429 = throttle -> short cooldown.
+const SERPER = (config.serperKeys || []).map((key) => ({ key, left: 2500, dead: false, coolUntil: 0 }));
+
+const SERPER_MIN_GAP_MS = 120; // serper is generous; a light shared spacer avoids bursts
+let serperNextSlot = 0;
+async function serperSlot() {
+  const now = Date.now();
+  const wait = Math.max(0, serperNextSlot - now);
+  serperNextSlot = Math.max(now, serperNextSlot) + SERPER_MIN_GAP_MS;
+  if (wait > 0) await sleep(wait);
+}
+
+function nextSerperKey() {
+  return SERPER.find((k) => !k.dead && Date.now() >= k.coolUntil) || null;
+}
+
+// rows[] on success/empty · null when NO serper key is usable right now
+async function serperSearch(query) {
+  const k = nextSerperKey();
+  if (!k) return null;
+  await serperSlot();
+  const r = await axios.post("https://google.serper.dev/search",
+    { q: query, num: 5, gl: "us" },
+    { headers: { "X-API-KEY": k.key, "Content-Type": "application/json" }, timeout: 20000, validateStatus: () => true });
+
+  if (r.status === 429) {
+    stats.serper429++;
+    k.coolUntil = Date.now() + 15_000;      // brief pause on this key, try the next
+    return serperSearch(query);
+  }
+  if (r.status === 402 || r.status === 403) {
+    k.dead = true; k.left = 0;
+    log.warn("serper key exhausted — rotating", { key: k.key.slice(0, 8), liveKeys: SERPER.filter((x) => !x.dead).length });
+    return serperSearch(query);            // retry immediately on the next key
+  }
+  if (r.status !== 200) { log.warn("serper non-200", { status: r.status }); return []; }
+  k.left = Math.max(0, k.left - 1);
+  if (k.left <= 0) k.dead = true;
+  return (r.data?.organic || []).map((o) => ({ url: o.link, title: o.title, description: o.snippet }));
+}
+
+async function resolveViaSerper({ name, company }) {
+  for (const q of queriesFor(name, company)) {
+    const rows = await serperSearch(q);
+    if (rows === null) return null;   // no serper key usable -> proxies
+    const pick = bestHit(name, rows);
+    if (pick) return pick;
+  }
+  return null;
+}
+
+// ── Tier 3: free engines behind rotating proxies ─────────────────────────────
 function parseDirect(html) {
   return pickVanity(html.match(/linkedin\.com\/in\/[a-zA-Z0-9_-]+/gi) || []);
 }
-// DDG Lite wraps result links as ...uddg=<urlencoded destination>
 function parseDdg(html) {
   const found = [];
   for (const m of html.match(/uddg=[^"&]+/g) || []) {
     try {
-      const dec = decodeURIComponent(m.slice(5));
-      const lm = dec.match(/linkedin\.com\/in\/[a-zA-Z0-9_-]+/i);
+      const lm = decodeURIComponent(m.slice(5)).match(/linkedin\.com\/in\/[a-zA-Z0-9_-]+/i);
       if (lm) found.push(lm[0]);
     } catch { /* not a url */ }
   }
   return pickVanity(found) || parseDirect(html);
 }
-
 const ENGINES = [
   { name: "brave", url: (q) => "https://search.brave.com/search?q=" + encodeURIComponent(q + " linkedin"), parse: parseDirect },
   { name: "ddg", url: (q) => "https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(q + " linkedin"), parse: parseDdg },
   { name: "bing", url: (q) => "https://www.bing.com/search?q=" + encodeURIComponent(q + " linkedin"), parse: parseDirect },
 ];
-
 async function attempt(engine, query, ua) {
   const { agent } = await nextWorkingAgent();
   const r = await axios.get(engine.url(query), {
-    httpsAgent: agent,
-    timeout: config.proxyTimeoutMs,
-    headers: { "User-Agent": ua, "Accept-Language": "en-US,en;q=0.9" },
-    validateStatus: () => true,
+    httpsAgent: agent, timeout: config.proxyTimeoutMs,
+    headers: { "User-Agent": ua, "Accept-Language": "en-US,en;q=0.9" }, validateStatus: () => true,
   });
-  if (typeof r.data !== "string") return null;
-  return engine.parse(r.data);
+  return typeof r.data === "string" ? engine.parse(r.data) : null;
 }
-
 async function resolveViaProxies({ name, company }) {
   const query = company ? `${name} ${company}` : name;
-  const tries = Math.max(config.scrapeRetries, ENGINES.length * 2); // ~2 shots per engine
+  const tries = Math.max(config.scrapeRetries, ENGINES.length * 2);
   for (let i = 0; i < tries; i++) {
     const engine = ENGINES[i % ENGINES.length];
     try {
       const hit = await attempt(engine, query, UAS[i % UAS.length]);
-      if (hit) {
-        log.info("resolved vanity (proxy)", { name, url: hit, engine: engine.name, attempt: i });
-        return hit;
-      }
-    } catch {
-      // proxy dead / engine 429 — rotate to the next engine+proxy combo
-    }
+      if (hit) { log.info("resolved vanity (proxy)", { name, url: hit, engine: engine.name }); return hit; }
+    } catch { /* proxy/engine dead — rotate */ }
   }
   return null;
 }
 
-// ── public: Jina first, proxies as fallback ──────────────────────────────────
+// ── public: Jina -> Serper -> proxies ────────────────────────────────────────
 export async function resolveVanity({ name, company }) {
   if (!name) return null;
 
   try {
     const hit = await resolveViaJina({ name, company });
-    if (hit) {
-      stats.jina++;
-      log.info("resolved vanity (jina)", { name, url: hit });
-      return hit;
-    }
-  } catch (e) {
-    log.warn("jina resolve threw", { err: e.message });
-  }
+    if (hit) { stats.jina++; log.info("resolved vanity (jina)", { name, url: hit }); return hit; }
+  } catch (e) { log.warn("jina resolve threw", { err: e.message }); }
+
+  try {
+    const hit = await resolveViaSerper({ name, company });
+    if (hit) { stats.serper++; log.info("resolved vanity (serper)", { name, url: hit }); return hit; }
+  } catch (e) { log.warn("serper resolve threw", { err: e.message }); }
 
   const hit = await resolveViaProxies({ name, company });
   if (hit) { stats.proxy++; return hit; }
 
   stats.miss++;
-  log.warn("resolve miss (jina + proxies)", { name, company });
+  log.warn("resolve miss (all tiers)", { name, company });
   return null;
 }
