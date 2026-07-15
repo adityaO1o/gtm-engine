@@ -112,6 +112,23 @@ async function queueUpsert(postUrl, engagers) {
   return ekeys;
 }
 const saveCp = (postUrl, cp) => scrapedPosts().updateOne({ postUrl }, { $set: { scrape_cp: cp } }).catch(() => {});
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Fetch a page resiliently. A transient null (429 storm / 5xx / timeout) is NOT the end — cool down
+// and retry, so a rate-limit spike no longer terminates the whole scrape. Returns the page object,
+// or a sentinel: "paused" | "credits" (truly out of credits) | "giveup" (still failing after ~7min).
+async function pageWithBackoff(fn) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (scrapeCtl.paused) return "paused";
+    const r = await fn();
+    if (r !== null) return r;
+    if (rapidScrapeOutOfCredits()) return "credits";
+    const wait = 30000 * (attempt + 1); // 30s, 60s, 90s… ride out a rate-limit storm
+    log.warn("scrape page transient fail — cooling then retrying", { attempt, waitMs: wait });
+    await sleepMs(wait);
+  }
+  return "giveup";
+}
 
 // Enrich a set of queued docs, small concurrency; each marked done as it finishes. Leads land here.
 async function enrichDocs(docs, camp, category, postUrl) {
@@ -168,8 +185,9 @@ async function scrapeAndEnrich(postUrl, camp, category) {
     let collected = 0, total = Infinity;
     for (; page <= 250; page++) {
       if (scrapeCtl.paused) { await saveCp(postUrl, { typeIdx: ti, page, token: null, commentsDone: false }); return "paused"; }
-      const r = await reactionPage(urn, REACTION_TYPES[ti], page);
-      if (r === null) { await saveCp(postUrl, { typeIdx: ti, page, token: null, commentsDone: false }); return "stopped"; }
+      const r = await pageWithBackoff(() => reactionPage(urn, REACTION_TYPES[ti], page));
+      if (r === "paused") { await saveCp(postUrl, { typeIdx: ti, page, token: null, commentsDone: false }); return "paused"; }
+      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { typeIdx: ti, page, token: null, commentsDone: false }); return "stopped"; }
       const ekeys = await queueUpsert(postUrl, r.engagers);
       scrapeOneStatus.total = await scrapeEngagers().countDocuments({ postUrl });
       await enrichPage(postUrl, ekeys, camp, category);        // enrich THIS page now (interleaved)
@@ -184,8 +202,9 @@ async function scrapeAndEnrich(postUrl, camp, category) {
     let token = cp.typeIdx >= REACTION_TYPES.length ? (cp.token || null) : null;
     for (let i = 0; i < 400; i++) {
       if (scrapeCtl.paused) { await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: false }); return "paused"; }
-      const r = await commentPage(urn, token);
-      if (r === null) { await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: false }); return "stopped"; }
+      const r = await pageWithBackoff(() => commentPage(urn, token));
+      if (r === "paused") { await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: false }); return "paused"; }
+      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: false }); return "stopped"; }
       const ekeys = await queueUpsert(postUrl, r.engagers);
       scrapeOneStatus.total = await scrapeEngagers().countDocuments({ postUrl });
       await enrichPage(postUrl, ekeys, camp, category);

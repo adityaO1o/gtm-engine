@@ -23,9 +23,9 @@ const REACTION_TYPES = ["LIKE", "PRAISE", "EMPATHY", "INTEREST", "APPRECIATION",
 
 let outOfCredits = false;
 const stats = { reactionPages: 0, commentPages: 0, engagers: 0, throttled: 0 };
-export function rapidScrapeStats() { return { ...stats, outOfCredits, host: config.scrapeApiHost }; }
+export function rapidScrapeStats() { return { ...stats, outOfCredits, gapMs: dynamicGap, host: config.scrapeApiHost }; }
 export function rapidScrapeOutOfCredits() { return outOfCredits; }
-export function resetRapidScrape() { outOfCredits = false; stats.reactionPages = 0; stats.commentPages = 0; stats.engagers = 0; stats.throttled = 0; }
+export function resetRapidScrape() { outOfCredits = false; dynamicGap = config.scrapeMinGapMs; stats.reactionPages = 0; stats.commentPages = 0; stats.engagers = 0; stats.throttled = 0; }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -35,15 +35,20 @@ export function activityUrn(postUrl = "") {
   return m ? m[1] : null;
 }
 
-// Shared rate limiter — space calls so we don't burst the plan's per-minute cap and trip 429s.
-const MIN_GAP_MS = config.scrapeMinGapMs;
+// ADAPTIVE shared rate limiter — starts at the configured gap and AUTO-SLOWS on 429s (×1.5, up to
+// 8s) so it self-tunes to whatever the plan's per-minute cap actually is, then slowly decays back
+// on sustained success. This is why a too-small configured gap no longer causes a 429 storm.
+const BASE_GAP_MS = config.scrapeMinGapMs;
+let dynamicGap = BASE_GAP_MS;
 let nextSlot = 0;
 async function slot() {
   const now = Date.now();
   const wait = Math.max(0, nextSlot - now);
-  nextSlot = Math.max(now, nextSlot) + MIN_GAP_MS;
+  nextSlot = Math.max(now, nextSlot) + dynamicGap;
   if (wait > 0) await sleep(wait);
 }
+const onThrottle = () => { stats.throttled++; dynamicGap = Math.min(Math.round(dynamicGap * 1.5), 8000); };
+const onSuccess = () => { if (dynamicGap > BASE_GAP_MS) dynamicGap = Math.max(BASE_GAP_MS, Math.round(dynamicGap * 0.97)); };
 
 // GET with retry. Returns parsed body, or null when the tier is done (out of credits / gave up).
 // 402/403 -> out of credits (permanent, stop). 429/5xx/timeout/network -> transient, retry w/ backoff.
@@ -67,10 +72,10 @@ async function get(path, params, { retries = 3 } = {}) {
       log.warn("rapid scrape host out of credits — stopping (no auto-switch)", { host: config.scrapeApiHost, status: r.status });
       return null;
     }
-    if (r.status === 429) { // rate limit — back off and retry, do NOT mark out-of-credits
-      stats.throttled++;
+    if (r.status === 429) { // rate limit — auto-slow the limiter, back off and retry (NOT out-of-credits)
+      onThrottle();
       if (attempt < retries) { await sleep(3000 * 2 ** attempt); continue; }
-      log.warn("rapid scrape 429 — retries exhausted, pausing this page", { path });
+      log.warn("rapid scrape 429 — retries exhausted this page", { path, gapMs: dynamicGap });
       return null;
     }
     if (r.status !== 200) {
@@ -78,6 +83,7 @@ async function get(path, params, { retries = 3 } = {}) {
       log.warn("rapid scrape non-200 — giving up this page", { path, status: r.status });
       return null;
     }
+    onSuccess();
     return r.data;
   }
   return null;
