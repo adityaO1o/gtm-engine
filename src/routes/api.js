@@ -3,7 +3,8 @@
 import { Router } from "express";
 import { ObjectId } from "mongodb";
 import { leads, engagements, usage, sources, reprocessRuns } from "../db/mongo.js";
-import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus } from "../pipeline/sources.js";
+import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
+import { rapidScrapeStats } from "../services/rapidScrape.js";
 import { rerouteSourceLeads, rerouteStatus } from "../pipeline/reroute.js";
 import { trigifyBalance, setWorkflowEnabled } from "../services/trigify.js";
 import { prospeoBalance, verifyEmail } from "../services/prospeo.js";
@@ -433,7 +434,11 @@ apiRouter.post("/sources/scrape-post", async (req, res) => {
   const r = await scrapeOnePost({ postUrl, campaignKey: campaign });
   res.json(r);
 });
-apiRouter.get("/sources/scrape-post/status", (_req, res) => res.json(scrapePostStatus()));
+apiRouter.get("/sources/scrape-post/status", (_req, res) => res.json({ ...scrapePostStatus(), rapid: rapidScrapeStats() }));
+
+// POST /api/sources/pause { paused } — master switch for the auto influencer/hub sweep
+apiRouter.post("/sources/pause", (req, res) => res.json({ paused: setAutoScrape(!!req.body?.paused) }));
+apiRouter.get("/sources/pause", (_req, res) => res.json({ paused: isAutoScrapePaused(), rapid: rapidScrapeStats() }));
 
 // POST /api/reset — wipe all leads + engagements (guarded by the ingest token). For clearing test data.
 apiRouter.post("/reset", async (req, res) => {

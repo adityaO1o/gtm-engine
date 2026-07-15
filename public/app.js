@@ -401,6 +401,14 @@ async function renderSources() {
       <span class="resn"><b>${nInfl}</b> influencers · <b>${nHub}</b> hubs</span>
       <div class="grow"></div>
       <button class="btn btn-sm" data-runsrc ${st.running ? "disabled" : ""}>${ic("refresh")}${st.running ? "Running…" : "Run now"}</button></div>
+    <div class="chartbox" style="margin-bottom:var(--s3);border-top:2px solid var(--primary)">
+      <div class="toolbar" style="margin-bottom:var(--s3)"><h4 style="margin:0">${ic("radio")}Scrape via post <span class="tag-harv">new</span></h4><div class="grow"></div>
+        <span class="muted" id="rapidCredits" style="font-size:12px"></span></div>
+      <div class="muted" style="font-size:12px;margin-bottom:10px">Paste a LinkedIn post URL — we scrape ALL its reactors + commenters via the RapidAPI scraper (1 credit per ~48 people) and route them by topic. Auto influencer/hub sweep is <b>paused</b> while we test this.</div>
+      <div class="toolbar"><input class="search" id="in-post" placeholder="https://www.linkedin.com/feed/update/urn:li:activity:..." style="flex:1;min-width:0" value="">
+        <button class="btn btn-sm" data-scrapepost>${ic("bolt")}Scrape post</button></div>
+      <div id="postBox" style="margin-top:10px">${scrapePostBox(d.scrapePost)}</div>
+    </div>
     <div id="srcBox">${jobBox("sources", st)}</div>
     ${listsHTML(d.lists || [])}
     <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s3);align-items:start">
@@ -411,6 +419,22 @@ async function renderSources() {
         <div class="toolbar" style="margin-bottom:var(--s3)"><input class="search" id="in-hub" placeholder="linkedin.com/top-content/... URL" style="flex:1;min-width:0"><button class="btn btn-sm" data-addsrc="hub">${ic("plus")}Add</button></div>
         <div class="tablewrap" style="border:none"><table><thead><tr><th>Hub</th><th>URL</th><th>Posts</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("hub")}</tbody></table></div></div>
     </div>`;
+}
+
+// Live status of a "Scrape via post" run.
+function scrapePostBox(s) {
+  if (!s || (!s.running && !s.finishedAt)) return "";
+  const head = s.running
+    ? `Scraping <b>${esc(s.postUrl.slice(-30))}</b> · <b>${num(s.engagers)}</b> engagers · <b class="ok">${num(s.sent)}</b> sent → ${esc(s.campaign || "")}`
+    : `Done · <b>${num(s.engagers)}</b> engagers processed · <b class="ok">${num(s.sent)}</b> sent → ${esc(s.campaign || "")}${s.outOfCredits ? ' · <b style="color:var(--hot)">Fresh API out of credits — paused</b>' : ""}`;
+  return `<div class="jobbox${s.running ? " on" : ""}"><div class="jobh">${ic(s.running ? "refresh" : "check")}<span>${head}</span></div></div>`;
+}
+async function pollScrapePost() {
+  const d = await j("/api/sources/scrape-post/status");
+  const el = $("#postBox"); if (el) el.innerHTML = scrapePostBox(d);
+  const rc = $("#rapidCredits"); if (rc && d.rapid) rc.innerHTML = `Fresh scraper: <b>${num(d.rapid.reactionPages + d.rapid.commentPages)}</b> pages used${d.rapid.outOfCredits ? ' · <b style="color:var(--hot)">out of credits</b>' : ""}`;
+  if (d.running) setTimeout(pollScrapePost, 2500);
+  else loadTop();
 }
 
 // Imported CSV lists — each shown separately, with enable/pause/view/delete. PAUSED by default
@@ -440,7 +464,7 @@ function listsHTML(lists) {
 // ---------------- events (CSP-safe delegation) ----------------
 document.addEventListener("click", async (e) => {
   if (!e.target.closest(".menu")) closeMenu();
-  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-addsrc],[data-delsrc],[data-runsrc],[data-decide],[data-selpage],[data-batchallbtn],[data-srcopen],[data-srcback],[data-srcpg],[data-listactive],[data-listdel]");
+  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-addsrc],[data-delsrc],[data-runsrc],[data-decide],[data-selpage],[data-batchallbtn],[data-srcopen],[data-srcback],[data-srcpg],[data-listactive],[data-listdel],[data-scrapepost]");
   if (!t) return;
   if (t.dataset.v) return show(t.dataset.v);
   if (t.hasAttribute("data-x")) return $("#drawer").classList.remove("open");
@@ -507,6 +531,11 @@ document.addEventListener("click", async (e) => {
   }
   if (t.dataset.delsrc) { await fetch("/api/sources/" + t.dataset.delsrc, { method: "DELETE" }); renderSources(); return; }
   if (t.hasAttribute("data-runsrc")) { await post("/api/sources/run", {}); return pollJobs(); }
+  if (t.hasAttribute("data-scrapepost")) {
+    const url = $("#in-post")?.value.trim(); if (!url) return;
+    await post("/api/sources/scrape-post", { postUrl: url });
+    return pollScrapePost();
+  }
   // imported lists
   if (t.dataset.srcopen) { SRC_LIST = t.dataset.srcopen; SRC_LIST_PAGE = 0; return renderSources(); }
   if (t.hasAttribute("data-srcback")) { SRC_LIST = null; return renderSources(); }

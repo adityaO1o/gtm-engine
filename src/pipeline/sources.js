@@ -6,8 +6,15 @@ import { getProfilePosts, getPostEngagements, getPostComments, trigifyOutOfCredi
 import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
 import { routeSourceEngager } from "../services/campaigns.js";
+import { scrapePostEngagers, rapidScrapeOutOfCredits } from "../services/rapidScrape.js";
 import { enrichLead } from "./enrichLead.js";
 import { log } from "../lib/logger.js";
+
+// Master switch for AUTO scraping (the daily influencer/hub sweep). Paused by default while we
+// evaluate the RapidAPI post-scraper on the $10 plan — the manual "Scrape via post" still works.
+let autoPaused = true;
+export function setAutoScrape(paused) { autoPaused = !!paused; return autoPaused; }
+export function isAutoScrapePaused() { return autoPaused; }
 
 // No business cap on posts/engagers — the user tops up Trigify to scrape unlimited. These are
 // per-RUN batch sizes purely for durability: a run finishes in bounded time and persists its
@@ -72,23 +79,33 @@ let scrapeOneRunning = false;
 let scrapeOneStatus = { running: false, postUrl: "", campaign: "", engagers: 0, sent: 0, startedAt: null, finishedAt: null };
 export function scrapePostStatus() { return scrapeOneStatus; }
 
-export async function scrapeOnePost({ postUrl, campaignKey }) {
-  const { campaignByKey } = await import("../services/campaigns.js");
-  const camp = campaignByKey(campaignKey);
-  if (!camp || !postUrl) return { ok: false, error: "postUrl and a valid campaign required" };
+// Scrape ONE post's engagers via the RapidAPI scraper (fresh host — 1 credit/page), classify the
+// post, and route each engager to the topic campaign. This is the "Scrape via post" feature.
+export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
+  const { routeSourceEngager } = await import("../services/campaigns.js");
+  if (!postUrl) return { ok: false, error: "postUrl required" };
   if (scrapeOneRunning) return { ok: false, error: "already running", ...scrapeOneStatus };
   scrapeOneRunning = true;
-  scrapeOneStatus = { running: true, postUrl, campaign: camp.label, engagers: 0, sent: 0, startedAt: new Date(), finishedAt: null };
+  scrapeOneStatus = { running: true, postUrl, campaign: "", engagers: 0, sent: 0, outOfCredits: false, startedAt: new Date(), finishedAt: null };
   (async () => {
     try {
-      const engagers = [...(await getPostEngagements(postUrl)), ...(await getPostComments(postUrl))];
+      const { engagers, error } = await scrapePostEngagers(postUrl);
+      if (error) log.warn("scrapeOnePost", { error });
+      // classify the post from its slug (no text here) and route accordingly; if the caller
+      // forced a campaign (e.g. the Instantly post), honour it.
+      const rt = routeText("", postUrl);
+      const category = classifyPost(rt);
+      const forced = campaignKey ? (await import("../services/campaigns.js")).campaignByKey(campaignKey) : null;
+      const camp = forced || routeSourceEngager(rt, category);
+      scrapeOneStatus.campaign = camp.label;
       for (const e of engagers) {
         try {
-          const r = await enrichLead({ ...e, campaign: camp.key, campaign_id: camp.sendkitId, category: camp.category, source: "influencer", source_list: "manual-post", post_url: postUrl });
+          const r = await enrichLead({ ...e, campaign: camp.key, campaign_id: camp.sendkitId, category, source: "influencer", source_list: "manual-post", post_url: postUrl });
           scrapeOneStatus.engagers++;
           if (r?.outcome === "sent") scrapeOneStatus.sent++;
         } catch (err) { log.warn("scrapeOnePost enrich failed", { err: err.message }); }
       }
+      scrapeOneStatus.outOfCredits = rapidScrapeOutOfCredits();
     } catch (e) { log.error("scrapeOnePost error", { err: e.message }); }
     scrapeOneStatus = { ...scrapeOneStatus, running: false, finishedAt: new Date() };
     scrapeOneRunning = false;
@@ -97,7 +114,8 @@ export async function scrapeOnePost({ postUrl, campaignKey }) {
   return { ok: true, started: true };
 }
 
-export async function runSources() {
+export async function runSources({ force = false } = {}) {
+  if (autoPaused && !force) return { paused: true, ...status };
   if (running) return { alreadyRunning: true, ...status };
   running = true;
   seenEngagers = new Set();
