@@ -62,7 +62,7 @@ export async function profileCompany(linkedinUrlOrUrn) {
     const r = await axios.get(`https://${config.linkedinApiHost}/get-personal-profile`, {
       params: { linkedin_url: linkedinUrlOrUrn },
       headers: { "x-rapidapi-host": config.linkedinApiHost, "x-rapidapi-key": config.linkedinApiKey },
-      timeout: 25000, validateStatus: () => true,
+      timeout: 60000, validateStatus: () => true,
     });
     if (r.status === 402 || r.status === 403 || r.status === 429) {
       outOfQuota = true; stats.quota++;
