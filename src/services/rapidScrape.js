@@ -83,6 +83,23 @@ async function get(path, params, { retries = 3 } = {}) {
   return null;
 }
 
+// Post metadata (poster + text + expected reaction/comment counts) — one cheap call, used to
+// show a readable, clickable title in the "Scraped posts" history and an "X of ~Y" completeness.
+export async function postDetails(urn) {
+  if (!urn) return null;
+  const d = await get("get-post-details", { urn }, { retries: 2 });
+  if (!d?.data) return null;
+  meter.inc("rapid_pages"); // this detail call costs 1 credit too
+  const p = d.data, poster = p.poster || {};
+  const name = [poster.first, poster.last].filter(Boolean).join(" ").trim();
+  const text = String(p.text || "").replace(/\s+/g, " ").trim();
+  const title = [name, text].filter(Boolean).join(" — ").slice(0, 120) || null;
+  return {
+    title, posterName: name || null, posterUrl: poster.linkedin_url || null, text: text.slice(0, 300) || null,
+    postUrl: p.post_url || null, numReactions: p.num_reactions ?? null, numComments: p.num_comments ?? null, posted: p.posted || null,
+  };
+}
+
 function pushReactor(out, it) {
   const r = it.reactor || it;
   if (r?.name || r?.linkedin_url) {

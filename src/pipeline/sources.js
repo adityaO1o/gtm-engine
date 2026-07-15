@@ -6,7 +6,7 @@ import { getProfilePosts, getPostEngagements, getPostComments, trigifyOutOfCredi
 import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
 import { routeSourceEngager } from "../services/campaigns.js";
-import { scrapePostEngagers, rapidScrapeOutOfCredits, activityUrn } from "../services/rapidScrape.js";
+import { scrapePostEngagers, rapidScrapeOutOfCredits, activityUrn, postDetails } from "../services/rapidScrape.js";
 import { enrichLead } from "./enrichLead.js";
 import { meterFlush } from "../services/apiMeter.js";
 import { log } from "../lib/logger.js";
@@ -93,6 +93,14 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
   scrapedPosts().updateOne({ postUrl },
     { $set: { postUrl, activityId: activityUrn(postUrl), running: true, startedAt: new Date() }, $unset: { backfilled: "" } },
     { upsert: true }).catch(() => {});
+  // Grab the post's title/poster + expected engager counts (1 credit) so the history row is a
+  // readable, clickable link and shows "scraped X of ~Y".
+  postDetails(activityUrn(postUrl)).then((det) => {
+    if (det) scrapedPosts().updateOne({ postUrl }, { $set: {
+      title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: det.text,
+      expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted, titleTried: true,
+    } }).catch(() => {});
+  }).catch(() => {});
   (async () => {
     try {
       const { engagers, error } = await scrapePostEngagers(postUrl);

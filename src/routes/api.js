@@ -4,7 +4,7 @@ import { Router } from "express";
 import { ObjectId } from "mongodb";
 import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts } from "../db/mongo.js";
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
-import { rapidScrapeStats } from "../services/rapidScrape.js";
+import { rapidScrapeStats, postDetails, activityUrn, rapidScrapeOutOfCredits } from "../services/rapidScrape.js";
 import { linkedinProfileStats } from "../services/linkedinProfile.js";
 import { meterCumulative } from "../services/apiMeter.js";
 import { rerouteSourceLeads, rerouteStatus } from "../pipeline/reroute.js";
@@ -83,8 +83,10 @@ apiRouter.get("/stats", async (req, res) => {
   const engCount = await engagements().countDocuments(engFilter);
   const [prospeo, jina, meter] = await Promise.all([prospeoBalance(), jinaBalance(), meterCumulative()]);
   // `meter` = cumulative totals that SURVIVE deploys (Fresh, web-scrape, resolver, Prospeo, Clearbit).
-  // `apiUsage.rapid/profile` remain the live since-restart view for the OUT flags.
-  res.json({ ...counts, engagements: engCount, prospeo, jina, resolver: resolveStats(), meter, apiUsage: { rapid: rapidScrapeStats(), profile: linkedinProfileStats() } });
+  // `apiPlans` lets the topbar show RapidAPI credits LEFT (plan − used; no live balance exists).
+  res.json({ ...counts, engagements: engCount, prospeo, jina, resolver: resolveStats(), meter,
+    apiPlans: { fresh: config.rapidFreshPlan, webscrape: config.rapidWebscrapePlan },
+    apiUsage: { rapid: rapidScrapeStats(), profile: linkedinProfileStats() } });
 });
 
 // GET /api/campaigns — one row per campaign: counts + per-campaign credits (trigify/prospeo/sendkit)
@@ -446,6 +448,19 @@ apiRouter.get("/sources/scrape-post/status", (_req, res) => res.json({ ...scrape
 // as retries recover emails, so Verified climbs here on its own.
 apiRouter.get("/sources/scraped-posts", async (_req, res) => {
   const posts = await scrapedPosts().find({}).sort({ startedAt: -1 }).limit(50).toArray();
+  // Lazily fetch a human title (poster + post text) for any post missing one — once, then cached
+  // on the doc. Skipped when out of credits so we don't set titleTried prematurely.
+  for (const p of posts) {
+    if (p.title || p.titleTried) continue;
+    const det = await postDetails(activityUrn(p.postUrl)).catch(() => null);
+    if (det) {
+      const set = { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: det.text, expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted, titleTried: true };
+      await scrapedPosts().updateOne({ postUrl: p.postUrl }, { $set: set }).catch(() => {});
+      Object.assign(p, set);
+    } else if (!rapidScrapeOutOfCredits()) {
+      await scrapedPosts().updateOne({ postUrl: p.postUrl }, { $set: { titleTried: true } }).catch(() => {});
+    }
+  }
   const out = await Promise.all(posts.map(async (p) => {
     const base = { posts_seen: p.postUrl };
     const [engagers, verified, noEmail, unverified] = await Promise.all([
@@ -457,8 +472,10 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
     return {
       postUrl: p.postUrl,
       activityId: p.activityId || (String(p.postUrl).match(/activity[:-](\d+)/) || [])[1] || null,
+      title: p.title || null, posterName: p.poster_name || null,
       campaign: p.campaign || null, at: p.finishedAt || p.startedAt, running: !!p.running,
       engagers, verified, noEmail, unverified,
+      expectedReactions: p.expected_reactions ?? null, expectedComments: p.expected_comments ?? null,
     };
   }));
   res.json({ posts: out });

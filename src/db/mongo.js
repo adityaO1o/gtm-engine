@@ -41,17 +41,25 @@ export async function connect() {
   await db.collection("leads").createIndex({ posts_seen: 1 });         // per-scraped-post live counts
   await db.collection("scraped_posts").createIndex({ postUrl: 1 }, { unique: true });
 
-  // One-time: seed the scraped-post history from existing manual-scrape leads, so posts scraped
-  // BEFORE this feature (e.g. the Instantly post) still show up with their live engager/verified
-  // counts instead of vanishing. Runs once (only when the collection is empty).
-  if (await db.collection("scraped_posts").countDocuments() === 0) {
-    const urls = (await db.collection("leads").distinct("posts_seen", { source_list: "manual-post" })).filter(Boolean);
-    for (const u of urls) {
+  // Reconcile the backfilled scraped-post history (idempotent, every boot). A manual scrape's post
+  // appears on MANY of its leads' posts_seen; incidental posts (those people also engaged elsewhere)
+  // appear on only a few. Keep the frequent ones, drop the noise. Real scrapes (no `backfilled`
+  // flag) are NEVER touched — only backfilled rows are reconciled.
+  try {
+    const agg = await db.collection("leads").aggregate([
+      { $match: { source_list: "manual-post", posts_seen: { $exists: true, $ne: [] } } },
+      { $unwind: "$posts_seen" },
+      { $group: { _id: "$posts_seen", n: { $sum: 1 } } },
+      { $match: { n: { $gte: 50 } } }, // a real manual scrape lands on hundreds; noise on a handful
+    ]).toArray();
+    const legit = agg.map((a) => a._id).filter(Boolean);
+    for (const u of legit) {
       await db.collection("scraped_posts").updateOne({ postUrl: u },
         { $setOnInsert: { postUrl: u, backfilled: true, startedAt: new Date() } }, { upsert: true });
     }
-    if (urls.length) log.info("seeded scraped-post history", { posts: urls.length });
-  }
+    const removed = await db.collection("scraped_posts").deleteMany({ backfilled: true, postUrl: { $nin: legit } });
+    if (legit.length || removed.deletedCount) log.info("reconciled scraped-post history", { kept: legit.length, removed: removed.deletedCount });
+  } catch (e) { log.warn("scraped-post backfill reconcile failed", { err: e.message }); }
 
   log.info("mongo connected", { db: config.mongoDb });
   return db;

@@ -38,12 +38,16 @@ const verifiedCell = (r) => r.email
 async function loadTop() {
   const [d, s] = await Promise.all([j("/api/campaigns"), j("/api/stats")]);
   CAMPAIGNS = d.campaigns || []; BAL = { prospeo: d.prospeo, jina: d.jina }; STATS = s;
-  // Topbar carries only the two providers with a REAL live balance. Everything else (Serper
-  // estimate, RapidAPI usage) lives in the Overview "API usage" panel, honestly labelled.
-  const chip = (label, val, sub, title) => `<div class="balc" ${title ? `title="${esc(title)}"` : ""}>${label} · <b>${num(val)}</b> ${sub}</div>`;
+  // Topbar: Prospeo (live balance) + both RapidAPI pools' credits LEFT (plan − used). RapidAPI has
+  // no live-balance API, so "left" is computed from the plan cap minus what we've metered.
+  const chip = (label, val, sub, title, warn) => `<div class="balc${warn ? " warn" : ""}" ${title ? `title="${esc(title)}"` : ""}>${label} · <b>${num(val)}</b> ${sub}</div>`;
+  const m = s.meter || {}, pl = s.apiPlans || {};
+  const freshLeft = Math.max(0, (pl.fresh || 0) - (m.rapid_pages || 0));
+  const wsLeft = Math.max(0, (pl.webscrape || 0) - (m.webscrape_calls || 0));
   let bh = "";
   if (d.prospeo) bh += chip("Prospeo", d.prospeo.remaining, "left", "Prospeo email-finder credits (live).");
-  if (d.jina) bh += chip("Jina", d.jina.searches, "lookups", "Jina SERP resolver credits (live).");
+  if (pl.fresh) bh += chip("Fresh", freshLeft, "left", `RapidAPI Fresh scraper: ${num(m.rapid_pages || 0)} used of ${num(pl.fresh)} plan.`, freshLeft < pl.fresh * 0.1);
+  if (pl.webscrape) bh += chip("Web-scrape", wsLeft, "left", `RapidAPI web-scrape (profile): ${num(m.webscrape_calls || 0)} used of ${num(pl.webscrape)} plan.`, wsLeft < pl.webscrape * 0.1);
   $("#bals").innerHTML = bh;
   // DISTINCT counts from /stats — NOT the sum of per-campaign totals. A lead can sit in two
   // campaigns, so summing campaign rows double-counts it (that was the sidebar/overview mismatch).
@@ -465,10 +469,13 @@ function scrapedPostsHTML(posts) {
   if (!posts.length) return "";
   const rows = posts.map((p) => {
     const hit = p.engagers ? Math.round((p.verified / p.engagers) * 100) : 0;
+    const label = esc(p.title || p.posterName || ("activity:" + (p.activityId || "—")));
+    const expected = (p.expectedReactions || 0) + (p.expectedComments || 0);
+    const ofY = expected ? `<span class="muted" style="font-size:11px"> of ~${num(expected)}</span>` : "";
     return `<tr>
-      <td><span class="mono muted" title="${esc(p.postUrl)}">activity:${esc(p.activityId || "—")}</span></td>
+      <td><a href="${esc(p.postUrl)}" target="_blank" rel="noopener" class="postlink" title="${esc(p.postUrl)}" style="color:var(--primary);text-decoration:none;font-weight:500">${label}${ic("external")}</a></td>
       <td>${p.campaign ? `<b>${esc(p.campaign)}</b>` : '<span class="muted">—</span>'}</td>
-      <td class="num-c">${num(p.engagers)}</td>
+      <td class="num-c">${num(p.engagers)}${ofY}</td>
       <td class="num-c" style="color:var(--good);font-weight:600">${num(p.verified)}</td>
       <td class="num-c muted">${num(p.noEmail)}</td>
       <td class="num-c muted">${num(p.unverified)}</td>

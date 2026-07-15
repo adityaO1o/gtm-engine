@@ -44,6 +44,10 @@ export const config = {
   // RapidAPI LinkedIn profile lookup (last-resort company/domain getter). Empty = skip the tier.
   linkedinApiKey: process.env.LINKEDIN_API_KEY || "",
   linkedinApiHost: process.env.LINKEDIN_API_HOST || "web-scraping-api2.p.rapidapi.com",
+  // Plan credit caps — RapidAPI doesn't expose a live balance, so "left" = plan − used(metered).
+  // Set these to your actual plan sizes in Dokploy (Ultra = 32000). Default Ultra.
+  rapidFreshPlan: parseInt(process.env.RAPID_FRESH_PLAN || "32000", 10),
+  rapidWebscrapePlan: parseInt(process.env.RAPID_WEBSCRAPE_PLAN || "32000", 10),
   // Post/engager scraping host — default FRESH so its $10/500 credits are drained first.
   scrapeApiHost: process.env.SCRAPE_API_HOST || "fresh-linkedin-profile-data.p.rapidapi.com",
   // Spacing between scrape API calls (ms) — a shared limiter so we don't burst the plan's
