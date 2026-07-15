@@ -20,7 +20,8 @@ export async function jinaBalance() {
     });
     if (r.status !== 200) return null;
     const w = r.data?.wallet || {};
-    const remaining = Number(w.total_balance ?? (w.trial_balance || 0) + (w.regular_balance || 0)) || 0;
+    // Jina can let the wallet dip slightly negative; never show a below-zero balance.
+    const remaining = Math.max(0, Number(w.total_balance ?? (w.trial_balance || 0) + (w.regular_balance || 0)) || 0);
     const val = { remaining, searches: Math.floor(remaining / TOKENS_PER_SEARCH) };
     cache = { at: Date.now(), val };
     return val;
