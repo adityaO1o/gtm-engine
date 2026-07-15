@@ -2,19 +2,23 @@
 // route its engagers into the Influencer/Hub SendKit campaigns with the classified category.
 
 import { sources, processedPosts } from "../db/mongo.js";
-import { getProfilePosts, getPostEngagements, getPostComments } from "../services/trigifyScrape.js";
+import { getProfilePosts, getPostEngagements, getPostComments, trigifyOutOfCredits } from "../services/trigifyScrape.js";
 import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
 import { SOURCE_CAMPAIGN } from "../services/campaigns.js";
 import { enrichLead } from "./enrichLead.js";
 import { log } from "../lib/logger.js";
 
-const POSTS_PER_INFLUENCER = 8;   // credit control
-const MAX_POSTS_PER_RUN = 120;    // enough to cover ~14 influencers x 8 posts + a hub in one sweep
+// No business cap on posts/engagers — the user tops up Trigify to scrape unlimited. These are
+// per-RUN batch sizes purely for durability: a run finishes in bounded time and persists its
+// progress (processed_posts dedup + per-influencer lastRun), so a container restart resumes
+// instead of losing everything. The scheduler fires often and grinds through the backlog.
+const MAX_POSTS_PER_RUN = 1200;       // process up to this many NEW posts per run, then stop
+const MAX_INFLUENCERS_PER_RUN = 400;  // list posts for up to this many profiles per run
 const MAX_HARVEST_AUTHORS = 20;
 
 let running = false;
-let status = { running: false, phase: "idle", postsProcessed: 0, totalPosts: 0, engagers: 0, uniqueEngagers: 0, newlyFound: 0, startedAt: null, finishedAt: null };
+let status = { running: false, phase: "idle", postsProcessed: 0, totalPosts: 0, engagers: 0, uniqueEngagers: 0, newlyFound: 0, influencersDone: 0, startedAt: null, finishedAt: null };
 export function sourcesStatus() { return status; }
 
 // Same person often engages with several posts — count them ONCE for the unique tally.
@@ -26,14 +30,25 @@ function classifyFrom(text, postUrl) {
   return classifyPost(text && text.length > 20 ? text : slug);
 }
 
+// Scrape one post's engagers + commenters and route each through the pipeline.
+// Returns "done" | "skip" (already processed) | "error" (Trigify fetch failed — NOT marked
+// processed, so it will be retried after a credit top-up).
 async function processPost(postUrl, text, sourceType) {
-  if (!postUrl) return;
-  if (await processedPosts().findOne({ postUrl })) return;
+  if (!postUrl) return "skip";
+  if (await processedPosts().findOne({ postUrl })) return "skip";
+
+  // Fetch FIRST. Only mark the post processed once we actually got its engagers — otherwise a
+  // credit-exhausted fetch would permanently skip a post we never really scraped.
+  let engagers;
+  try {
+    engagers = [...(await getPostEngagements(postUrl)), ...(await getPostComments(postUrl))];
+  } catch (e) {
+    return "error";
+  }
   await processedPosts().insertOne({ postUrl, at: new Date() });
 
   const category = classifyFrom(text, postUrl);
   const sc = SOURCE_CAMPAIGN[sourceType];
-  const engagers = [...(await getPostEngagements(postUrl)), ...(await getPostComments(postUrl))];
   for (const e of engagers) {
     try {
       const r = await enrichLead({ ...e, campaign: sc.key, campaign_id: sc.sendkitId, category, source: sourceType, post_url: postUrl });
@@ -44,53 +59,61 @@ async function processPost(postUrl, text, sourceType) {
     } catch (err) { log.warn("source enrich failed", { err: err.message }); }
   }
   status.postsProcessed++;
+  return "done";
 }
 
 export async function runSources() {
   if (running) return { alreadyRunning: true, ...status };
   running = true;
   seenEngagers = new Set();
-  status = { running: true, phase: "starting", postsProcessed: 0, totalPosts: 0, engagers: 0, uniqueEngagers: 0, newlyFound: 0, startedAt: new Date(), finishedAt: null };
+  status = { running: true, phase: "starting", postsProcessed: 0, totalPosts: 0, engagers: 0, uniqueEngagers: 0, newlyFound: 0, influencersDone: 0, startedAt: new Date(), finishedAt: null };
   try {
-    const queue = []; // { postUrl, text, source }
-
     // Hubs first — they may harvest brand-new influencer profiles into the collection.
     const hubs = await sources().find({ type: "hub", active: { $ne: false } }).toArray();
     for (const s of hubs) {
       status.phase = "hub:" + (s.label || s.url);
       const { posts, authors } = await hubScrape(s.url);
-      posts.forEach((p) => queue.push({ postUrl: p, text: "", source: "hub" }));
       for (const a of authors.slice(0, MAX_HARVEST_AUTHORS)) {
         await sources().updateOne({ url: a },
           { $setOnInsert: { url: a, type: "influencer", label: (a.split("/in/")[1] || "").replace(/\/$/, ""), active: true, harvestedFrom: s.url, addedAt: new Date() } },
           { upsert: true });
       }
+      for (const p of posts) {
+        if (status.postsProcessed >= MAX_POSTS_PER_RUN) break;
+        await processPost(p, "", "hub");
+      }
       await sources().updateOne({ _id: s._id }, { $set: { lastRun: new Date() } });
     }
 
-    // Re-query influencers AFTER harvest so the ones the hub just added (and any the user
-    // added while a run was starting) are covered in this same sweep — not left "never".
-    const infls = await sources().find({ type: "influencer", active: { $ne: false } }).toArray();
-    for (const s of infls) {
-      status.phase = "influencer:" + (s.label || s.url);
-      const posts = await getProfilePosts(s.url);
-      posts.slice(0, POSTS_PER_INFLUENCER).forEach((p) => queue.push({ postUrl: p.postUrl, text: p.text, source: "influencer" }));
-      await sources().updateOne({ _id: s._id }, { $set: { lastRun: new Date(), lastPosts: posts.length } });
-    }
-
-    // Dedup the queue by postUrl (two influencers can surface the same post) so the
-    // progress denominator reflects UNIQUE posts, not repeats.
-    const uniq = [...new Map(queue.map((p) => [p.postUrl, p])).values()].slice(0, MAX_POSTS_PER_RUN);
+    // Influencers, LEAST-RECENTLY-SCRAPED FIRST (nulls first). We process each profile fully
+    // before moving on and persist lastRun immediately, so across many runs the scheduler
+    // cycles through the entire ~5k backlog fairly and a restart never redoes finished work.
     status.phase = "processing";
-    status.totalPosts = uniq.length;
-    for (const p of uniq) {
-      await processPost(p.postUrl, p.text, p.source);
+    const infls = await sources().find({ type: "influencer", active: { $ne: false } })
+      .sort({ lastRun: 1 }).limit(MAX_INFLUENCERS_PER_RUN).toArray();
+
+    for (const s of infls) {
+      if (status.postsProcessed >= MAX_POSTS_PER_RUN || trigifyOutOfCredits) break;
+      status.phase = "influencer:" + (s.label || s.url);
+      let posts = [];
+      try { posts = await getProfilePosts(s.url); }
+      catch (e) { if (trigifyOutOfCredits) break; log.warn("profile posts failed", { url: s.url, err: e.message }); continue; }
+      for (const p of posts) {
+        if (status.postsProcessed >= MAX_POSTS_PER_RUN) break;
+        const r = await processPost(p.postUrl, p.text, "influencer");
+        if (r === "error" && trigifyOutOfCredits) break; // credits gone — stop, leave rest un-marked
+      }
+      // Only mark this profile fully scraped if we didn't stop early on a credit outage.
+      if (!trigifyOutOfCredits) await sources().updateOne({ _id: s._id }, { $set: { lastRun: new Date(), lastPosts: posts.length } });
+      status.influencersDone++;
     }
+    status.totalPosts = status.postsProcessed; // bounded run — denominator == what we did
+    if (trigifyOutOfCredits) { status.phase = "stopped: trigify out of credits"; log.warn("sources run stopped — trigify out of credits"); }
   } catch (e) {
     log.error("runSources error", { err: e.message });
   }
   status = { ...status, running: false, phase: "done", finishedAt: new Date() };
   running = false;
-  log.info("sources run done", { posts: status.postsProcessed, engagers: status.engagers, sent: status.newlyFound });
+  log.info("sources run done", { posts: status.postsProcessed, engagers: status.engagers, sent: status.newlyFound, influencers: status.influencersDone });
   return { postsProcessed: status.postsProcessed, engagers: status.engagers, newlyFound: status.newlyFound };
 }

@@ -75,8 +75,19 @@ async function main() {
   app.listen(config.port, () =>
     log.info("gtm-engine up", { port: config.port, proxies: poolSize(), dashLocked: !!(config.dashUser && config.dashPass), ipAllowlist: config.allowIps.length })
   );
-  // Daily scrape of the managed hub + influencer sources.
-  setInterval(() => { runSources().catch((e) => log.warn("scheduled sources failed", { err: e.message })); }, 24 * 60 * 60 * 1000);
+  // Self-chaining source scraper. Each run processes a bounded batch (durable — progress is
+  // persisted via processed_posts + per-influencer lastRun). If a run filled its batch there's
+  // more backlog, so we come back in a minute and keep grinding through the ~5k influencers;
+  // when it drains (small run) we idle to a 3-hour check for fresh posts. This is how "unlimited"
+  // scraping stays alive across container restarts without a single giant run that dies midway.
+  async function sourcesLoop() {
+    let processed = 0;
+    try { const r = await runSources(); processed = r?.postsProcessed || 0; }
+    catch (e) { log.warn("scheduled sources failed", { err: e.message }); }
+    const busy = processed >= 1000;                       // near the per-run cap => backlog remains
+    setTimeout(sourcesLoop, busy ? 60_000 : 3 * 60 * 60 * 1000);
+  }
+  setTimeout(sourcesLoop, 60_000); // first sweep shortly after boot
 }
 
 main().catch((e) => {
