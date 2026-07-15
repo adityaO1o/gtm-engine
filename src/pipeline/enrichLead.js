@@ -18,6 +18,7 @@ import { scoreFromHistory } from "../services/score.js";
 import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
 import { isCompanyPage, isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { bumpUsage } from "../services/usage.js";
+import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
 // crude company extraction from a headline ("Founder @ Acme | ex-Google" -> "Acme")
@@ -63,11 +64,25 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
     const f = await findEmailByNameDomain(firstName, lastName, domain);
     if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:name+domain"; preVerified = f.verified; }
   }
-  // resolve liker URN -> vanity. The SERP tiers also hand back the person's COMPANY from the
-  // result snippet — so if the headline had no company, we recover one here and retry the
-  // (highest-hit-rate) name+domain path. This is how we squeeze emails out of the ~3k leads
-  // whose headline was just "Founder | Helping SaaS scale" with no employer.
-  if (!em.found && isUrn(linkedin_url)) {
+  // (a1) URN + LinkedIn API configured? Feed the obfuscated liker URN STRAIGHT to the profile
+  // API — it accepts URN format — so we get the person's real vanity URL + CURRENT COMPANY +
+  // DOMAIN in one call and skip the whole (slow, SERP-credit-burning) resolve step. This is the
+  // strongest path for likers: URN -> company+domain -> name+domain email.
+  if (!em.found && isUrn(linkedin_url) && config.linkedinApiKey) {
+    const pc = await profileCompany(linkedin_url);
+    if (pc?.vanity) vanity = pc.vanity;
+    if (pc?.company && !company) company = pc.company;
+    if (pc?.domain && !domain) domain = pc.domain;
+    else if (company && !domain) domain = await companyDomain(company);
+    if (!em.found && domain && firstName && lastName) {
+      const f = await findEmailByNameDomain(firstName, lastName, domain);
+      if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:linkedin-api"; preVerified = f.verified; }
+    }
+  }
+  // resolve liker URN -> vanity (free tiers), when the LinkedIn API didn't already give us one.
+  // The SERP tiers also hand back the person's COMPANY from the result snippet — if the headline
+  // had no company we recover one here and retry name+domain.
+  if (!em.found && isUrn(vanity)) {
     const resolved = await resolveVanity({ name, company });
     if (resolved?.url) vanity = resolved.url;
     if (!company && resolved?.company) {
@@ -79,10 +94,9 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
       }
     }
   }
-  // (a2) Still no company, but we DO have a real profile URL? Ask the paid LinkedIn profile API
-  // for the person's current employer + domain (last-resort, minority of leads), then retry
-  // name+domain. Gated by LINKEDIN_API_KEY — a no-op until it's configured.
-  if (!em.found && !domain && vanity && !isUrn(vanity)) {
+  // (a2) Have a real profile URL but STILL no company? Last-resort profile lookup (also covers
+  // commenters, who arrive with a vanity URL and never hit the URN path above).
+  if (!em.found && !domain && vanity && !isUrn(vanity) && config.linkedinApiKey) {
     const pc = await profileCompany(vanity);
     if (pc) {
       if (!company && pc.company) company = pc.company;

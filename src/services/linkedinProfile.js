@@ -31,13 +31,24 @@ function pickDomain(d) {
   return null;
 }
 
-// -> { company, domain } | null
-export async function profileCompany(linkedinUrl) {
-  if (!config.linkedinApiKey || outOfQuota || !linkedinUrl) return null;
+const clean2 = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
+function pickVanityUrl(d) {
+  const pid = clean2(d?.public_id) || clean2(d?.public_identifier) || clean2(d?.username);
+  if (pid) return "https://www.linkedin.com/in/" + pid.replace(/\/$/, "");
+  const u = clean2(d?.linkedin_url) || clean2(d?.profile_url);
+  return u && /\/in\//.test(u) && !/\/in\/ACoAA/i.test(u) ? u : null;
+}
+function pickName(d) { return clean2(d?.full_name) || [clean2(d?.first_name), clean2(d?.last_name)].filter(Boolean).join(" ") || null; }
+
+// The endpoint accepts a vanity URL OR an obfuscated liker URN (…/in/ACoAA…) directly, so we can
+// feed the Trigify URN straight in and skip the whole resolve step.
+// -> { company, domain, vanity, name } | null
+export async function profileCompany(linkedinUrlOrUrn) {
+  if (!config.linkedinApiKey || outOfQuota || !linkedinUrlOrUrn) return null;
   try {
     stats.calls++;
     const r = await axios.get(`https://${config.linkedinApiHost}/get-personal-profile`, {
-      params: { linkedin_url: linkedinUrl },
+      params: { linkedin_url: linkedinUrlOrUrn },
       headers: { "x-rapidapi-host": config.linkedinApiHost, "x-rapidapi-key": config.linkedinApiKey },
       timeout: 25000, validateStatus: () => true,
     });
@@ -48,9 +59,8 @@ export async function profileCompany(linkedinUrl) {
     }
     if (r.status !== 200) { log.warn("linkedin profile api non-200", { status: r.status }); return null; }
     const body = r.data?.data || r.data || {};
-    const company = pickCompany(body);
-    const domain = pickDomain(body);
-    if (company || domain) { stats.hits++; return { company, domain }; }
+    const out = { company: pickCompany(body), domain: pickDomain(body), vanity: pickVanityUrl(body), name: pickName(body) };
+    if (out.company || out.domain || out.vanity) { stats.hits++; return out; }
     return null;
   } catch (e) {
     log.warn("linkedin profile api threw", { err: e.message });
