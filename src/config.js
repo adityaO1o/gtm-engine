@@ -35,6 +35,10 @@ export const config = {
   // Serper.dev SERP keys (comma-separated), used after Jina runs out. 1 credit per query.
   serperKeys: (process.env.SERPER_KEYS || "").split(",").map((s) => s.trim()).filter(Boolean),
 
+  // RapidAPI LinkedIn profile lookup (last-resort company/domain getter). Empty = skip the tier.
+  linkedinApiKey: process.env.LINKEDIN_API_KEY || "",
+  linkedinApiHost: process.env.LINKEDIN_API_HOST || "fresh-linkedin-profile-data.p.rapidapi.com",
+
   sendkit: {
     key: req("SENDKIT_KEY"),
     base: process.env.SENDKIT_BASE || "https://api.sendkit.ai",

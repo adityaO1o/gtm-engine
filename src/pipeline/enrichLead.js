@@ -12,6 +12,7 @@ import { resolveVanity, isUrn } from "../services/resolve.js";
 import { findEmail, verifyEmail } from "../services/prospeo.js";
 import { validateEmail, isRoleBased, findEmailByLinkedin, findEmailByNameDomain } from "../services/enrich.js";
 import { companyDomain } from "../services/clearbit.js";
+import { profileCompany } from "../services/linkedinProfile.js";
 import { findOurLead, upsertLead, addToCampaign, addToDnc } from "../services/sendkit.js";
 import { scoreFromHistory } from "../services/score.js";
 import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
@@ -75,6 +76,20 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
       if (domain && firstName && lastName) {
         const f = await findEmailByNameDomain(firstName, lastName, domain);
         if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:name+domain"; preVerified = f.verified; }
+      }
+    }
+  }
+  // (a2) Still no company, but we DO have a real profile URL? Ask the paid LinkedIn profile API
+  // for the person's current employer + domain (last-resort, minority of leads), then retry
+  // name+domain. Gated by LINKEDIN_API_KEY — a no-op until it's configured.
+  if (!em.found && !domain && vanity && !isUrn(vanity)) {
+    const pc = await profileCompany(vanity);
+    if (pc) {
+      if (!company && pc.company) company = pc.company;
+      domain = pc.domain || (pc.company ? await companyDomain(pc.company) : null);
+      if (domain && firstName && lastName) {
+        const f = await findEmailByNameDomain(firstName, lastName, domain);
+        if (f.found && f.email) { em = { found: true, email: f.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:linkedin-api"; preVerified = f.verified; }
       }
     }
   }
