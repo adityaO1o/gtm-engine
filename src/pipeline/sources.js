@@ -1,12 +1,12 @@
 // Sources orchestrator: scrape influencer posts + hub pages, classify each post by topic,
 // route its engagers into the Influencer/Hub SendKit campaigns with the classified category.
 
-import { sources, processedPosts } from "../db/mongo.js";
+import { sources, processedPosts, scrapedPosts } from "../db/mongo.js";
 import { getProfilePosts, getPostEngagements, getPostComments, trigifyOutOfCredits } from "../services/trigifyScrape.js";
 import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
 import { routeSourceEngager } from "../services/campaigns.js";
-import { scrapePostEngagers, rapidScrapeOutOfCredits } from "../services/rapidScrape.js";
+import { scrapePostEngagers, rapidScrapeOutOfCredits, activityUrn } from "../services/rapidScrape.js";
 import { enrichLead } from "./enrichLead.js";
 import { meterFlush } from "../services/apiMeter.js";
 import { log } from "../lib/logger.js";
@@ -88,6 +88,11 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
   if (scrapeOneRunning) return { ok: false, error: "already running", ...scrapeOneStatus };
   scrapeOneRunning = true;
   scrapeOneStatus = { running: true, postUrl, campaign: "", engagers: 0, sent: 0, outOfCredits: false, startedAt: new Date(), finishedAt: null };
+  // Record this scrape immediately so it shows in the Sources "Scraped posts" history while it runs
+  // (and survives deploys — the old ephemeral in-memory status did not).
+  scrapedPosts().updateOne({ postUrl },
+    { $set: { postUrl, activityId: activityUrn(postUrl), running: true, startedAt: new Date() }, $unset: { backfilled: "" } },
+    { upsert: true }).catch(() => {});
   (async () => {
     try {
       const { engagers, error } = await scrapePostEngagers(postUrl);
@@ -107,7 +112,15 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
         } catch (err) { log.warn("scrapeOnePost enrich failed", { err: err.message }); }
       }
       scrapeOneStatus.outOfCredits = rapidScrapeOutOfCredits();
-    } catch (e) { log.error("scrapeOnePost error", { err: e.message }); }
+      await scrapedPosts().updateOne({ postUrl }, { $set: {
+        campaign: scrapeOneStatus.campaign, campaign_key: (forced || camp)?.key || "",
+        engagers_scraped: scrapeOneStatus.engagers, sent: scrapeOneStatus.sent,
+        out_of_credits: scrapeOneStatus.outOfCredits, running: false, finishedAt: new Date(),
+      } });
+    } catch (e) {
+      log.error("scrapeOnePost error", { err: e.message });
+      await scrapedPosts().updateOne({ postUrl }, { $set: { running: false, finishedAt: new Date() } }).catch(() => {});
+    }
     await meterFlush(); // persist Fresh/web-scrape/resolver consumption this scrape spent
     scrapeOneStatus = { ...scrapeOneStatus, running: false, finishedAt: new Date() };
     scrapeOneRunning = false;

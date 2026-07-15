@@ -2,7 +2,7 @@
 
 import { Router } from "express";
 import { ObjectId } from "mongodb";
-import { leads, engagements, usage, sources, reprocessRuns } from "../db/mongo.js";
+import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts } from "../db/mongo.js";
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
 import { rapidScrapeStats } from "../services/rapidScrape.js";
 import { linkedinProfileStats } from "../services/linkedinProfile.js";
@@ -440,6 +440,29 @@ apiRouter.post("/sources/scrape-post", async (req, res) => {
   res.json(r);
 });
 apiRouter.get("/sources/scrape-post/status", (_req, res) => res.json({ ...scrapePostStatus(), rapid: rapidScrapeStats() }));
+
+// GET /api/sources/scraped-posts — history of "Scrape via post" runs, with LIVE per-post counts
+// (engagers / verified / no-email / unverified) computed from leads.posts_seen. Counts stay current
+// as retries recover emails, so Verified climbs here on its own.
+apiRouter.get("/sources/scraped-posts", async (_req, res) => {
+  const posts = await scrapedPosts().find({}).sort({ startedAt: -1 }).limit(50).toArray();
+  const out = await Promise.all(posts.map(async (p) => {
+    const base = { posts_seen: p.postUrl };
+    const [engagers, verified, noEmail, unverified] = await Promise.all([
+      leads().countDocuments(base),
+      leads().countDocuments({ ...base, email_status: "verified" }),
+      leads().countDocuments({ ...base, email_status: "no-email" }),
+      leads().countDocuments({ ...base, email_status: "unverified" }),
+    ]);
+    return {
+      postUrl: p.postUrl,
+      activityId: p.activityId || (String(p.postUrl).match(/activity[:-](\d+)/) || [])[1] || null,
+      campaign: p.campaign || null, at: p.finishedAt || p.startedAt, running: !!p.running,
+      engagers, verified, noEmail, unverified,
+    };
+  }));
+  res.json({ posts: out });
+});
 
 // POST /api/sources/pause { paused } — master switch for the auto influencer/hub sweep
 apiRouter.post("/sources/pause", (req, res) => res.json({ paused: setAutoScrape(!!req.body?.paused) }));

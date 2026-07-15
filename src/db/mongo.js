@@ -38,6 +38,21 @@ export async function connect() {
   await db.collection("reprocess_runs").createIndex({ finishedAt: -1 });
   await db.collection("leads").createIndex({ recovered: 1 });
   await db.collection("leads").createIndex({ dnc: 1 });
+  await db.collection("leads").createIndex({ posts_seen: 1 });         // per-scraped-post live counts
+  await db.collection("scraped_posts").createIndex({ postUrl: 1 }, { unique: true });
+
+  // One-time: seed the scraped-post history from existing manual-scrape leads, so posts scraped
+  // BEFORE this feature (e.g. the Instantly post) still show up with their live engager/verified
+  // counts instead of vanishing. Runs once (only when the collection is empty).
+  if (await db.collection("scraped_posts").countDocuments() === 0) {
+    const urls = (await db.collection("leads").distinct("posts_seen", { source_list: "manual-post" })).filter(Boolean);
+    for (const u of urls) {
+      await db.collection("scraped_posts").updateOne({ postUrl: u },
+        { $setOnInsert: { postUrl: u, backfilled: true, startedAt: new Date() } }, { upsert: true });
+    }
+    if (urls.length) log.info("seeded scraped-post history", { posts: urls.length });
+  }
+
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
@@ -51,3 +66,6 @@ export const apiUsage = () => db.collection("api_usage");
 export const sources = () => db.collection("sources");
 export const processedPosts = () => db.collection("processed_posts");
 export const reprocessRuns = () => db.collection("reprocess_runs");
+// History of manually "Scrape via post" runs — postUrl + campaign; engager/verified counts are
+// computed live from leads.posts_seen, so they stay current as retries recover emails.
+export const scrapedPosts = () => db.collection("scraped_posts");

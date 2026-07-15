@@ -413,7 +413,7 @@ async function renderSourceList(list) {
 
 async function renderSources() {
   if (SRC_LIST) return renderSourceList(SRC_LIST);
-  const d = await j("/api/sources");
+  const [d, sp] = await Promise.all([j("/api/sources"), j("/api/sources/scraped-posts").catch(() => ({ posts: [] }))]);
   const st = d.status || {};
   const listCount = (d.lists || []).reduce((a, l) => a + l.count, 0);
   $("#c-src") && ($("#c-src").textContent = num(((d.sources || []).filter((s) => s.type === "influencer").length) + listCount));
@@ -446,6 +446,7 @@ async function renderSources() {
         <button class="btn btn-sm" data-scrapepost>${ic("bolt")}Scrape post</button></div>
       <div id="postBox" style="margin-top:10px">${scrapePostBox(d.scrapePost)}</div>
     </div>
+    ${scrapedPostsHTML(sp.posts || [])}
     <div id="srcBox">${jobBox("sources", st)}</div>
     ${listsHTML(d.lists || [])}
     <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--s3);align-items:start">
@@ -456,6 +457,27 @@ async function renderSources() {
         <div class="toolbar" style="margin-bottom:var(--s3)"><input class="search" id="in-hub" placeholder="linkedin.com/top-content/... URL" style="flex:1;min-width:0"><button class="btn btn-sm" data-addsrc="hub">${ic("plus")}Add</button></div>
         <div class="tablewrap" style="border:none"><table><thead><tr><th>Hub</th><th>URL</th><th>Posts</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("hub")}</tbody></table></div></div>
     </div>`;
+}
+
+// Persisted history of every "Scrape via post" run, with LIVE counts (verified climbs as retries
+// recover no-email leads). Survives deploys — reads from the scraped_posts collection + leads.
+function scrapedPostsHTML(posts) {
+  if (!posts.length) return "";
+  const rows = posts.map((p) => {
+    const hit = p.engagers ? Math.round((p.verified / p.engagers) * 100) : 0;
+    return `<tr>
+      <td><span class="mono muted" title="${esc(p.postUrl)}">activity:${esc(p.activityId || "—")}</span></td>
+      <td>${p.campaign ? `<b>${esc(p.campaign)}</b>` : '<span class="muted">—</span>'}</td>
+      <td class="num-c">${num(p.engagers)}</td>
+      <td class="num-c" style="color:var(--good);font-weight:600">${num(p.verified)}</td>
+      <td class="num-c muted">${num(p.noEmail)}</td>
+      <td class="num-c muted">${num(p.unverified)}</td>
+      <td class="num-c">${hit}%</td>
+      <td class="tstamp">${p.running ? '<span style="color:var(--primary)">scraping…</span>' : ts(p.at)}</td></tr>`;
+  }).join("");
+  return `<div class="chartbox" style="margin-bottom:var(--s3)"><h4>${ic("check")}Scraped posts <span class="muted" style="font-size:11px;font-weight:400">· live counts</span></h4>
+    <div class="tablewrap" style="border:none"><table><thead><tr><th>Post</th><th>Campaign</th><th>Engagers</th><th>Verified</th><th>No-email</th><th>Unverified</th><th title="verified ÷ engagers">Hit</th><th>When</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="muted" style="font-size:11.5px;margin-top:8px">Counts are live — as retries recover no-email leads, Verified climbs here automatically.</div></div>`;
 }
 
 // Live status of a "Scrape via post" run — which post, engagers scraped, verified & sent.
