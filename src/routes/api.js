@@ -3,7 +3,7 @@
 import { Router } from "express";
 import { ObjectId } from "mongodb";
 import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts } from "../db/mongo.js";
-import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
+import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
 import { rapidScrapeStats, postDetails, activityUrn, rapidScrapeOutOfCredits } from "../services/rapidScrape.js";
 import { linkedinProfileStats } from "../services/linkedinProfile.js";
 import { meterCumulative } from "../services/apiMeter.js";
@@ -441,7 +441,25 @@ apiRouter.post("/sources/scrape-post", async (req, res) => {
   const r = await scrapeOnePost({ postUrl, campaignKey: campaign });
   res.json(r);
 });
-apiRouter.get("/sources/scrape-post/status", (_req, res) => res.json({ ...scrapePostStatus(), rapid: rapidScrapeStats() }));
+// DB-backed status so it survives restarts (in-memory state resets, the scraped_posts doc doesn't).
+apiRouter.get("/sources/scrape-post/status", async (_req, res) => {
+  const mem = scrapePostStatus();
+  let doc = mem.postUrl ? await scrapedPosts().findOne({ postUrl: mem.postUrl }) : null;
+  if (!doc) doc = await scrapedPosts().findOne({ scrape_cp: { $exists: true } }, { sort: { startedAt: -1 } });
+  if (!doc) return res.json({ ...mem, rapid: rapidScrapeStats() });
+  const live = mem.running && mem.postUrl === doc.postUrl;
+  res.json({
+    running: live, phase: live ? mem.phase : doc.phase, postUrl: doc.postUrl, campaign: doc.campaign || "",
+    total: live ? mem.total : (doc.engager_total || 0),
+    enriched: live ? mem.enriched : (doc.enriched_count || 0),
+    sent: live ? mem.sent : (doc.sent || 0),
+    paused: !live && (doc.paused || false), scrapeDone: !!doc.scrape_done, outOfCredits: doc.out_of_credits || false,
+    rapid: rapidScrapeStats(),
+  });
+});
+
+// POST /api/sources/scrape-post/pause — ask the running scrape to checkpoint and stop
+apiRouter.post("/sources/scrape-post/pause", (_req, res) => res.json(pauseScrapePost()));
 
 // GET /api/sources/scraped-posts — history of "Scrape via post" runs, with LIVE per-post counts
 // (engagers / verified / no-email / unverified) computed from leads.posts_seen. Counts stay current

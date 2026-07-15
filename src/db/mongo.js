@@ -40,6 +40,10 @@ export async function connect() {
   await db.collection("leads").createIndex({ dnc: 1 });
   await db.collection("leads").createIndex({ posts_seen: 1 });         // per-scraped-post live counts
   await db.collection("scraped_posts").createIndex({ postUrl: 1 }, { unique: true });
+  // Durable engager queue for the resumable "Scrape via post" job — scraped engagers are parked
+  // here, then drained by the enrichment phase, so a restart/pause resumes instead of losing work.
+  await db.collection("scrape_engagers").createIndex({ postUrl: 1, ekey: 1 }, { unique: true });
+  await db.collection("scrape_engagers").createIndex({ postUrl: 1, enriched: 1 });
 
   // Reconcile the backfilled scraped-post history (idempotent, every boot). A manual scrape's post
   // appears on MANY of its leads' posts_seen; incidental posts (those people also engaged elsewhere)
@@ -61,6 +65,10 @@ export async function connect() {
     if (legit.length || removed.deletedCount) log.info("reconciled scraped-post history", { kept: legit.length, removed: removed.deletedCount });
   } catch (e) { log.warn("scraped-post backfill reconcile failed", { err: e.message }); }
 
+  // A scrape marked running when the process died (deploy/crash) is not actually running — flag it
+  // paused so the dashboard offers Resume (its queue + checkpoint are intact, so it continues cleanly).
+  await db.collection("scraped_posts").updateMany({ running: true }, { $set: { running: false, paused: true, phase: "paused" } });
+
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
@@ -77,3 +85,4 @@ export const reprocessRuns = () => db.collection("reprocess_runs");
 // History of manually "Scrape via post" runs — postUrl + campaign; engager/verified counts are
 // computed live from leads.posts_seen, so they stay current as retries recover emails.
 export const scrapedPosts = () => db.collection("scraped_posts");
+export const scrapeEngagers = () => db.collection("scrape_engagers");

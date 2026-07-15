@@ -107,6 +107,30 @@ function pushReactor(out, it) {
   }
 }
 
+export { REACTION_TYPES };
+
+// ── Page-level scrapers (used by the RESUMABLE queue-based scrape runner) ─────────────────────
+// Each returns the page's engagers + enough info to checkpoint. null => stop (out of credits / hard
+// fail after retries) — the caller saves the checkpoint and can resume later from the same spot.
+export async function reactionPage(urn, type, page) {
+  const d = await get("get-post-reactions", { urn, type, page });
+  if (d === null) return null;
+  const items = d?.data || [];
+  stats.reactionPages++; meter.inc("rapid_pages");
+  const engagers = [];
+  for (const it of items) pushReactor(engagers, it);
+  return { engagers, count: items.length, total: typeof d?.total === "number" ? d.total : null };
+}
+export async function commentPage(urn, token) {
+  const d = await get("get-post-comments", token ? { urn, pagination_token: token } : { urn, page: 1 });
+  if (d === null) return null;
+  const items = d?.data || d?.comments || [];
+  stats.commentPages++; meter.inc("rapid_pages");
+  const engagers = [];
+  for (const it of items) pushCommenter(engagers, it);
+  return { engagers, count: items.length, token: d?.pagination_token || null };
+}
+
 // All reactors -> engager objects. Loop each reaction TYPE (ALL is capped), page each to its total.
 async function reactions(urn) {
   const out = [];

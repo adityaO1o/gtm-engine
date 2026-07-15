@@ -461,6 +461,7 @@ async function renderSources() {
         <div class="toolbar" style="margin-bottom:var(--s3)"><input class="search" id="in-hub" placeholder="linkedin.com/top-content/... URL" style="flex:1;min-width:0"><button class="btn btn-sm" data-addsrc="hub">${ic("plus")}Add</button></div>
         <div class="tablewrap" style="border:none"><table><thead><tr><th>Hub</th><th>URL</th><th>Posts</th><th>Last run</th><th></th></tr></thead><tbody>${srcRows("hub")}</tbody></table></div></div>
     </div>`;
+  pollScrapePost(); // surface any running/paused scrape (and resume button) as soon as the tab opens
 }
 
 // Persisted history of every "Scrape via post" run, with LIVE counts (verified climbs as retries
@@ -487,14 +488,23 @@ function scrapedPostsHTML(posts) {
     <div class="muted" style="font-size:11.5px;margin-top:8px">Counts are live — as retries recover no-email leads, Verified climbs here automatically.</div></div>`;
 }
 
-// Live status of a "Scrape via post" run — which post, engagers scraped, verified & sent.
+// Live status of a "Scrape via post" run — phase, counts, and Pause / Resume controls.
+const SCR_PHASE = { scraping: "Scraping engagers", enriching: "Finding emails", done: "Done", paused: "Paused", stopped: "Stopped", error: "Error" };
 function scrapePostBox(s) {
-  if (!s || (!s.running && !s.finishedAt)) return "";
+  if (!s || !s.postUrl || s.phase === "idle" || !s.phase) return "";
   const id = (s.postUrl.match(/activity[:-](\d+)/) || [])[1] || s.postUrl.slice(-24);
   const stat = (l, v, cls) => `<span class="scstat"><b class="${cls || ""}">${num(v)}</b>${l}</span>`;
+  const icon = s.running ? "refresh" : s.phase === "paused" ? "pause" : s.phase === "done" ? "check" : "warn";
+  const pct = s.total ? Math.round((s.enriched / s.total) * 100) : 0;
+  const showBar = s.phase === "enriching" || s.phase === "paused";
+  const ctrl = s.running
+    ? `<button class="btn btn-ghost btn-sm" data-pausescrape>${ic("pause")}Pause</button>`
+    : (s.phase !== "done" ? `<button class="btn btn-sm" data-resumescrape="${esc(s.postUrl)}">${ic("bolt")}Resume</button>` : "");
   return `<div class="jobbox${s.running ? " on" : ""}">
-    <div class="jobh">${ic(s.running ? "refresh" : "check")}<span>${s.running ? "Scraping post" : "Scraped post"} <span class="mono muted">activity:${esc(id)}</span>${s.campaign ? ` → <b>${esc(s.campaign)}</b>` : ""}</span></div>
-    <div class="scrow">${stat("engagers scraped", s.engagers)}${stat("verified &amp; sent", s.sent, "ok")}${s.outOfCredits ? '<span class="scstat"><b style="color:var(--hot)">Fresh API</b>out of credits</span>' : ""}</div>
+    <div class="jobh">${ic(icon)}<span><b>${esc(SCR_PHASE[s.phase] || s.phase)}</b> <span class="mono muted">activity:${esc(id)}</span>${s.campaign ? ` → <b>${esc(s.campaign)}</b>` : ""}</span></div>
+    <div class="scrow">${stat("engagers scraped", s.total)}${stat("processed", s.enriched)}${stat("verified &amp; sent", s.sent, "ok")}${showBar ? `<span class="scstat"><b>${pct}%</b>done</span>` : ""}${s.outOfCredits ? '<span class="scstat"><b style="color:var(--hot)">Fresh</b>out of credits</span>' : ""}</div>
+    ${showBar ? bar(pct, s.running) : ""}
+    ${ctrl ? `<div class="toolbar" style="margin-top:8px">${ctrl}</div>` : ""}
   </div>`;
 }
 async function pollScrapePost() {
@@ -532,7 +542,7 @@ function listsHTML(lists) {
 // ---------------- events (CSP-safe delegation) ----------------
 document.addEventListener("click", async (e) => {
   if (!e.target.closest(".menu")) closeMenu();
-  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-retrydeep],[data-addsrc],[data-delsrc],[data-runsrc],[data-decide],[data-selpage],[data-batchallbtn],[data-srcopen],[data-srcback],[data-srcpg],[data-listactive],[data-listdel],[data-scrapepost]");
+  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-retrydeep],[data-addsrc],[data-delsrc],[data-runsrc],[data-decide],[data-selpage],[data-batchallbtn],[data-srcopen],[data-srcback],[data-srcpg],[data-listactive],[data-listdel],[data-scrapepost],[data-pausescrape],[data-resumescrape]");
   if (!t) return;
   if (t.dataset.v) return show(t.dataset.v);
   if (t.hasAttribute("data-x")) return $("#drawer").classList.remove("open");
@@ -606,6 +616,8 @@ document.addEventListener("click", async (e) => {
     await post("/api/sources/scrape-post", { postUrl: url });
     return pollScrapePost();
   }
+  if (t.hasAttribute("data-pausescrape")) { await post("/api/sources/scrape-post/pause", {}); return pollScrapePost(); }
+  if (t.dataset.resumescrape) { await post("/api/sources/scrape-post", { postUrl: t.dataset.resumescrape }); return pollScrapePost(); }
   // imported lists
   if (t.dataset.srcopen) { SRC_LIST = t.dataset.srcopen; SRC_LIST_PAGE = 0; return renderSources(); }
   if (t.hasAttribute("data-srcback")) { SRC_LIST = null; return renderSources(); }
