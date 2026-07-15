@@ -184,14 +184,17 @@ function updateBatchSel() {
   }, 150);
 }
 async function renderHandoff() {
+  const [{ runs, reasonLabels }] = await Promise.all([j("/api/reprocess/runs")]);
   const batches = CAMPAIGNS.filter((c) => c.noEmail > 0 || c.recovered > 0).sort((a, b) => b.noEmail - a.noEmail);
-  const totRec = CAMPAIGNS.reduce((a, c) => a + (c.recovered || 0), 0);
+  // DISTINCT recovered from /stats — NOT the sum of per-campaign recovered (a lead in two
+  // campaigns would be counted twice; that's the 1,320 vs 1,055 mismatch you saw).
+  const totRec = STATS.recovered ?? 0;
   const rows = batches.map((c) => `<tr><td class="chkcol"><input type="checkbox" class="chk" data-batch="${esc(c.campaign)}" data-noemail="${c.noEmail || 0}"></td>
     <td class="nm">${esc(c.label)}</td><td class="score">${num(c.noEmail)}</td>
     <td class="num-c" style="color:var(--good);font-weight:600">${num(c.recovered || 0)}</td>
     <td class="muted">${num(c.total)}</td><td class="muted">${num(c.verified)}</td></tr>`).join("");
   $("#v-handoff").innerHTML = `
-    <div class="note">${ic("inbox")}<div>Leads whose email wasn't found. Tick campaigns and <b>Retry</b> re-runs those batches through the Enrich-first waterfall (name+domain → URL → Prospeo). <b>Recovered</b> = emails rescued by a retry — <b>${num(totRec)}</b> so far.</div></div>
+    <div class="note">${ic("inbox")}<div>Leads whose email wasn't found. Tick campaigns and <b>Retry</b> re-runs those batches through the resolve → find → verify waterfall. <b>Recovered</b> = emails rescued by a retry — <b>${num(totRec)}</b> unique so far.</div></div>
     <div class="toolbar">
       <span class="resn" id="batchSel"></span>
       <button class="btn btn-ghost btn-sm" data-batchallbtn>${ic("check")}Select all</button>
@@ -200,9 +203,29 @@ async function renderHandoff() {
       <button class="btn btn-sm" data-retry>${ic("refresh")}Retry selected</button></div>
     <div id="retryBox">${jobBox("retry", JOBS.retry)}</div>
     ${batches.length ? `<div class="tablewrap"><table><thead><tr><th class="chkcol"><input type="checkbox" class="chk" data-batchall></th><th>Campaign</th><th>No-email</th><th>Recovered</th><th>Total</th><th>Verified</th></tr></thead><tbody>${rows}</tbody></table></div>`
-      : `<div class="tablewrap"><div class="empty">${ic("check")}<b>All caught up</b>No hand-off leads — every campaign's emails were found.</div></div>`}`;
+      : `<div class="tablewrap"><div class="empty">${ic("check")}<b>All caught up</b>No hand-off leads — every campaign's emails were found.</div></div>`}
+    ${runLogHTML(runs, reasonLabels)}`;
   updateBatchSel();
 }
+// Retry run history — how many recovered per run, and WHY the rest missed.
+function runLogHTML(runs, labels) {
+  if (!runs || !runs.length) return "";
+  const REASON_ORDER = ["no_email_found", "unresolved", "no_company_urn", "unverified", "review", "competitor", "role_based", "error"];
+  const row = (r) => {
+    const misses = Object.entries(r.reasons || {}).filter(([k]) => k !== "recovered").sort((a, b) => b[1] - a[1]);
+    const chips = misses.map(([k, v]) => `<span class="misschip" title="${esc((labels && labels[k]) || k)}">${esc(k.replace(/_/g, " "))} <b>${num(v)}</b></span>`).join("");
+    return `<tr>
+      <td class="tstamp">${ts(r.finishedAt)}</td>
+      <td class="num-c" style="color:var(--good);font-weight:600">+${num(r.recovered)}</td>
+      <td class="muted">${num(r.processed)}</td>
+      <td>${r.campaigns && r.campaigns.length ? esc(r.campaigns.map((c) => campaignLabelOf(c)).join(", ")) : '<span class="muted">all</span>'}</td>
+      <td><div class="misswrap">${chips || '<span class="muted">—</span>'}</div></td></tr>`;
+  };
+  return `<div class="section-t" style="margin-top:var(--s5)">${ic("refresh")}Retry history — why leads are still stuck</div>
+    <div class="tablewrap"><table><thead><tr><th>When</th><th>Recovered</th><th>Processed</th><th>Scope</th><th>Why the rest missed</th></tr></thead>
+    <tbody>${runs.map(row).join("")}</tbody></table></div>`;
+}
+const campaignLabelOf = (key) => (CAMPAIGNS.find((c) => c.campaign === key)?.label) || key;
 
 // ---------------- Review (you adjudicate the name-match guard) ----------------
 // These are emails the guard held back because the local-part didn't plausibly match the

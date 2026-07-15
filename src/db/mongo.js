@@ -35,6 +35,9 @@ export async function connect() {
   await db.collection("usage").createIndex({ campaign: 1 }, { unique: true });
   await db.collection("sources").createIndex({ url: 1 }, { unique: true });
   await db.collection("processed_posts").createIndex({ postUrl: 1 }, { unique: true });
+  await db.collection("reprocess_runs").createIndex({ finishedAt: -1 });
+  await db.collection("leads").createIndex({ recovered: 1 });
+  await db.collection("leads").createIndex({ dnc: 1 });
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
@@ -44,3 +47,4 @@ export const engagements = () => db.collection("engagements");
 export const usage = () => db.collection("usage");
 export const sources = () => db.collection("sources");
 export const processedPosts = () => db.collection("processed_posts");
+export const reprocessRuns = () => db.collection("reprocess_runs");

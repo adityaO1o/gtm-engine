@@ -2,7 +2,7 @@
 
 import { Router } from "express";
 import { ObjectId } from "mongodb";
-import { leads, engagements, usage, sources } from "../db/mongo.js";
+import { leads, engagements, usage, sources, reprocessRuns } from "../db/mongo.js";
 import { runSources, sourcesStatus } from "../pipeline/sources.js";
 import { trigifyBalance, setWorkflowEnabled } from "../services/trigify.js";
 import { prospeoBalance, verifyEmail } from "../services/prospeo.js";
@@ -10,7 +10,7 @@ import { jinaBalance } from "../services/jina.js";
 import { resolveStats } from "../services/resolve.js";
 import { validateEmail } from "../services/enrich.js";
 import { findEmailWaterfall } from "../pipeline/enrichLead.js";
-import { reprocessNoEmail, reprocessStatus, noEmailQuery } from "../pipeline/reprocess.js";
+import { reprocessNoEmail, reprocessStatus, noEmailQuery, MISS_REASONS } from "../pipeline/reprocess.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { campaignByKey, campaignLabel, sendkitIdsFor } from "../services/campaigns.js";
 import { upsertLeads, addLeadsToCampaign, addToDnc } from "../services/sendkit.js";
@@ -286,6 +286,12 @@ apiRouter.post("/reprocess", (req, res) => {
   res.json({ started: true });
 });
 apiRouter.get("/reprocess/status", (_req, res) => res.json(reprocessStatus()));
+
+// GET /api/reprocess/runs — history of retry runs (recovered per run + why the rest missed)
+apiRouter.get("/reprocess/runs", async (_req, res) => {
+  const runs = await reprocessRuns().find({}).sort({ finishedAt: -1 }).limit(20).toArray();
+  res.json({ runs, reasonLabels: MISS_REASONS });
+});
 
 // GET /api/reprocess/count?campaigns=a,b — TRUE distinct no-email count for a selection.
 // The UI must never add up per-campaign no-email totals: a lead in two campaigns would be
