@@ -1,16 +1,16 @@
 // Tier-1 URN resolver: the self-hosted SEO SERP API (wraps Jina + its own proxies).
 //   POST {seoApiBase}/api/serp  { query }  ->  { results: [{ title, url, description }] }
-// A 500 means the SEO server's JINA_API_KEY is missing/exhausted — retire this tier for the rest
-// of the run (fall through to Serper -> proxies). A 429 / network wobble is a brief cooldown only.
+// A 500 (the host's Jina key momentarily exhausted/erroring) or a network wobble is a temporary
+// COOLDOWN — never a permanent retire. A long scrape runs for hours; disabling the primary tier
+// forever on one blip (the old bug) dumped everything onto Serper/proxies. It always self-heals.
 
 import axios from "axios";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
-let dead = false;       // permanent-this-run (500: Jina key missing/exhausted on the SEO host)
-let coolUntil = 0;      // temporary (429 / network error)
+let coolUntil = 0; // tier paused until this time (500 / 429 / network) — then it retries on its own
 
-export function seoSerpDead() { return dead; }
+export function seoSerpDead() { return false; }           // no permanent death — the tier self-heals
 export function seoSerpCoolingDown() { return Date.now() < coolUntil; }
 
 // The SEO host shares one Jina key across callers — space requests so we never burst it.
@@ -23,14 +23,14 @@ async function slot() {
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
 }
 
-// rows[] on success/empty · null when the tier is unusable this run (caller moves to Serper)
+// rows[] on success/empty · null when the tier is cooling down (caller falls through to Serper)
 export async function seoSerp(query) {
-  if (dead || Date.now() < coolUntil) return null;
+  if (Date.now() < coolUntil) return null;
   try {
     await slot();
     const r = await axios.post(`${config.seoApiBase}/api/serp`, { query },
       { headers: { "Content-Type": "application/json" }, timeout: 30000, validateStatus: () => true });
-    if (r.status === 500) { dead = true; log.warn("seo serp 500 (jina key on host?) — retiring tier this run"); return null; }
+    if (r.status === 500) { coolUntil = Date.now() + 120_000; log.warn("seo serp 500 — cooling 120s (host jina key?)"); return null; }
     if (r.status === 429) { coolUntil = Date.now() + 20_000; return null; }
     if (r.status !== 200) { log.warn("seo serp non-200", { status: r.status }); return []; }
     return (r.data?.results || []).map((x) => ({ url: x.url, title: x.title, description: x.description }));

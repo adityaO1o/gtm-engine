@@ -200,9 +200,11 @@ async function serperSearch(query) {
     k.coolUntil = Date.now() + 15_000;      // brief pause on this key, try the next
     return serperSearch(query);
   }
-  if (r.status === 402 || r.status === 403) {
+  // 400/401/402/403 = the key is invalid, unauthorized, or out of credits. It will 400 on EVERY
+  // call, so retire it (don't hammer Serper on every resolve) and rotate to the next key.
+  if ([400, 401, 402, 403].includes(r.status)) {
     k.dead = true; k.left = 0;
-    log.warn("serper key exhausted — rotating", { key: k.key.slice(0, 8), liveKeys: SERPER.filter((x) => !x.dead).length });
+    log.warn("serper key rejected — retiring", { status: r.status, key: k.key.slice(0, 8), liveKeys: SERPER.filter((x) => !x.dead).length });
     return serperSearch(query);            // retry immediately on the next key
   }
   if (r.status !== 200) { log.warn("serper non-200", { status: r.status }); return []; }
