@@ -11,7 +11,7 @@ import { leads, engagements } from "../db/mongo.js";
 import { resolveVanity, isUrn } from "../services/resolve.js";
 import { findEmail, verifyEmail } from "../services/prospeo.js";
 import { validateEmail, isRoleBased, findEmailByLinkedin, findEmailByNameDomain } from "../services/enrich.js";
-import { companyDomain } from "../services/clearbit.js";
+import { companyDomainGuarded } from "../services/clearbit.js";
 import { profileCompany } from "../services/linkedinProfile.js";
 import { findOurLead, upsertLead, addToCampaign, addToDnc } from "../services/sendkit.js";
 import { scoreFromHistory } from "../services/score.js";
@@ -49,21 +49,39 @@ async function recordEngagement(key, { name, headline, category, engagement_type
   return scoreFromHistory(history.map((h) => ({ category: h.category, engagement: h.engagement })));
 }
 
-// ── Email FIND waterfall (Enrich-first; Prospeo last). Reused by /enrich and /reprocess.
-// usePaidProfile: whether the paid LinkedIn profile API (get-personal-profile, ~1 credit/call)
-// may run as a last-resort company getter. OFF on the live /enrich firehose (thousands of
-// engagers/day would drain the 500-credit plan in an hour); ON for the user-triggered hand-off
-// retry, which is bounded and deliberate.
-export async function findEmailWaterfall({ name = "", headline = "", linkedin_url = "", usePaidProfile = false }) {
+// ── Email FIND waterfall. ONE flow, every source (live scrape + retry) runs it identically:
+//   1. company from headline -> GUARDED Clearbit domain -> Enrich name+domain   (free, fast)
+//   2. URN? resolve via SEO API/Serper/proxy, grab company from snippet         (free)
+//   3. STILL no domain? PAID get-personal-profile -> company+domain             (LIVE last resort;
+//      ~1 credit, auto-stops when the RapidAPI plan runs out, then degrades to free — never blocks.
+//      Its LinkedIn domain is TRUSTED over a Clearbit guess.)
+//   4. Enrich linkedin-to-email by url, then Prospeo url / name+domain
+// No "run a retry to get emails" split — the email is found here, in the scrape itself.
+//
+// `skipPaid`  : the retry pass sets this once a lead has already had a paid profile lookup, so
+//               hopeless leads don't get re-charged every run (deep retry overrides it).
+// `domainSource` returned: clearbit | webscrape | prospeo — how we got the winning domain.
+// `guardRejected` returned: Clearbit returned a DIFFERENT company and the guard blocked it.
+export async function findEmailWaterfall({ name = "", headline = "", linkedin_url = "", skipPaid = false }) {
   let prospeoCalls = 0, emailSource = null, emailMethod = null, preVerified = false;
   let vanity = linkedin_url;
   let company = companyFromHeadline(headline);
   const [firstName, ...restName] = name.split(" ");
   const lastName = restName.join(" ");
-  let domain = company ? await companyDomain(company) : null;
-  let em = { found: false };
-  const paidOn = usePaidProfile && !!config.linkedinApiKey;
+  let domain = null, domainSource = null, guardRejected = false, paidTried = false;
+  const paidOn = !!config.linkedinApiKey && !skipPaid; // LIVE last-resort; self-limits by credits
 
+  // guarded name -> domain: a similar-but-different company (Refine Labs -> Refine Restaurant)
+  // is rejected, so we never build an email on the wrong domain. It just falls through to the
+  // paid LinkedIn lookup, which returns the TRUE domain.
+  const clearbitDomain = async (co) => {
+    const g = await companyDomainGuarded(co);
+    if (g.rejected) guardRejected = true;
+    if (g.domain) { domain = g.domain; domainSource = "clearbit"; }
+  };
+  if (company) await clearbitDomain(company);
+
+  let em = { found: false };
   const tryNameDomain = async (method) => {
     if (em.found || !domain || !firstName || !lastName) return;
     const f = await findEmailByNameDomain(firstName, lastName, domain);
@@ -73,23 +91,25 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
   // (a) Enrich email-finder by name + domain — no url needed, so even unresolved likers get covered
   await tryNameDomain("enrich:name+domain");
 
-  // resolve liker URN -> vanity (FREE tiers first: Jina/Serper/proxy). The SERP tiers also hand
+  // resolve liker URN -> vanity (FREE tiers first: SEO API/Serper/proxy). The SERP tiers also hand
   // back the person's COMPANY from the result snippet — if the headline had none, recover it here.
   if (!em.found && isUrn(vanity)) {
     const resolved = await resolveVanity({ name, company });
     if (resolved?.url) vanity = resolved.url;
-    if (!company && resolved?.company) { company = resolved.company; domain = await companyDomain(company); await tryNameDomain("enrich:name+domain"); }
+    if (!company && resolved?.company) { company = resolved.company; await clearbitDomain(company); await tryNameDomain("enrich:name+domain"); }
   }
 
-  // (a2) LAST-RESORT company getter (PAID, retry-only): still no company/domain but we have a
-  // profile reference. get-personal-profile accepts a vanity URL OR the raw URN, so it also
-  // resolves an unresolved liker. Runs at most once per lead and only when nothing free worked.
+  // (a2) LAST-RESORT company getter (PAID) — LIVE, runs in the scrape itself, not a separate retry.
+  // get-personal-profile accepts a vanity URL OR the raw URN, so it also resolves an unresolved
+  // liker. Fires only when nothing free produced a domain; its LinkedIn domain beats a Clearbit guess.
   if (!em.found && !domain && paidOn && (vanity && !isUrn(vanity) || isUrn(linkedin_url))) {
+    paidTried = true;
     const pc = await profileCompany(!isUrn(vanity) ? vanity : linkedin_url);
     if (pc) {
       if (pc.vanity) vanity = pc.vanity;
       if (pc.company && !company) company = pc.company;
-      domain = pc.domain || (company ? await companyDomain(company) : null);
+      if (pc.domain) { domain = pc.domain; domainSource = "webscrape"; }
+      else if (company) await clearbitDomain(company);
       await tryNameDomain("enrich:linkedin-api");
     }
   }
@@ -102,13 +122,13 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
   if (!em.found && vanity && !isUrn(vanity)) {
     const p = await findEmail({ linkedin_url: vanity, full_name: name }); prospeoCalls++;
     if (p.found && p.email) { em = p; emailSource = "prospeo"; emailMethod = "prospeo:url"; }
-    if (!domain && p.company_domain) domain = p.company_domain;
+    if (!domain && p.company_domain) { domain = p.company_domain; domainSource = "prospeo"; }
   }
   if (!em.found && domain && firstName) {
     const p = await findEmail({ first_name: firstName, last_name: lastName, company_domain: domain }); prospeoCalls++;
     if (p.found && p.email) { em = p; emailSource = "prospeo"; emailMethod = "prospeo:name+domain"; }
   }
-  return { em, emailSource, emailMethod, preVerified, prospeoCalls, company, domain, vanity, key: vanity || linkedin_url };
+  return { em, emailSource, emailMethod, preVerified, prospeoCalls, company, domain, domainSource, guardRejected, paidTried, vanity, key: vanity || linkedin_url };
 }
 
 // ── Email VERIFY waterfall (Enrich first, Prospeo second opinion).
@@ -183,7 +203,7 @@ export async function enrichLead(input) {
   }
 
   const w = await findEmailWaterfall({ name, headline, linkedin_url });
-  const { em, emailSource, emailMethod, preVerified, company } = w;
+  const { em, emailSource, emailMethod, preVerified, company, domainSource, guardRejected } = w;
   let prospeoCalls = w.prospeoCalls;
   const key = w.key;
 
@@ -202,6 +222,8 @@ export async function enrichLead(input) {
     company_domain: em.company_domain || null,
     status: scored.status, score: scored.score, categories: scored.categories, times_seen: scored.timesSeen,
     email_source: emailSource, email_method: emailMethod,
+    domain_source: domainSource || null,          // clearbit | webscrape | prospeo — how the domain came
+    clearbit_guard_rejected: !!guardRejected,     // Clearbit returned a different company; guard blocked it
     personal_email: em.email ? isPersonalDomain(em.email) : false,
     source: source || null,
     ...(source_list ? { source_list } : {}),

@@ -10,6 +10,7 @@ import { apiRouter } from "./routes/api.js";
 import { basicAuth } from "./lib/auth.js";
 import { poolSize } from "./lib/proxies.js";
 import { runSources } from "./pipeline/sources.js";
+import { meterFlush } from "./services/apiMeter.js";
 import { log } from "./lib/logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -88,6 +89,13 @@ async function main() {
     setTimeout(sourcesLoop, busy ? 60_000 : 3 * 60 * 60 * 1000);
   }
   setTimeout(sourcesLoop, 60_000); // first sweep shortly after boot
+
+  // Persist API-consumption counters every 30s (so the dashboard totals survive deploys even
+  // between run-end flushes), and once more on shutdown so nothing is lost.
+  setInterval(() => { meterFlush().catch(() => {}); }, 30_000);
+  for (const sig of ["SIGTERM", "SIGINT"]) {
+    process.on(sig, async () => { try { await meterFlush(); } catch { /* best effort */ } process.exit(0); });
+  }
 }
 
 main().catch((e) => {

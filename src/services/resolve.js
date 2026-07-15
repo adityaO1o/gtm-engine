@@ -4,10 +4,11 @@
 // have to turn it into a real vanity URL before we can look up an email. This is the single
 // slowest step in the pipeline and it gates the hand-off retry.
 //
-// FOUR TIERS, each used until its quota runs out, then the next takes over:
-//   1. Jina SERP   (s.jina.ai)          ~1,000 lookups   (~10k tokens each)
+// THREE TIERS, each used until its quota runs out, then the next takes over:
+//   1. SEO API     (/api/serp, self-hosted; wraps Jina + proxies on its own host)
 //   2. Serper.dev  (google.serper.dev)  ~2,500 per key × N keys   (1 credit each)
 //   3. proxies     (Brave/DDG/Bing through the rotating residential pool) — free, slow, ~80%
+// (The old in-engine direct Jina tier is kept dormant behind config.jinaDirect — wallet drained.)
 //
 // The paid tiers hand back result TITLES, so we can check the profile actually belongs to this
 // person before buying their email — resolving to the WRONG profile is worse than not
@@ -17,6 +18,8 @@
 import axios from "axios";
 import { nextWorkingAgent } from "../lib/proxies.js";
 import { config } from "../config.js";
+import { seoSerp, seoSerpDead, seoSerpCoolingDown } from "./seoSerp.js";
+import { meter } from "./apiMeter.js";
 import { log } from "../lib/logger.js";
 
 const UAS = [
@@ -94,16 +97,29 @@ function bestHit(name, rows) {
 }
 
 // ── stats (surfaced on the dashboard so you can see which tier is doing the work) ────────────
-const stats = { jina: 0, serper: 0, proxy: 0, miss: 0, jina429: 0, serper429: 0 };
+const stats = { seo: 0, jina: 0, serper: 0, proxy: 0, miss: 0, jina429: 0, serper429: 0 };
 export function resolveStats() {
   return {
     ...stats,
+    seoDead: seoSerpDead(),
+    seoCoolingDown: seoSerpCoolingDown(),
     jinaDead: jinaOutOfTokens,
     jinaCoolingDown: Date.now() < jinaCooldownUntil,
     serperKeysLive: SERPER.filter((k) => !k.dead).length,
     serperKeysTotal: SERPER.length,
     serperCreditsLeft: SERPER.reduce((a, k) => a + Math.max(0, k.left), 0),
   };
+}
+
+// ── Tier 1: SEO SERP API (self-hosted) ───────────────────────────────────────
+async function resolveViaSeo({ name, company }) {
+  for (const q of queriesFor(name, company)) {
+    const rows = await seoSerp(q);
+    if (rows === null) return null;   // SEO tier unusable this run -> next tier
+    const pick = bestHit(name, rows);
+    if (pick) return pick;
+  }
+  return null;
 }
 
 // ── Tier 1: Jina SERP ────────────────────────────────────────────────────────
@@ -251,20 +267,31 @@ async function resolveViaProxies({ name, company }) {
 export async function resolveVanity({ name, company }) {
   if (!name) return null;
 
+  // Tier 1: SEO SERP API (wraps Jina + proxies on its own host).
   try {
-    const hit = await resolveViaJina({ name, company });
-    if (hit) { stats.jina++; log.info("resolved vanity (jina)", { name, url: hit.url, company: hit.company }); return hit; }
-  } catch (e) { log.warn("jina resolve threw", { err: e.message }); }
+    const hit = await resolveViaSeo({ name, company });
+    if (hit) { stats.seo++; meter.inc("resolver_seo"); log.info("resolved vanity (seo)", { name, url: hit.url, company: hit.company }); return hit; }
+  } catch (e) { log.warn("seo resolve threw", { err: e.message }); }
 
+  // Tier 1b (dormant): in-engine direct Jina — only when explicitly re-enabled (wallet is drained).
+  if (config.jinaDirect) {
+    try {
+      const hit = await resolveViaJina({ name, company });
+      if (hit) { stats.jina++; log.info("resolved vanity (jina)", { name, url: hit.url, company: hit.company }); return hit; }
+    } catch (e) { log.warn("jina resolve threw", { err: e.message }); }
+  }
+
+  // Tier 2: Serper.dev.
   try {
     const hit = await resolveViaSerper({ name, company });
-    if (hit) { stats.serper++; log.info("resolved vanity (serper)", { name, url: hit.url, company: hit.company }); return hit; }
+    if (hit) { stats.serper++; meter.inc("resolver_serper"); log.info("resolved vanity (serper)", { name, url: hit.url, company: hit.company }); return hit; }
   } catch (e) { log.warn("serper resolve threw", { err: e.message }); }
 
+  // Tier 3: free engines behind proxies.
   const hit = await resolveViaProxies({ name, company });
-  if (hit) { stats.proxy++; return hit; }
+  if (hit) { stats.proxy++; meter.inc("resolver_proxy"); return hit; }
 
-  stats.miss++;
+  stats.miss++; meter.inc("resolver_miss");
   log.warn("resolve miss (all tiers)", { name, company });
   return null;
 }

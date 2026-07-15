@@ -45,6 +45,9 @@ export async function connect() {
 export const leads = () => db.collection("leads");
 export const engagements = () => db.collection("engagements");
 export const usage = () => db.collection("usage");
+// Global, cumulative API-consumption counters (Fresh scraper, web-scrape profile, resolver tiers,
+// Prospeo, Clearbit). ONE doc {_id:"global"}; survives deploys so the dashboard shows true totals.
+export const apiUsage = () => db.collection("api_usage");
 export const sources = () => db.collection("sources");
 export const processedPosts = () => db.collection("processed_posts");
 export const reprocessRuns = () => db.collection("reprocess_runs");

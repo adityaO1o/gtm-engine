@@ -6,6 +6,7 @@ import { leads, engagements, usage, sources, reprocessRuns } from "../db/mongo.j
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
 import { rapidScrapeStats } from "../services/rapidScrape.js";
 import { linkedinProfileStats } from "../services/linkedinProfile.js";
+import { meterCumulative } from "../services/apiMeter.js";
 import { rerouteSourceLeads, rerouteStatus } from "../pipeline/reroute.js";
 import { trigifyBalance, setWorkflowEnabled } from "../services/trigify.js";
 import { prospeoBalance, verifyEmail } from "../services/prospeo.js";
@@ -80,8 +81,10 @@ apiRouter.get("/stats", async (req, res) => {
   const counts = await countBlock(campaign);
   const engFilter = campaign ? { campaign } : {};
   const engCount = await engagements().countDocuments(engFilter);
-  const [prospeo, jina] = await Promise.all([prospeoBalance(), jinaBalance()]);
-  res.json({ ...counts, engagements: engCount, prospeo, jina, resolver: resolveStats(), apiUsage: { rapid: rapidScrapeStats(), profile: linkedinProfileStats() } });
+  const [prospeo, jina, meter] = await Promise.all([prospeoBalance(), jinaBalance(), meterCumulative()]);
+  // `meter` = cumulative totals that SURVIVE deploys (Fresh, web-scrape, resolver, Prospeo, Clearbit).
+  // `apiUsage.rapid/profile` remain the live since-restart view for the OUT flags.
+  res.json({ ...counts, engagements: engCount, prospeo, jina, resolver: resolveStats(), meter, apiUsage: { rapid: rapidScrapeStats(), profile: linkedinProfileStats() } });
 });
 
 // GET /api/campaigns — one row per campaign: counts + per-campaign credits (trigify/prospeo/sendkit)
@@ -288,7 +291,8 @@ apiRouter.post("/reprocess", (req, res) => {
   if (st.running) return res.json({ started: false, ...st });
   // concurrency 14: each lead is mostly network-wait (Clearbit -> Enrich -> proxy resolve -> Prospeo),
   // so a wider pool is ~3x faster wall-clock without meaningfully more CPU.
-  reprocessNoEmail({ concurrency: 14, campaigns: campList(req.body?.campaigns) })
+  // deep: ignore backoff/terminal-skip/attempt-cap/paid-once — every stuck lead, always pay, once more.
+  reprocessNoEmail({ concurrency: 14, campaigns: campList(req.body?.campaigns), deep: !!req.body?.deep })
     .catch((e) => console.error("reprocess error", e.message));
   res.json({ started: true });
 });

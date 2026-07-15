@@ -8,6 +8,7 @@
 
 import axios from "axios";
 import { config } from "../config.js";
+import { meter } from "./apiMeter.js";
 import { log } from "../lib/logger.js";
 
 let outOfQuota = false; // 429/402/403 -> stop calling for the rest of the run
@@ -58,7 +59,7 @@ export async function profileCompany(linkedinUrlOrUrn) {
   if (!config.linkedinApiKey || outOfQuota || !linkedinUrlOrUrn) return null;
   try {
     await slot();
-    stats.calls++;
+    stats.calls++; meter.inc("webscrape_calls");
     const r = await axios.get(`https://${config.linkedinApiHost}/get-personal-profile`, {
       params: { linkedin_url: linkedinUrlOrUrn },
       headers: { "x-rapidapi-host": config.linkedinApiHost, "x-rapidapi-key": config.linkedinApiKey },
@@ -72,7 +73,7 @@ export async function profileCompany(linkedinUrlOrUrn) {
     if (r.status !== 200) { log.warn("linkedin profile api non-200", { status: r.status }); return null; }
     const body = r.data?.data || r.data || {};
     const out = { company: pickCompany(body), domain: pickDomain(body), vanity: pickVanityUrl(body), name: pickName(body) };
-    if (out.company || out.domain || out.vanity) { stats.hits++; return out; }
+    if (out.company || out.domain || out.vanity) { stats.hits++; meter.inc("webscrape_hits"); return out; }
     return null;
   } catch (e) {
     log.warn("linkedin profile api threw", { err: e.message });

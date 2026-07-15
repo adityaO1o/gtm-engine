@@ -29,10 +29,16 @@ export const config = {
   // Trigify API key — read-only, for pulling the live credit balance onto the dashboard.
   trigifyKey: process.env.TRIGIFY_KEY || "",
 
-  // Jina SERP (s.jina.ai) — primary resolver for obfuscated liker URNs. Empty = skip straight
-  // to the proxy engines, so a missing key degrades gracefully instead of breaking.
+  // SEO SERP/Scrape API (self-hosted; wraps Jina + its own proxy pool). PRIMARY URN resolver
+  // tier — the engine calls its /api/serp instead of hitting Jina directly, so the engine's own
+  // drained Jina wallet is out of the loop and one funded key lives on the SEO server.
+  seoApiBase: process.env.SEO_API_BASE || "https://seo-jb2ewi-7e7297.sendkit-mail.com",
+
+  // Jina SERP (s.jina.ai) — the OLD in-engine resolver tier, kept dormant as a deep fallback.
+  // Its wallet is drained, so it's OFF unless JINA_DIRECT=1 is set explicitly.
   jinaKey: process.env.JINA_KEY || "",
-  // Serper.dev SERP keys (comma-separated), used after Jina runs out. 1 credit per query.
+  jinaDirect: process.env.JINA_DIRECT === "1",
+  // Serper.dev SERP keys (comma-separated), used after the SEO API tier. 1 credit per query.
   serperKeys: (process.env.SERPER_KEYS || "").split(",").map((s) => s.trim()).filter(Boolean),
 
   // RapidAPI LinkedIn profile lookup (last-resort company/domain getter). Empty = skip the tier.

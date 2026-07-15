@@ -7,6 +7,7 @@
 
 import axios from "axios";
 import { config } from "../config.js";
+import { meter } from "./apiMeter.js";
 import { log } from "../lib/logger.js";
 
 const ENDPOINT = "https://api.prospeo.io/enrich-person";
@@ -37,10 +38,13 @@ function extract(body) {
 // Find an email. Pass whatever identifiers you have; more = higher match rate.
 // { linkedin_url } for commenters/resolved likers; { first_name,last_name,company_domain } as fallback.
 export async function findEmail(ids) {
+  meter.inc("prospeo_calls");
   try {
     const r = await call(ids);
     if (r.status === 200 && r.data && r.data.error === false) {
-      return extract(r.data);
+      const out = extract(r.data);
+      if (out.found) meter.inc("prospeo_finds");
+      return out;
     }
     // 400 NO_MATCH / INVALID_DATAPOINTS, or any non-200 => treat as "not found", never throw
     const code = r.data?.error_code || `http_${r.status}`;

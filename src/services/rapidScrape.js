@@ -8,6 +8,7 @@
 
 import axios from "axios";
 import { config } from "../config.js";
+import { meter } from "./apiMeter.js";
 import { log } from "../lib/logger.js";
 
 let outOfCredits = false;
@@ -44,7 +45,7 @@ async function reactions(urn, maxPages = 60) {
     const d = await get("get-post-reactions", { urn, type: "ALL", page });
     if (d === null) break;
     const items = d?.data || [];
-    stats.reactionPages++;
+    stats.reactionPages++; meter.inc("rapid_pages");
     for (const it of items) {
       const r = it.reactor || it;
       if (r?.name || r?.linkedin_url) out.push({ name: r.name || "", linkedin_url: r.linkedin_url || r.urn || "", headline: r.headline || "", engagement_type: "like" });
@@ -62,7 +63,7 @@ async function comments(urn, maxPages = 40) {
     const d = await get("get-post-comments", { urn, page });
     if (d === null) break;
     const items = d?.data || d?.comments || [];
-    stats.commentPages++;
+    stats.commentPages++; meter.inc("rapid_pages");
     for (const it of items) {
       const a = it.commenter || it.author || it;
       const name = a?.name || a?.full_name || "";
@@ -80,6 +81,6 @@ export async function scrapePostEngagers(postUrl) {
   const urn = activityUrn(postUrl);
   if (!urn) return { engagers: [], error: "no activity id in url" };
   const engagers = [...(await reactions(urn)), ...(await comments(urn))];
-  stats.engagers += engagers.length;
+  stats.engagers += engagers.length; meter.inc("rapid_engagers", engagers.length);
   return { engagers, outOfCredits };
 }

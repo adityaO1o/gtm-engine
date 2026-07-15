@@ -8,6 +8,7 @@ import { classifyPost } from "../services/classify.js";
 import { routeSourceEngager } from "../services/campaigns.js";
 import { scrapePostEngagers, rapidScrapeOutOfCredits } from "../services/rapidScrape.js";
 import { enrichLead } from "./enrichLead.js";
+import { meterFlush } from "../services/apiMeter.js";
 import { log } from "../lib/logger.js";
 
 // Master switch for AUTO scraping (the daily influencer/hub sweep). Paused by default while we
@@ -107,6 +108,7 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
       }
       scrapeOneStatus.outOfCredits = rapidScrapeOutOfCredits();
     } catch (e) { log.error("scrapeOnePost error", { err: e.message }); }
+    await meterFlush(); // persist Fresh/web-scrape/resolver consumption this scrape spent
     scrapeOneStatus = { ...scrapeOneStatus, running: false, finishedAt: new Date() };
     scrapeOneRunning = false;
     log.info("scrapeOnePost done", { postUrl, engagers: scrapeOneStatus.engagers, sent: scrapeOneStatus.sent });
@@ -169,6 +171,7 @@ export async function runSources({ force = false } = {}) {
   }
   status = { ...status, running: false, phase: "done", finishedAt: new Date() };
   running = false;
+  await meterFlush(); // persist the API consumption this run spent
   log.info("sources run done", { posts: status.postsProcessed, engagers: status.engagers, sent: status.newlyFound, influencers: status.influencersDone });
   return { postsProcessed: status.postsProcessed, engagers: status.engagers, newlyFound: status.newlyFound };
 }

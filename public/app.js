@@ -120,20 +120,25 @@ async function renderOverview() {
     ${apiUsagePanel(s)}`;
 }
 
-// Honest API-usage panel. Prospeo/Jina expose a live balance; Serper + RapidAPI don't, so we
-// show what WE'VE spent since the engine last started (labelled as such) — never a fake balance.
+// API-consumption panel. Fresh (post scraping) and web-scrape (company lookups) are shown as two
+// DISTINCT RapidAPI cards with credit math, because they're billed separately. Totals come from
+// `s.meter` — cumulative counters persisted in Mongo, so they SURVIVE deploys (unlike the old
+// since-restart numbers that always read 0 after a deploy). OUT flags come from the live stats.
+const RAPID_PLAN = 32000; // Ultra plan credits — the denominator for the "credits used" bars
 function apiUsagePanel(s) {
-  const rv = s.resolver || {}, u = s.apiUsage || {}, rapid = u.rapid || {}, prof = u.profile || {};
-  const row = (name, val, note, warn) => `<div class="urow"><span class="un">${esc(name)}</span><span class="uv ${warn ? "warn" : ""}">${val}</span><span class="uc">${esc(note)}</span></div>`;
-  return `<div class="chartbox" style="margin-top:var(--s3)"><h4>${ic("radio")}API usage</h4>
+  const rv = s.resolver || {}, u = s.apiUsage || {}, rapid = u.rapid || {}, prof = u.profile || {}, m = s.meter || {};
+  const freshPages = m.rapid_pages || 0, freshEng = m.rapid_engagers || 0;
+  const wsCalls = m.webscrape_calls || 0, wsHits = m.webscrape_hits || 0;
+  const row = (name, val, note, warn) => `<div class="urow"><span class="un">${name}</span><span class="uv ${warn ? "warn" : ""}">${val}</span><span class="uc">${esc(note)}</span></div>`;
+  return `<div class="chartbox" style="margin-top:var(--s3)"><h4>${ic("radio")}API consumption <span class="muted" style="font-size:11px;font-weight:400">· cumulative</span></h4>
     <div class="utable">
-      ${row("Prospeo", `<b>${num(BAL.prospeo?.remaining ?? 0)}</b> left`, "email finder · live balance")}
-      ${row("Jina", `<b>${num(BAL.jina?.searches ?? 0)}</b> lookups left`, "URN resolver · live balance")}
-      ${row("Serper", `<b>${num(rv.serperKeysLive || 0)}/${num(rv.serperKeysTotal || 0)}</b> keys · ${num(rv.serper || 0)} resolved`, "URN resolver · since restart")}
-      ${row("RapidAPI · scrape", `<b>${num((rapid.reactionPages || 0) + (rapid.commentPages || 0))}</b> pages`, `post engagers · ${esc((rapid.host || "").split(".")[0])}${rapid.outOfCredits ? " · OUT" : ""}`, rapid.outOfCredits)}
-      ${row("RapidAPI · profile", `<b>${num(prof.hits || 0)}</b>/${num(prof.calls || 0)} hits`, `company lookups${prof.outOfQuota ? " · OUT" : ""}`, prof.outOfQuota)}
+      ${row("🟢 RapidAPI · Fresh (scrape)", `<b>${num(freshPages)}</b> pages`, `${num(freshEng)} engagers · ~${num(freshPages)} credits used${rapid.outOfCredits ? " · OUT" : ""}`, rapid.outOfCredits)}
+      ${row("🔵 RapidAPI · Web-scrape (profile)", `<b>${num(wsHits)}</b>/${num(wsCalls)} hits`, `company lookups · ~${num(wsCalls)} credits used${prof.outOfQuota ? " · OUT" : ""}`, prof.outOfQuota)}
+      ${row("🔎 Resolver", `SEO <b>${num(m.resolver_seo || 0)}</b> · Serper ${num(m.resolver_serper || 0)} · Proxy ${num(m.resolver_proxy || 0)}`, `URN→URL · ${num(m.resolver_miss || 0)} missed · ${num(rv.serperKeysLive || 0)}/${num(rv.serperKeysTotal || 0)} serper keys${rv.seoDead ? " · SEO down" : ""}`, rv.seoDead)}
+      ${row("✉️ Prospeo", `<b>${num(m.prospeo_finds || 0)}</b>/${num(m.prospeo_calls || 0)} finds`, `email finder · ${num(BAL.prospeo?.remaining ?? 0)} credits left`)}
+      ${row("🛡️ Clearbit", `<b>${num(m.clearbit_calls || 0)}</b> lookups`, `name→domain · ${num(m.clearbit_rejects || 0)} wrong-domain blocked`)}
     </div>
-    <div class="muted" style="font-size:11.5px;margin-top:10px">“Since restart” counters reset on each deploy. Check RapidAPI / Serper dashboards for the true monthly balance.</div></div>`;
+    <div class="muted" style="font-size:11.5px;margin-top:10px">Fresh &amp; Web-scrape are billed 1 credit per call shown above (Ultra plan = ${num(RAPID_PLAN)} credits). Prospeo balance is live; RapidAPI credits are the running total we've spent.</div></div>`;
 }
 
 // ---------------- table ----------------
@@ -239,6 +244,7 @@ async function renderHandoff() {
       <button class="btn btn-ghost btn-sm" data-batchallbtn>${ic("check")}Select all</button>
       <div class="grow"></div>
       <button class="btn btn-ghost btn-sm" data-export="handoff">${ic("download")}Export list</button>
+      <button class="btn btn-ghost btn-sm" data-retrydeep title="Ignore backoff/attempt caps — retry EVERY stuck lead (incl. hopeless &amp; unverified), always paying for the profile lookup once more">${ic("refresh")}Deep retry</button>
       <button class="btn btn-sm" data-retry>${ic("refresh")}Retry selected</button></div>
     <div id="retryBox">${jobBox("retry", JOBS.retry)}</div>
     ${batches.length ? `<div class="tablewrap"><table><thead><tr><th class="chkcol"><input type="checkbox" class="chk" data-batchall></th><th>Campaign</th><th>No-email</th><th>Recovered</th><th>Total</th><th>Verified</th></tr></thead><tbody>${rows}</tbody></table></div>`
@@ -497,7 +503,7 @@ function listsHTML(lists) {
 // ---------------- events (CSP-safe delegation) ----------------
 document.addEventListener("click", async (e) => {
   if (!e.target.closest(".menu")) closeMenu();
-  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-addsrc],[data-delsrc],[data-runsrc],[data-decide],[data-selpage],[data-batchallbtn],[data-srcopen],[data-srcback],[data-srcpg],[data-listactive],[data-listdel],[data-scrapepost]");
+  const t = e.target.closest("[data-v],[data-x],[data-lead],[data-reverify],[data-prov],[data-pg],[data-export],[data-camp],[data-back],[data-pause],[data-sync],[data-retry],[data-retrydeep],[data-addsrc],[data-delsrc],[data-runsrc],[data-decide],[data-selpage],[data-batchallbtn],[data-srcopen],[data-srcback],[data-srcpg],[data-listactive],[data-listdel],[data-scrapepost]");
   if (!t) return;
   if (t.dataset.v) return show(t.dataset.v);
   if (t.hasAttribute("data-x")) return $("#drawer").classList.remove("open");
@@ -522,11 +528,13 @@ document.addEventListener("click", async (e) => {
   if (t.hasAttribute("data-back")) { ACTIVE_CAMPAIGN = null; F.campaign = ""; PAGE = 0; return renderCampaignList(); }
   if (t.dataset.pause) { const r = await post(`/api/campaigns/${encodeURIComponent(t.dataset.pause)}/pause`, { paused: true }); $("#campMsg").textContent = r.ok ? "✓ Campaign paused." : "Pause failed: " + (r.error || ""); return; }
   if (t.dataset.sync) { await post("/api/sync", { campaign: t.dataset.sync }); return pollJobs(); }
-  if (t.hasAttribute("data-retry")) {
+  if (t.hasAttribute("data-retry") || t.hasAttribute("data-retrydeep")) {
     // send the EXACT selection — previously anything other than a single campaign silently
-    // fell back to retrying every campaign
+    // fell back to retrying every campaign. `deep` ignores backoff/caps and always re-pays.
+    const deep = t.hasAttribute("data-retrydeep");
+    if (deep && !confirm("Deep retry re-runs EVERY stuck lead (incl. hopeless & unverified) and pays for a profile lookup once more. This spends RapidAPI credits. Continue?")) return;
     const camps = [...document.querySelectorAll("[data-batch]:checked")].map((c) => c.dataset.batch);
-    await post("/api/reprocess", { campaigns: camps });
+    await post("/api/reprocess", { campaigns: camps, deep });
     return pollJobs();
   }
   if (t.dataset.decide) {
