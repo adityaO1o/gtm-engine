@@ -37,14 +37,13 @@ const verifiedCell = (r) => r.email
 // ---------------- top bar ----------------
 async function loadTop() {
   const [d, s] = await Promise.all([j("/api/campaigns"), j("/api/stats")]);
-  CAMPAIGNS = d.campaigns || []; BAL = { trigify: d.trigify, prospeo: d.prospeo }; STATS = s;
+  CAMPAIGNS = d.campaigns || []; BAL = { prospeo: d.prospeo, jina: d.jina }; STATS = s;
+  // Topbar carries only the two providers with a REAL live balance. Everything else (Serper
+  // estimate, RapidAPI usage) lives in the Overview "API usage" panel, honestly labelled.
+  const chip = (label, val, sub, title) => `<div class="balc" ${title ? `title="${esc(title)}"` : ""}>${label} · <b>${num(val)}</b> ${sub}</div>`;
   let bh = "";
-  if (d.trigify) { const pct = d.trigify.limit ? Math.min(100, d.trigify.used / d.trigify.limit * 100) : 0;
-    bh += `<div class="balc">Trigify · <b>${num(d.trigify.remaining)}</b> left<div class="bar"><i style="width:${pct}%"></i></div></div>`; }
-  if (d.prospeo) bh += `<div class="balc">Prospeo · <b>${num(d.prospeo.remaining)}</b> left</div>`;
-  if (d.jina) bh += `<div class="balc" title="Jina SERP — first resolver for obfuscated liker URNs.">Jina · <b>${num(d.jina.searches)}</b> lookups</div>`;
-  const rv = s.resolver || {};
-  if (rv.serperKeysTotal) bh += `<div class="balc" title="Serper.dev — takes over when Jina runs out. ${rv.serperKeysLive}/${rv.serperKeysTotal} keys live.">Serper · <b>${num(rv.serperCreditsLeft)}</b> left</div>`;
+  if (d.prospeo) bh += chip("Prospeo", d.prospeo.remaining, "left", "Prospeo email-finder credits (live).");
+  if (d.jina) bh += chip("Jina", d.jina.searches, "lookups", "Jina SERP resolver credits (live).");
   $("#bals").innerHTML = bh;
   // DISTINCT counts from /stats — NOT the sum of per-campaign totals. A lead can sit in two
   // campaigns, so summing campaign rows double-counts it (that was the sidebar/overview mismatch).
@@ -89,22 +88,52 @@ function funnel(f) {
 // ---------------- Overview ----------------
 async function renderOverview() {
   const [a, s] = await Promise.all([j("/api/analytics"), j("/api/stats")]);
-  const card = (icon, k, v, cls) => `<div class="card ${cls || ""}"><div class="kh">${ic(icon)}${k}</div><div class="v">${num(v)}</div></div>`;
+  const rate = s.total ? Math.round(s.verified / s.total * 100) : 0;
+  // Headline row — the four numbers that actually matter, no gradient, clear hierarchy.
+  const hero = (k, v, sub, cls) => `<div class="hero ${cls || ""}"><div class="hk">${k}</div><div class="hv">${num(v)}</div><div class="hs">${sub}</div></div>`;
+  // Secondary breakdown — small tiles.
+  const tile = (icon, k, v, cls) => `<div class="tile ${cls || ""}"><span class="tk">${ic(icon)}${k}</span><span class="tv">${num(v)}</span></div>`;
+
   $("#v-overview").innerHTML = `
-    <div class="section-t">${ic("trend")}Leads</div>
-    <div class="grid g-stat" style="margin-bottom:var(--s2)">
-      ${card("users", "Total", s.total)}${card("bolt", "Hot", s.hot, "hot")}${card("warn", "Warm", s.warm, "warm")}
-      ${card("users", "Cold", s.cold, "cold")}${card("mail", "Verified", s.verified, "good")}
-      ${card("inbox", "No-email", s.noEmail)}${card("refresh", "Recovered", s.recovered, "rec")}${card("warn", "Review", s.review, "warm")}${card("flag", "Competitors", s.competitor)}${card("x", "DNC · never emailed", s.dnc, "dncc")}
+    <div class="grid g-hero">
+      ${hero("Total leads", s.total, "scraped &amp; enriched")}
+      ${hero("Verified emails", s.verified, "ready to send", "pri")}
+      ${hero("Hit rate", rate + "%", "of leads have an email", rate >= 50 ? "good" : "")}
+      ${hero("Recovered", s.recovered, "rescued by retry", "good")}
     </div>
-    <div class="charts">
+
+    <div class="grid g-tiles">
+      ${tile("bolt", "Hot", s.hot, "hot")}${tile("warn", "Warm", s.warm, "warm")}${tile("users", "Cold", s.cold, "cold")}
+      ${tile("inbox", "No-email", s.noEmail)}${tile("warn", "Review", s.review, "warm")}${tile("flag", "Competitors", s.competitor)}${tile("x", "DNC", s.dnc, "hot")}
+    </div>
+
+    <div class="charts" style="margin-top:var(--s4)">
       <div class="chartbox"><h4>Status split</h4>${donut([{ value: a.status.hot, color: "#DC2B2B" }, { value: a.status.warm, color: "#B26B00" }, { value: a.status.cold, color: "#2E90D9" }])}
         <div class="legend"><span><i style="background:#DC2B2B"></i>Hot ${num(a.status.hot)}</span><span><i style="background:#B26B00"></i>Warm ${num(a.status.warm)}</span><span><i style="background:#2E90D9"></i>Cold ${num(a.status.cold)}</span></div></div>
       <div class="chartbox"><h4>Leads over time</h4>${area(a.series)}
         <div class="legend"><span><i style="background:#6C47FF"></i>Total</span><span><i style="background:#0C8A45"></i>Verified</span></div></div>
     </div>
+
     <div class="chartbox" style="margin-top:var(--s3)"><h4>Email funnel</h4>${funnel(a.funnel)}
-      <div class="legend"><span>No-email ${num(a.funnel.noEmail)}</span><span><b style="color:var(--good)">Recovered by retry ${num(s.recovered)}</b></span><span>Review ${num(a.funnel.review)}</span><span>Competitors ${num(a.funnel.competitor)}</span><span>Unverified ${num(a.funnel.unverified)}</span></div></div>`;
+      <div class="legend"><span>No-email ${num(a.funnel.noEmail)}</span><span><b style="color:var(--good)">Recovered ${num(s.recovered)}</b></span><span>Review ${num(a.funnel.review)}</span><span>Competitors ${num(a.funnel.competitor)}</span><span>Unverified ${num(a.funnel.unverified)}</span></div></div>
+
+    ${apiUsagePanel(s)}`;
+}
+
+// Honest API-usage panel. Prospeo/Jina expose a live balance; Serper + RapidAPI don't, so we
+// show what WE'VE spent since the engine last started (labelled as such) — never a fake balance.
+function apiUsagePanel(s) {
+  const rv = s.resolver || {}, u = s.apiUsage || {}, rapid = u.rapid || {}, prof = u.profile || {};
+  const row = (name, val, note, warn) => `<div class="urow"><span class="un">${esc(name)}</span><span class="uv ${warn ? "warn" : ""}">${val}</span><span class="uc">${esc(note)}</span></div>`;
+  return `<div class="chartbox" style="margin-top:var(--s3)"><h4>${ic("radio")}API usage</h4>
+    <div class="utable">
+      ${row("Prospeo", `<b>${num(BAL.prospeo?.remaining ?? 0)}</b> left`, "email finder · live balance")}
+      ${row("Jina", `<b>${num(BAL.jina?.searches ?? 0)}</b> lookups left`, "URN resolver · live balance")}
+      ${row("Serper", `<b>${num(rv.serperKeysLive || 0)}/${num(rv.serperKeysTotal || 0)}</b> keys · ${num(rv.serper || 0)} resolved`, "URN resolver · since restart")}
+      ${row("RapidAPI · scrape", `<b>${num((rapid.reactionPages || 0) + (rapid.commentPages || 0))}</b> pages`, `post engagers · ${esc((rapid.host || "").split(".")[0])}${rapid.outOfCredits ? " · OUT" : ""}`, rapid.outOfCredits)}
+      ${row("RapidAPI · profile", `<b>${num(prof.hits || 0)}</b>/${num(prof.calls || 0)} hits`, `company lookups${prof.outOfQuota ? " · OUT" : ""}`, prof.outOfQuota)}
+    </div>
+    <div class="muted" style="font-size:11.5px;margin-top:10px">“Since restart” counters reset on each deploy. Check RapidAPI / Serper dashboards for the true monthly balance.</div></div>`;
 }
 
 // ---------------- table ----------------
@@ -146,7 +175,7 @@ function toolbarHTML(withCampaign, count = 0) {
     <select data-f="status">${opt("", "All status", F.status)}${opt("hot", "Hot", F.status)}${opt("warm", "Warm", F.status)}${opt("cold", "Cold", F.status)}</select>
     <select data-f="email">${opt("", "All emails", F.email)}${opt("verified", "Verified", F.email)}${opt("no-email", "No email", F.email)}${opt("review", "Review", F.email)}${opt("unverified", "Unverified", F.email)}${opt("competitor", "Competitor", F.email)}${opt("discarded", "Discarded", F.email)}</select>
     <select data-f="cat">${opt("", "All categories", F.cat)}${["infra-competitor", "deliverability", "infra", "sequencer", "gtm-eng", "data-tools", "cold-email"].map((c) => opt(c, c, F.cat)).join("")}</select>
-    <select data-f="source">${opt("", "All sources", F.source)}${opt("keyword", "Keyword", F.source)}${opt("influencer", "Influencer/CSV", F.source)}${opt("hub", "Hub", F.source)}</select>
+    <select data-f="source">${opt("", "All sources", F.source)}${opt("keyword", "Keyword", F.source)}${opt("influencer", "Influencer/CSV", F.source)}${opt("hub", "Hub", F.source)}${opt("manual-post", "Manual post", F.source)}</select>
     <select data-f="recovered">${opt("", "All", F.recovered)}${opt("1", "Recovered", F.recovered)}</select>
     <select data-f="dnc">${opt("", "All (DNC)", F.dnc)}${opt("1", "DNC only", F.dnc)}</select>
     <select data-f="sort">${opt("score", "Sort · score", F.sort)}${opt("recent", "Sort · recent", F.sort)}</select>
@@ -160,6 +189,8 @@ function toolbarHTML(withCampaign, count = 0) {
 }
 function leadQuery(extra) {
   const p = new URLSearchParams(), f = { ...F, ...extra };
+  // "Manual post" isn't a source type — it's a source_list; map it to the list filter.
+  if (f.source === "manual-post") { f = { ...f, source: "", list: "manual-post" }; }
   ["status", "campaign", "cat", "sort", "q", "recovered", "dnc", "source", "list"].forEach((k) => { if (f[k]) p.set(k === "cat" ? "category" : k, f[k]); });
   if (f.email) p.set("email_status", f.email);
   p.set("limit", SIZE); p.set("skip", PAGE * SIZE);
@@ -421,13 +452,15 @@ async function renderSources() {
     </div>`;
 }
 
-// Live status of a "Scrape via post" run.
+// Live status of a "Scrape via post" run — which post, engagers scraped, verified & sent.
 function scrapePostBox(s) {
   if (!s || (!s.running && !s.finishedAt)) return "";
-  const head = s.running
-    ? `Scraping <b>${esc(s.postUrl.slice(-30))}</b> · <b>${num(s.engagers)}</b> engagers · <b class="ok">${num(s.sent)}</b> sent → ${esc(s.campaign || "")}`
-    : `Done · <b>${num(s.engagers)}</b> engagers processed · <b class="ok">${num(s.sent)}</b> sent → ${esc(s.campaign || "")}${s.outOfCredits ? ' · <b style="color:var(--hot)">Fresh API out of credits — paused</b>' : ""}`;
-  return `<div class="jobbox${s.running ? " on" : ""}"><div class="jobh">${ic(s.running ? "refresh" : "check")}<span>${head}</span></div></div>`;
+  const id = (s.postUrl.match(/activity[:-](\d+)/) || [])[1] || s.postUrl.slice(-24);
+  const stat = (l, v, cls) => `<span class="scstat"><b class="${cls || ""}">${num(v)}</b>${l}</span>`;
+  return `<div class="jobbox${s.running ? " on" : ""}">
+    <div class="jobh">${ic(s.running ? "refresh" : "check")}<span>${s.running ? "Scraping post" : "Scraped post"} <span class="mono muted">activity:${esc(id)}</span>${s.campaign ? ` → <b>${esc(s.campaign)}</b>` : ""}</span></div>
+    <div class="scrow">${stat("engagers scraped", s.engagers)}${stat("verified &amp; sent", s.sent, "ok")}${s.outOfCredits ? '<span class="scstat"><b style="color:var(--hot)">Fresh API</b>out of credits</span>' : ""}</div>
+  </div>`;
 }
 async function pollScrapePost() {
   const d = await j("/api/sources/scrape-post/status");
@@ -438,7 +471,7 @@ async function pollScrapePost() {
 }
 
 // Imported CSV lists — each shown separately, with enable/pause/view/delete. PAUSED by default
-// because scraping every profile's posts would blow the Trigify budget; you turn a list on when
+// because scraping every profile's posts costs API credits; you turn a list on when
 // you want it scraped (it then joins the daily run, capped per run).
 function listsHTML(lists) {
   const rows = lists.map((l) => `<tr class="click" data-srcopen="${esc(l.list)}">
@@ -449,12 +482,12 @@ function listsHTML(lists) {
     <td><div class="rowact">
       ${l.active
         ? `<button class="btn btn-no btn-sm" data-listactive="0" data-list="${esc(l.list)}">${ic("pause")}Pause</button>`
-        : `<button class="btn btn-ok btn-sm" data-listactive="1" data-list="${esc(l.list)}" title="Enable scraping — uses Trigify credits">${ic("bolt")}Enable</button>`}
+        : `<button class="btn btn-ok btn-sm" data-listactive="1" data-list="${esc(l.list)}" title="Enable scraping — uses API credits">${ic("bolt")}Enable</button>`}
       <button class="btn btn-ghost btn-sm" data-listdel="${esc(l.list)}">${ic("trash")}</button>
     </div></td></tr>`).join("");
   return `<div class="chartbox" style="margin-bottom:var(--s3)">
     <div class="toolbar" style="margin-bottom:var(--s3)"><h4 style="margin:0">Imported lists</h4><div class="grow"></div>
-      <span class="muted" style="font-size:12px">Imported from CSV · <b>paused</b> until you enable them (enabling spends Trigify credits)</span></div>
+      <span class="muted" style="font-size:12px">Imported from CSV · <b>paused</b> until you enable them (enabling spends scraping credits)</span></div>
     ${lists.length
       ? `<div class="tablewrap" style="border:none"><table><thead><tr><th>List</th><th>Influencers</th><th>Status</th><th>Progress</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
       : `<div class="muted" style="padding:14px">No imported lists yet.</div>`}
@@ -487,7 +520,7 @@ document.addEventListener("click", async (e) => {
   }
   if (t.dataset.camp) { ACTIVE_CAMPAIGN = t.dataset.camp; PAGE = 0; return renderCampaignDetail(t.dataset.camp); }
   if (t.hasAttribute("data-back")) { ACTIVE_CAMPAIGN = null; F.campaign = ""; PAGE = 0; return renderCampaignList(); }
-  if (t.dataset.pause) { const r = await post(`/api/campaigns/${encodeURIComponent(t.dataset.pause)}/pause`, { paused: true }); $("#campMsg").textContent = r.ok ? "✓ Trigify workflow paused." : "Pause failed: " + (r.error || ""); return; }
+  if (t.dataset.pause) { const r = await post(`/api/campaigns/${encodeURIComponent(t.dataset.pause)}/pause`, { paused: true }); $("#campMsg").textContent = r.ok ? "✓ Campaign paused." : "Pause failed: " + (r.error || ""); return; }
   if (t.dataset.sync) { await post("/api/sync", { campaign: t.dataset.sync }); return pollJobs(); }
   if (t.hasAttribute("data-retry")) {
     // send the EXACT selection — previously anything other than a single campaign silently

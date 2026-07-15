@@ -5,6 +5,7 @@ import { ObjectId } from "mongodb";
 import { leads, engagements, usage, sources, reprocessRuns } from "../db/mongo.js";
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
 import { rapidScrapeStats } from "../services/rapidScrape.js";
+import { linkedinProfileStats } from "../services/linkedinProfile.js";
 import { rerouteSourceLeads, rerouteStatus } from "../pipeline/reroute.js";
 import { trigifyBalance, setWorkflowEnabled } from "../services/trigify.js";
 import { prospeoBalance, verifyEmail } from "../services/prospeo.js";
@@ -79,8 +80,8 @@ apiRouter.get("/stats", async (req, res) => {
   const counts = await countBlock(campaign);
   const engFilter = campaign ? { campaign } : {};
   const engCount = await engagements().countDocuments(engFilter);
-  const [trigify, prospeo, jina] = await Promise.all([trigifyBalance(), prospeoBalance(), jinaBalance()]);
-  res.json({ ...counts, engagements: engCount, trigify, prospeo, jina, resolver: resolveStats() });
+  const [prospeo, jina] = await Promise.all([prospeoBalance(), jinaBalance()]);
+  res.json({ ...counts, engagements: engCount, prospeo, jina, resolver: resolveStats(), apiUsage: { rapid: rapidScrapeStats(), profile: linkedinProfileStats() } });
 });
 
 // GET /api/campaigns — one row per campaign: counts + per-campaign credits (trigify/prospeo/sendkit)
@@ -104,8 +105,8 @@ apiRouter.get("/campaigns", async (_req, res) => {
     });
   }
   out.sort((a, b) => b.total - a.total);
-  const [trigify, prospeo, jina] = await Promise.all([trigifyBalance(), prospeoBalance(), jinaBalance()]);
-  res.json({ campaigns: out, trigify, prospeo, jina });
+  const [prospeo, jina] = await Promise.all([prospeoBalance(), jinaBalance()]);
+  res.json({ campaigns: out, prospeo, jina });
 });
 
 // GET /api/leads?status=&email_status=&category=&campaign=&q=&sort=&limit=&skip=

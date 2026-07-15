@@ -99,6 +99,29 @@
   .funnel-row .track i{display:block;height:100%;background:var(--primary);transition:width .3s}
   .funnel-row .num{width:56px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
 
+  /* ---------- overview hero + tiles + api usage ---------- */
+  .g-hero{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--s3);margin-bottom:var(--s3)}
+  .hero{background:var(--panel);border:1px solid var(--line);padding:18px var(--s4);box-shadow:var(--sh-sm);position:relative}
+  .hero .hk{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:600}
+  .hero .hv{font-size:34px;font-weight:600;line-height:1.05;margin:8px 0 3px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .hero .hs{font-size:12px;color:var(--faint)}
+  .hero.pri{background:var(--primary);border-color:var(--primary)}
+  .hero.pri .hk{color:#D9CCFF} .hero.pri .hv{color:#fff} .hero.pri .hs{color:#CBB8FF}
+  .hero.good .hv{color:var(--good)}
+  .g-tiles{grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:var(--s2)}
+  .tile{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--panel);border:1px solid var(--line);padding:11px 14px;box-shadow:var(--sh-sm)}
+  .tile .tk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);font-weight:500}
+  .tile .tk .ico{width:14px;height:14px;stroke:var(--faint)}
+  .tile .tv{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+  .tile.hot .tv{color:var(--hot)} .tile.warm .tv{color:var(--warm)} .tile.cold .tv{color:var(--cold)}
+  .utable{display:flex;flex-direction:column}
+  .urow{display:grid;grid-template-columns:130px 1fr auto;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line2);font-size:12.5px}
+  .urow:last-child{border-bottom:none}
+  .urow .un{font-weight:600;color:var(--ink)}
+  .urow .uv{font-variant-numeric:tabular-nums;color:var(--ink)} .urow .uv b{color:var(--primary-2)}
+  .urow .uv.warn b,.urow .uv.warn{color:var(--hot)}
+  .urow .uc{color:var(--faint);font-size:11.5px;text-align:right}
+
   /* ---------- toolbar / inputs ---------- */
   .toolbar{display:flex;gap:var(--s2);align-items:center;margin-bottom:var(--s3);flex-wrap:wrap}
   .field{position:relative;display:inline-flex}
@@ -176,6 +199,10 @@
   .jobh .ico{width:15px;height:15px;stroke:var(--primary)}
   .jobbox.on .jobh .ico{animation:spin 1.1s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
+  .scrow{display:flex;gap:22px;margin-top:10px;flex-wrap:wrap}
+  .scstat{display:flex;flex-direction:column;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+  .scstat b{font-size:20px;color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums;text-transform:none;letter-spacing:0}
+  .scstat b.ok{color:var(--good)}
   .prog{height:6px;background:var(--line);overflow:hidden}
   .prog i{display:block;height:100%;background:var(--good);transition:width .35s ease}
   .prog.on i{background:var(--primary)}
