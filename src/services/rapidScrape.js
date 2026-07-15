@@ -72,10 +72,20 @@ async function get(path, params, { retries = 3 } = {}) {
       log.warn("rapid scrape host out of credits — stopping (no auto-switch)", { host: config.scrapeApiHost, status: r.status });
       return null;
     }
-    if (r.status === 429) { // rate limit — auto-slow the limiter, back off and retry (NOT out-of-credits)
+    // RapidAPI returns 429 for BOTH the per-minute rate AND a drained MONTHLY quota. Tell them apart:
+    // quota-exhausted (requests-remaining 0 / "exceeded … quota") is terminal → stop like out-of-credits
+    // (retrying is futile until the plan is upgraded/renewed); a plain rate 429 just needs backoff.
+    if (r.status === 429) {
+      const remaining = r.headers?.["x-ratelimit-requests-remaining"];
+      const body = typeof r.data === "string" ? r.data : JSON.stringify(r.data || "");
+      if (remaining === "0" || /exceeded .*quota|quota.*exceeded|monthly quota/i.test(body)) {
+        outOfCredits = true;
+        log.warn("rapid scrape MONTHLY QUOTA exhausted — stopping (upgrade/renew the plan to continue)", { host: config.scrapeApiHost });
+        return null;
+      }
       onThrottle();
       if (attempt < retries) { await sleep(3000 * 2 ** attempt); continue; }
-      log.warn("rapid scrape 429 — retries exhausted this page", { path, gapMs: dynamicGap });
+      log.warn("rapid scrape 429 (rate) — retries exhausted this page", { path, gapMs: dynamicGap });
       return null;
     }
     if (r.status !== 200) {
@@ -84,6 +94,8 @@ async function get(path, params, { retries = 3 } = {}) {
       return null;
     }
     onSuccess();
+    // Proactively stop once the plan's monthly requests hit 0 — the next call would 429-quota anyway.
+    if (r.headers?.["x-ratelimit-requests-remaining"] === "0") { outOfCredits = true; log.warn("rapid scrape plan credits exhausted after this call", { host: config.scrapeApiHost }); }
     return r.data;
   }
   return null;
