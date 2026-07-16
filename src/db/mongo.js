@@ -39,6 +39,13 @@ export async function connect() {
   await db.collection("leads").createIndex({ recovered: 1 });
   await db.collection("leads").createIndex({ dnc: 1 });
   await db.collection("leads").createIndex({ posts_seen: 1 });         // per-scraped-post live counts
+  // Dashboard count queries (/api/stats + /api/campaigns) filter on email_status and campaigns.
+  // Without these they were COLLECTION SCANS — ~200 of them under concurrency made the dashboard
+  // take 15-17s to load. These turn them into fast index counts.
+  await db.collection("leads").createIndex({ email_status: 1 });
+  await db.collection("leads").createIndex({ campaigns: 1 });
+  await db.collection("leads").createIndex({ campaigns: 1, status: 1 });
+  await db.collection("leads").createIndex({ campaigns: 1, email_status: 1, email: 1 });
   await db.collection("scraped_posts").createIndex({ postUrl: 1 }, { unique: true });
   // Durable engager queue for the resumable "Scrape via post" job — scraped engagers are parked
   // here, then drained by the enrichment phase, so a restart/pause resumes instead of losing work.

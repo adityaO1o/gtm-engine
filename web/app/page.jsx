@@ -43,9 +43,11 @@ export default function Dashboard() {
   const jobTimer = useRef(null);
   const prevRunning = useRef(false);
 
-  const refreshTop = useCallback(async () => {
-    const [d, s] = await Promise.all([j("/api/campaigns"), j("/api/stats")]);
-    setCampaigns(d.campaigns || []); setProspeo(d.prospeo || null); setStats(s);
+  // Fetch stats and campaigns INDEPENDENTLY — Overview + the sidebar counts depend on stats, so
+  // don't make them wait on the heavier /api/campaigns (they used to be Promise.all'd together).
+  const refreshTop = useCallback(() => {
+    j("/api/stats").then(setStats).catch(() => {});
+    j("/api/campaigns").then((d) => { setCampaigns(d.campaigns || []); setProspeo(d.prospeo || null); }).catch(() => {});
   }, []);
 
   const pollJobs = useCallback(async function poll() {

@@ -90,27 +90,41 @@ apiRouter.get("/stats", async (req, res) => {
 });
 
 // GET /api/campaigns — one row per campaign: counts + per-campaign credits (trigify/prospeo/sendkit)
+// ONE aggregation pass over `leads` (grouped per campaign) — replaces ~14 count-blocks × ~13 scans
+// that made this take 17s under concurrency.
+const cnt = (field, val) => ({ $sum: { $cond: [{ $eq: ["$" + field, val] }, 1, 0] } });
+const cntTruthy = (field) => ({ $sum: { $cond: [{ $ifNull: ["$" + field, false] }, 1, 0] } });
 apiRouter.get("/campaigns", async (_req, res) => {
-  const names = (await leads().distinct("campaigns")).filter(Boolean);
-  const rows = await usage().find({}).toArray();
-  const uMap = Object.fromEntries(rows.map((u) => [u.campaign, u]));
-  const out = [];
-  for (const c of names) {
-    const counts = await countBlock(c);
-    const u = uMap[c] || {};
-    out.push({
-      campaign: c,
-      label: campaignLabel(c),
-      ...counts,
-      credits: {
-        trigify: u.trigify_scraped || 0,          // engagers scraped ≈ Trigify credits
-        prospeo: u.prospeo_finds || 0,            // successful Prospeo finds ≈ Prospeo credits (misses are free)
-        sendkit: counts.verified,                 // pushed = verified (every verified lead is pushed); real, not a drifting counter
-      },
-    });
-  }
-  out.sort((a, b) => b.total - a.total);
-  const [prospeo, jina] = await Promise.all([prospeoBalance(), jinaBalance()]);
+  const [agg, uRows, prospeo, jina] = await Promise.all([
+    leads().aggregate([
+      { $match: { campaigns: { $exists: true, $ne: [] } } },
+      { $unwind: "$campaigns" },
+      { $group: {
+        _id: "$campaigns", total: { $sum: 1 },
+        hot: cnt("status", "hot"), warm: cnt("status", "warm"), cold: cnt("status", "cold"),
+        verified: cnt("email_status", "verified"), noEmail: cnt("email_status", "no-email"),
+        unverified: cnt("email_status", "unverified"), review: cnt("email_status", "review"),
+        competitor: cnt("email_status", "competitor"), discarded: cnt("email_status", "discarded"),
+        recovered: cntTruthy("recovered"), dnc: cntTruthy("dnc"),
+        // distinct verified email addresses (two profiles can share one) — what SendKit actually holds
+        verifiedEmails: { $addToSet: { $cond: [{ $and: [{ $eq: ["$email_status", "verified"] }, { $ne: ["$email", null] }] }, "$email", "$$REMOVE"] } },
+      } },
+    ], { allowDiskUse: true }).toArray(),
+    usage().find({}).toArray(),
+    prospeoBalance(), jinaBalance(),
+  ]);
+  const uMap = Object.fromEntries(uRows.map((u) => [u.campaign, u]));
+  const out = agg.map((g) => {
+    const u = uMap[g._id] || {};
+    return {
+      campaign: g._id, label: campaignLabel(g._id),
+      total: g.total, hot: g.hot, warm: g.warm, cold: g.cold,
+      verified: g.verified, verifiedEmails: (g.verifiedEmails || []).length,
+      noEmail: g.noEmail, unverified: g.unverified, review: g.review, competitor: g.competitor, discarded: g.discarded,
+      recovered: g.recovered, dnc: g.dnc,
+      credits: { trigify: u.trigify_scraped || 0, prospeo: u.prospeo_finds || 0, sendkit: g.verified },
+    };
+  }).sort((a, b) => b.total - a.total);
   res.json({ campaigns: out, prospeo, jina });
 });
 
