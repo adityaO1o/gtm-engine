@@ -229,3 +229,33 @@ th.chkcol,td.chkcol{width:40px;padding-left:16px;padding-right:6px}
 .tl{border-left:2px solid var(--line);padding:9px 0 12px var(--s4);margin-left:5px;position:relative}
 .tl::before{content:"";position:absolute;left:-6px;top:13px;width:9px;height:9px;background:var(--primary)}
 .tl .c{font-size:12px;color:var(--dim)}
+
+/* ---------- improvements (Next migration): motion, polish, responsiveness ---------- */
+/* Gentle fade+rise when a tab's content mounts (keyed by view in page.jsx). */
+.content{animation:contentIn .2s cubic-bezier(.4,0,.2,1)}
+@keyframes contentIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+/* Cards lift slightly on hover — subtle depth without changing the flat, sharp aesthetic. */
+.hero,.tile,.card{transition:box-shadow .15s ease,transform .15s ease,border-color .15s ease}
+.tile:hover,.card:hover{box-shadow:var(--sh-md);transform:translateY(-1px)}
+.hero:not(.pri):hover{box-shadow:var(--sh-md)}
+/* Keyboard focus rings (accessibility) without touching mouse hover. */
+.nav-i:focus-visible,.btn:focus-visible,.prov-chip:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+/* Loading placeholder used while a tab fetches. */
+.loading{display:flex;align-items:center;gap:9px;color:var(--faint);padding:44px var(--s4);font-size:13px}
+.spin{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite}
+@media(prefers-reduced-motion:reduce){.content{animation:none}.tile:hover,.card:hover{transform:none}.spin{animation-duration:1.6s}}
+
+/* Mobile / narrow screens — the sidebar becomes a horizontal scroller, grids collapse. */
+@media(max-width:900px){
+  .app{flex-direction:column}
+  .sidebar{width:100%;height:auto;position:sticky;top:0;z-index:40;flex-direction:column;border-right:none;border-bottom:1px solid var(--line)}
+  .sidebar nav{display:flex;gap:2px;overflow-x:auto;padding:6px var(--s2)}
+  .nav-i{border-left:none;border-bottom:2px solid transparent;white-space:nowrap;padding:8px 12px}
+  .nav-i.on{border-left-color:transparent;border-bottom-color:var(--primary)}
+  .nav-i .cnt{margin-left:6px}
+  .charts{grid-template-columns:1fr}
+  .grid[style*="minmax"]{grid-template-columns:1fr!important}
+  .bals{gap:var(--s3);flex-wrap:wrap;justify-content:flex-end}
+  .content{padding:var(--s4)}
+  .drawer{width:100vw}
+}

@@ -12,6 +12,7 @@ export function useLeadList(fixed = {}) {
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(50);
   const [data, setData] = useState({ rows: [], count: 0 });
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(() => new Set());
   const { dataVersion } = useDash() || {}; // bumped after reverify/decision/job-finish → refetch
 
@@ -29,8 +30,11 @@ export function useLeadList(fixed = {}) {
   }, [filters, page, size]);
 
   const refresh = useCallback(async () => {
-    const d = await j("/api/leads?" + query().toString());
-    setData({ rows: d.rows || [], count: d.count || 0 });
+    setLoading(true);
+    try {
+      const d = await j("/api/leads?" + query().toString());
+      setData({ rows: d.rows || [], count: d.count || 0 });
+    } finally { setLoading(false); }
   }, [query]);
 
   useEffect(() => { refresh(); }, [refresh, dataVersion]);
@@ -41,5 +45,5 @@ export function useLeadList(fixed = {}) {
   const selectPage = () => setSelected(new Set(data.rows.map((r) => r.linkedin_url)));
   const clearSel = () => setSelected(new Set());
 
-  return { filters, setFilter, page, setPage, size, setSize, data, refresh, selected, toggle, toggleAll, selectPage, clearSel, query };
+  return { filters, setFilter, page, setPage, size, setSize, data, loading, refresh, selected, toggle, toggleAll, selectPage, clearSel, query };
 }

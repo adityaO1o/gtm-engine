@@ -89,7 +89,7 @@ export default function Dashboard() {
         </aside>
         <main className="main">
           <Topbar title={TITLES[view]} stats={stats} prospeo={prospeo} />
-          <div className="content"><Body /></div>
+          <div className="content" key={view}><Body /></div>
         </main>
       </div>
       <LeadDrawer lead={drawer} onClose={() => setDrawer(null)} />

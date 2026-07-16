@@ -20,7 +20,7 @@ export default function Competitors() {
         <button className="btn btn-ghost btn-sm" onClick={L.selectPage}><Icon name="check" />Select all</button>
         <button className="btn btn-ghost btn-sm" onClick={exportComp}><Icon name="download" />Export</button>
       </div>
-      <LeadTable rows={L.data.rows} selected={L.selected} toggle={L.toggle} toggleAll={L.toggleAll} onRowClick={openLead} onReverify={openReverify} />
+      <LeadTable rows={L.data.rows} loading={L.loading} selected={L.selected} toggle={L.toggle} toggleAll={L.toggleAll} onRowClick={openLead} onReverify={openReverify} />
       <Pager count={count} page={L.page} setPage={L.setPage} size={L.size} setSize={L.setSize} />
     </>
   );

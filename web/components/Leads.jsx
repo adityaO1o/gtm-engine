@@ -15,7 +15,7 @@ export default function Leads() {
     <>
       <LeadToolbar filters={L.filters} setFilter={setFilter} count={L.data.count} campaigns={campaigns} withCampaign
         selectedSize={L.selected.size} onSelectPage={L.selectPage} onExportFiltered={exportFiltered} onExportSelected={exportSelected} />
-      <LeadTable rows={L.data.rows} selected={L.selected} toggle={L.toggle} toggleAll={L.toggleAll} onRowClick={openLead} onReverify={openReverify} />
+      <LeadTable rows={L.data.rows} loading={L.loading} selected={L.selected} toggle={L.toggle} toggleAll={L.toggleAll} onRowClick={openLead} onReverify={openReverify} />
       <Pager count={L.data.count} page={L.page} setPage={L.setPage} size={L.size} setSize={L.setSize} />
     </>
   );

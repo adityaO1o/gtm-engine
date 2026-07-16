@@ -32,8 +32,11 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:"],
+      // Next.js static export ships inline bootstrap/hydration <script> blocks that a strict
+      // 'self'-only policy blocks (the dashboard then never hydrates). Allow inline scripts —
+      // the dashboard is behind basic-auth (single trusted user), so the XSS surface is minimal.
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
       fontSrc: ["'self'"],
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],

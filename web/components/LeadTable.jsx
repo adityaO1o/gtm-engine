@@ -2,7 +2,10 @@ import Icon from "@/components/Icon";
 import { num, ts } from "@/lib/format";
 import { StatusBadge, EmailPill, MethodLabel, VerifiedCell, SourceCell } from "@/lib/cells";
 
-export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClick, onReverify }) {
+export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClick, onReverify, loading }) {
+  if (loading && !rows.length) {
+    return <div className="tablewrap"><div className="loading"><span className="spin" />Loading leads…</div></div>;
+  }
   if (!rows.length) {
     return (
       <div className="tablewrap">
