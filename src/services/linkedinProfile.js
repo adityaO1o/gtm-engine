@@ -11,9 +11,10 @@ import { config } from "../config.js";
 import { meter } from "./apiMeter.js";
 import { log } from "../lib/logger.js";
 
-let outOfQuota = false; // 429/402/403 -> stop calling for the rest of the run
+let outOfQuota = false; // TRUE only on a real monthly-quota exhaust (terminal until plan renews)
+let coolUntil = 0;      // transient rate-limit (429) -> brief pause, NOT a permanent kill
 const stats = { calls: 0, hits: 0, quota: 0 };
-export function linkedinProfileStats() { return { ...stats, outOfQuota }; }
+export function linkedinProfileStats() { return { ...stats, outOfQuota, coolingDown: Date.now() < coolUntil }; }
 
 // Shared rate limiter — the Basic plan allows 20 req/min, but a hand-off retry runs many workers
 // concurrently. Space calls ~3.3s apart (≈18/min) across all of them so we never trip a 429.
@@ -56,7 +57,7 @@ function pickName(d) { return clean2(d?.full_name) || [clean2(d?.first_name), cl
 // feed the Trigify URN straight in and skip the whole resolve step.
 // -> { company, domain, vanity, name } | null
 export async function profileCompany(linkedinUrlOrUrn) {
-  if (!config.linkedinApiKey || outOfQuota || !linkedinUrlOrUrn) return null;
+  if (!config.linkedinApiKey || outOfQuota || Date.now() < coolUntil || !linkedinUrlOrUrn) return null;
   try {
     await slot();
     stats.calls++; meter.inc("webscrape_calls");
@@ -66,8 +67,17 @@ export async function profileCompany(linkedinUrlOrUrn) {
       timeout: 60000, validateStatus: () => true,
     });
     if (r.status === 402 || r.status === 403 || r.status === 429) {
-      outOfQuota = true; stats.quota++;
-      log.warn("linkedin profile api quota/subscription — disabling for this run", { status: r.status });
+      // Distinguish a drained MONTHLY quota (terminal) from a transient per-minute rate-limit.
+      const remaining = r.headers?.["x-ratelimit-credits-remaining"];
+      const body = typeof r.data === "string" ? r.data : JSON.stringify(r.data || "");
+      const quotaGone = r.status === 402 || r.status === 403 || (remaining !== undefined && Number(remaining) <= 0) || /exceeded .*quota|quota.*exceeded|monthly quota/i.test(body);
+      if (quotaGone) {
+        outOfQuota = true; stats.quota++;
+        log.warn("linkedin profile api MONTHLY quota exhausted — disabling (upgrade/renew to continue)", { status: r.status });
+      } else {
+        coolUntil = Date.now() + 30_000; // rate-limited — pause briefly, don't retire the tier
+        log.warn("linkedin profile api rate-limited — cooling 30s", { status: r.status });
+      }
       return null;
     }
     if (r.status !== 200) { log.warn("linkedin profile api non-200", { status: r.status }); return null; }
