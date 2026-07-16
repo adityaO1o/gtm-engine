@@ -106,10 +106,10 @@ apiRouter.get("/campaigns", async (_req, res) => {
         unverified: cnt("email_status", "unverified"), review: cnt("email_status", "review"),
         competitor: cnt("email_status", "competitor"), discarded: cnt("email_status", "discarded"),
         recovered: cntTruthy("recovered"), dnc: cntTruthy("dnc"),
-        // distinct verified email addresses (two profiles can share one) — what SendKit actually holds
-        verifiedEmails: { $addToSet: { $cond: [{ $and: [{ $eq: ["$email_status", "verified"] }, { $ne: ["$email", null] }] }, "$email", "$$REMOVE"] } },
       } },
-    ], { allowDiskUse: true }).toArray(),
+      // NOTE: distinct-verified-email count ("In SendKit") was a $addToSet over the whole collection
+      // that spilled to disk (~16s). Dropped — verifiedEmails now approximates to the verified count.
+    ]).toArray(),
     usage().find({}).toArray(),
     prospeoBalance(), jinaBalance(),
   ]);
@@ -119,7 +119,7 @@ apiRouter.get("/campaigns", async (_req, res) => {
     return {
       campaign: g._id, label: campaignLabel(g._id),
       total: g.total, hot: g.hot, warm: g.warm, cold: g.cold,
-      verified: g.verified, verifiedEmails: (g.verifiedEmails || []).length,
+      verified: g.verified, verifiedEmails: g.verified,
       noEmail: g.noEmail, unverified: g.unverified, review: g.review, competitor: g.competitor, discarded: g.discarded,
       recovered: g.recovered, dnc: g.dnc,
       credits: { trigify: u.trigify_scraped || 0, prospeo: u.prospeo_finds || 0, sendkit: g.verified },
