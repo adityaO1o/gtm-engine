@@ -2,7 +2,7 @@
 
 import { Router } from "express";
 import { ObjectId } from "mongodb";
-import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts } from "../db/mongo.js";
+import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, bouncebanRuns } from "../db/mongo.js";
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
 import { rapidScrapeStats, activityUrn } from "../services/rapidScrape.js";
 import { pndStats, pndPostInfo, pndOutOfCredits } from "../services/pnd.js";
@@ -17,6 +17,7 @@ import { resolveStats } from "../services/resolve.js";
 import { validateEmail } from "../services/enrich.js";
 import { findEmailWaterfall } from "../pipeline/enrichLead.js";
 import { reprocessNoEmail, reprocessStatus, noEmailQuery, MISS_REASONS } from "../pipeline/reprocess.js";
+import { runBouncebanAudit, bouncebanAuditStatus, bouncebanScorecard, auditQuery } from "../pipeline/bouncebanAudit.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { campaignByKey, campaignLabel, sendkitIdsFor } from "../services/campaigns.js";
 import { upsertLeads, addLeadsToCampaign, addToDnc } from "../services/sendkit.js";
@@ -74,7 +75,9 @@ function buildLeadFilter(query) {
   const status = S(query.status), email_status = S(query.email_status), category = S(query.category), campaign = S(query.campaign), recovered = S(query.recovered), q = S(query.q);
   const filter = {};
   if (status) filter.status = status;
-  if (email_status) filter.email_status = email_status;
+  // "has-email" = every lead we ever produced an address for (verified + unverified) — the Test tab.
+  if (email_status === "has-email") { filter.email_status = { $in: ["verified", "unverified"] }; filter.email = { $nin: [null, ""] }; }
+  else if (email_status) filter.email_status = email_status;
   if (category) filter.categories = category;
   if (campaign) filter.campaigns = campaign;
   if (recovered === "1") filter.recovered = true;
@@ -328,6 +331,27 @@ apiRouter.post("/reprocess", (req, res) => {
   res.json({ started: true });
 });
 apiRouter.get("/reprocess/status", (_req, res) => res.json(reprocessStatus()));
+
+// ── BounceBan audit ("Test" tab) — re-verify every found email against BounceBan and make it the
+// source of truth: only BounceBan-approved addresses stay in SendKit; rejects are DNC'd + badged.
+apiRouter.post("/bounceban/audit", (req, res) => {
+  const st = bouncebanAuditStatus();
+  if (st.running) return res.json({ started: false, ...st });
+  runBouncebanAudit({ concurrency: 8, campaigns: campList(req.body?.campaigns), limit: parseInt(req.body?.limit || "0", 10) })
+    .catch((e) => console.error("bounceban audit error", e.message));
+  res.json({ started: true });
+});
+apiRouter.get("/bounceban/audit/status", (_req, res) => res.json(bouncebanAuditStatus()));
+// How good were Enrich / Prospeo really? Confirmed-vs-rejected of what each ORIGINALLY verified.
+apiRouter.get("/bounceban/scorecard", async (_req, res) => {
+  const [card, runs] = await Promise.all([
+    bouncebanScorecard(),
+    bouncebanRuns().find({}).sort({ finishedAt: -1 }).limit(10).toArray(),
+  ]);
+  res.json({ ...card, runs });
+});
+// Count of what the audit would cover (leads with an email: verified + unverified).
+apiRouter.get("/bounceban/count", async (_req, res) => res.json({ count: await leads().countDocuments(auditQuery()) }));
 
 // GET /api/reprocess/runs — history of retry runs (recovered per run + why the rest missed)
 apiRouter.get("/reprocess/runs", async (_req, res) => {

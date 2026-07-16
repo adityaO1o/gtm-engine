@@ -46,6 +46,8 @@ export async function connect() {
   await db.collection("leads").createIndex({ campaigns: 1 });
   await db.collection("leads").createIndex({ campaigns: 1, status: 1 });
   await db.collection("leads").createIndex({ campaigns: 1, email_status: 1, email: 1 });
+  await db.collection("leads").createIndex({ bb_verdict: 1 });          // BounceBan audit + scorecard
+  await db.collection("bounceban_runs").createIndex({ finishedAt: -1 });
   await db.collection("scraped_posts").createIndex({ postUrl: 1 }, { unique: true });
   // Durable engager queue for the resumable "Scrape via post" job — scraped engagers are parked
   // here, then drained by the enrichment phase, so a restart/pause resumes instead of losing work.
@@ -107,3 +109,4 @@ export const scrapeEngagers = () => db.collection("scrape_engagers");
 // never paid for twice — retries reuse it.
 export const companyDomains = () => db.collection("company_domains");   // _id: companyUsername
 export const profileCache = () => db.collection("profile_cache");        // _id: profile url/urn
+export const bouncebanRuns = () => db.collection("bounceban_runs");      // audit run history

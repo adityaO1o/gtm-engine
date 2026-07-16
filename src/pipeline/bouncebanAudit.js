@@ -1,0 +1,143 @@
+// BounceBan audit — re-verify EVERY lead we ever found an email for (verified + unverified) against
+// BounceBan, and make BounceBan the source of truth:
+//   • deliverable  -> keep/mark verified, push to SendKit (only BounceBan-approved addresses go out)
+//   • not deliverable -> mark unverified, badge it, and pull it back out of SendKit
+//
+// It preserves the ORIGINAL verdict (bb_prev_verified_by / bb_prev_status) so the dashboard can show
+// "Enrich said verified — BounceBan says no", i.e. a real scorecard of how good Enrich vs Prospeo
+// actually were. Re-running never overwrites that original provider, so the scorecard stays honest.
+//
+// NOTE on "removing from SendKit": SendKit has no remove-from-campaign endpoint. DNC is the real
+// guarantee — campaigns run skipDNC:true, so a DNC'd address is skipped at send time and can never
+// be emailed. That is how a rejected lead is pulled back.
+
+import { leads, bouncebanRuns } from "../db/mongo.js";
+import { bouncebanVerify } from "../services/bounceban.js";
+import { upsertLead, addToCampaign, addToDnc } from "../services/sendkit.js";
+import { sendkitIdsFor } from "../services/campaigns.js";
+import { log } from "../lib/logger.js";
+
+let running = false;
+let status = { running: false, processed: 0, total: 0, confirmed: 0, rejected: 0, dnc: 0, pushed: 0, startedAt: null, finishedAt: null };
+export function bouncebanAuditStatus() { return status; }
+
+// Every lead we ever produced an email for — verified AND unverified.
+export function auditQuery(campaigns = []) {
+  const q = { email: { $nin: [null, ""] }, email_status: { $in: ["verified", "unverified"] } };
+  if (campaigns.length) q.campaigns = { $in: campaigns };
+  return q;
+}
+
+const tagsFor = (d) => [
+  "gtm-auto", ...(d.categories || []).map((c) => "cat:" + c),
+  "score:" + d.score, "seen:" + d.times_seen, d.status + "-lead", "bounceban-verified",
+];
+
+async function auditOne(d) {
+  const b = await bouncebanVerify(d.email);
+  if (!b) return; // BounceBan unusable for this one — leave the lead exactly as it was
+
+  // Keep the ORIGINAL pre-audit verdict forever (a re-run must not overwrite it, or the scorecard
+  // would slowly rewrite itself to "bounceban vs bounceban" and tell us nothing).
+  const firstAudit = !d.bb_verdict;
+  const set = {
+    bb_checked_at: new Date(), bb_result: b.result, bb_score: b.score,
+    bb_accept_all: b.acceptAll, bb_role: b.role, bb_free: b.free, bb_disposable: b.disposable,
+  };
+  if (firstAudit) { set.bb_prev_verified_by = d.verified_by || null; set.bb_prev_status = d.email_status || null; }
+
+  if (b.deliverable) {
+    Object.assign(set, {
+      bb_verdict: "confirmed", email_status: "verified", unverified: false, needs_email: false,
+      verified_by: "bounceban", verify_detail: `bounceban:${b.result}/${b.score}${b.acceptAll ? "/accept-all" : ""}`,
+    });
+    await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: set });
+    // Only BounceBan-approved addresses are pushed.
+    try {
+      const [first, ...rest] = (d.name || "").split(" ");
+      await upsertLead({ email: d.email, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags: tagsFor(d) });
+      const landed = [];
+      for (const cid of sendkitIdsFor(d.campaigns)) if (await addToCampaign(cid, d.email)) landed.push(cid);
+      if (landed.length) await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { sendkit_campaigns: landed } });
+      status.pushed++;
+    } catch (e) { log.warn("bb audit push failed", { err: e.message }); }
+    status.confirmed++;
+  } else {
+    Object.assign(set, {
+      bb_verdict: "rejected", email_status: "unverified", unverified: true,
+      verify_detail: `bounceban:${b.result}${b.score != null ? "/" + b.score : ""}`,
+    });
+    await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: set });
+    // Pull it back out of SendKit: DNC is the only real guarantee (no remove endpoint exists).
+    if (d.sendkit_campaigns?.length || d.email_status === "verified") {
+      try {
+        await addToDnc([d.email]);
+        await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { dnc: true, dnc_at: new Date(), dnc_reason: "bounceban-rejected" } });
+        status.dnc++;
+      } catch (e) { log.warn("bb audit dnc failed", { err: e.message }); }
+    }
+    status.rejected++;
+  }
+}
+
+export async function runBouncebanAudit({ concurrency = 8, campaigns = [], limit = 0 } = {}) {
+  if (running) return { alreadyRunning: true, ...status };
+  running = true;
+  const all = await leads().find(auditQuery(campaigns)).toArray();
+  const list = limit ? all.slice(0, limit) : all;
+  status = { running: true, processed: 0, total: list.length, confirmed: 0, rejected: 0, dnc: 0, pushed: 0, campaigns, startedAt: new Date(), finishedAt: null };
+
+  let idx = 0;
+  const worker = async () => {
+    while (idx < list.length) {
+      const d = list[idx++];
+      try { await auditOne(d); } catch (e) { log.warn("bb audit one failed", { err: e.message }); }
+      status.processed++;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, list.length || 1) }, worker));
+
+  const finishedAt = new Date();
+  status = { ...status, running: false, finishedAt };
+  running = false;
+  try {
+    await bouncebanRuns().insertOne({
+      startedAt: status.startedAt, finishedAt, campaigns,
+      processed: status.processed, confirmed: status.confirmed, rejected: status.rejected, dnc: status.dnc,
+    });
+  } catch (e) { log.warn("bb audit run log failed", { err: e.message }); }
+  log.info("bounceban audit done", { processed: status.processed, confirmed: status.confirmed, rejected: status.rejected, dnc: status.dnc });
+  return { processed: status.processed, confirmed: status.confirmed, rejected: status.rejected, dnc: status.dnc };
+}
+
+// Scorecard: of the leads each provider ORIGINALLY verified, how many does BounceBan confirm/reject?
+// This is the honest answer to "how good were Enrich and Prospeo actually?".
+export async function bouncebanScorecard() {
+  const rows = await leads().aggregate([
+    { $match: { bb_verdict: { $in: ["confirmed", "rejected"] } } },
+    { $group: {
+      _id: { by: { $ifNull: ["$bb_prev_verified_by", "none"] }, was: { $ifNull: ["$bb_prev_status", "none"] } },
+      n: { $sum: 1 },
+      confirmed: { $sum: { $cond: [{ $eq: ["$bb_verdict", "confirmed"] }, 1, 0] } },
+      rejected: { $sum: { $cond: [{ $eq: ["$bb_verdict", "rejected"] }, 1, 0] } },
+      acceptAll: { $sum: { $cond: ["$bb_accept_all", 1, 0] } },
+    } },
+  ]).toArray();
+
+  // Only leads a provider had marked VERIFIED are a fair test of that provider.
+  const byProvider = {};
+  for (const r of rows) {
+    if (r._id.was !== "verified") continue;
+    const k = r._id.by || "none";
+    byProvider[k] = byProvider[k] || { provider: k, total: 0, confirmed: 0, rejected: 0, acceptAll: 0 };
+    byProvider[k].total += r.n; byProvider[k].confirmed += r.confirmed;
+    byProvider[k].rejected += r.rejected; byProvider[k].acceptAll += r.acceptAll;
+  }
+  const providers = Object.values(byProvider).map((p) => ({ ...p, accuracy: p.total ? Math.round((p.confirmed / p.total) * 100) : 0 }))
+    .sort((a, b) => b.total - a.total);
+
+  // And of the ones everyone had written off as unverified, how many are actually fine?
+  const rescued = rows.filter((r) => r._id.was === "unverified").reduce((a, r) => a + r.confirmed, 0);
+  const totalAudited = rows.reduce((a, r) => a + r.n, 0);
+  return { providers, rescued, totalAudited };
+}
