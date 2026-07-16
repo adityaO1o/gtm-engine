@@ -4,10 +4,12 @@ import Icon from "@/components/Icon";
 import { num, ts } from "@/lib/format";
 import { j, post } from "@/lib/api";
 import { useDash } from "@/lib/ctx";
+import { useToast } from "@/lib/toast";
 import JobBox from "./JobBox";
 
 export default function Handoff() {
   const { campaigns, stats, jobs, pollJobs } = useDash();
+  const toast = useToast();
   const [checked, setChecked] = useState(() => new Set());
   const [runs, setRuns] = useState([]);
   const [reasonLabels, setReasonLabels] = useState({});
@@ -32,6 +34,7 @@ export default function Handoff() {
   async function retry(deep) {
     if (deep && !window.confirm("Deep retry re-runs EVERY stuck lead (incl. hopeless & unverified) and pays for a profile lookup once more. This spends RapidAPI credits. Continue?")) return;
     await post("/api/reprocess", { campaigns: [...checked], deep });
+    toast(`${deep ? "Deep retry" : "Retry"} started — recovering emails in the background`, "info");
     pollJobs();
   }
   const campLabel = (key) => campaigns.find((c) => c.campaign === key)?.label || key;

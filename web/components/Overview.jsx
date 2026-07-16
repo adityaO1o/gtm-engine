@@ -3,7 +3,9 @@ import { useEffect, useState } from "react";
 import Icon from "@/components/Icon";
 import { num } from "@/lib/format";
 import { j } from "@/lib/api";
-import { donut, area, funnel } from "@/lib/charts";
+import { funnel } from "@/lib/charts";
+import { Donut, Area } from "./charts";
+import { useDash } from "@/lib/ctx";
 
 const Hero = ({ k, v, sub, cls }) => (
   <div className={`hero ${cls || ""}`}>
@@ -57,13 +59,11 @@ function ApiUsagePanel({ s }) {
 }
 
 export default function Overview() {
-  const [data, setData] = useState(null);
-  useEffect(() => {
-    Promise.all([j("/api/analytics"), j("/api/stats")]).then(([a, s]) => setData({ a, s })).catch(() => setData({ err: true }));
-  }, []);
-  if (!data) return <div className="muted" style={{ padding: 40 }}>Loading…</div>;
-  if (data.err) return <div className="muted" style={{ padding: 40 }}>Couldn’t load analytics.</div>;
-  const { a, s } = data;
+  const { stats: s } = useDash();               // reuse the topbar's stats — no duplicate /api/stats
+  const [a, setA] = useState(null);
+  useEffect(() => { j("/api/analytics").then(setA).catch(() => setA({ err: true })); }, []);
+  if (!a || s.total == null) return <div className="loading"><span className="spin" />Loading overview…</div>;
+  if (a.err) return <div className="muted" style={{ padding: 40 }}>Couldn’t load analytics.</div>;
   const rate = s.total ? Math.round((s.verified / s.total) * 100) : 0;
   return (
     <>
@@ -87,7 +87,7 @@ export default function Overview() {
       <div className="charts" style={{ marginTop: "var(--s4)" }}>
         <div className="chartbox">
           <h4>Status split</h4>
-          <Raw html={donut([{ value: a.status.hot, color: "#DC2B2B" }, { value: a.status.warm, color: "#B26B00" }, { value: a.status.cold, color: "#2E90D9" }])} />
+          <Donut segs={[{ value: a.status.hot, color: "#DC2B2B", label: "Hot" }, { value: a.status.warm, color: "#B26B00", label: "Warm" }, { value: a.status.cold, color: "#2E90D9", label: "Cold" }]} />
           <div className="legend">
             <span><i style={{ background: "#DC2B2B" }} />Hot {num(a.status.hot)}</span>
             <span><i style={{ background: "#B26B00" }} />Warm {num(a.status.warm)}</span>
@@ -96,7 +96,7 @@ export default function Overview() {
         </div>
         <div className="chartbox">
           <h4>Leads over time</h4>
-          <Raw html={area(a.series)} />
+          <Area series={a.series} />
           <div className="legend">
             <span><i style={{ background: "#6C47FF" }} />Total</span>
             <span><i style={{ background: "#0C8A45" }} />Verified</span>

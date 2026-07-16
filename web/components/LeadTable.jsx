@@ -2,7 +2,7 @@ import Icon from "@/components/Icon";
 import { num, ts } from "@/lib/format";
 import { StatusBadge, EmailPill, MethodLabel, VerifiedCell, SourceCell } from "@/lib/cells";
 
-export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClick, onReverify, loading }) {
+export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClick, onReverify, loading, sort, onSort }) {
   if (loading && !rows.length) {
     return <div className="tablewrap"><div className="loading"><span className="spin" />Loading leads…</div></div>;
   }
@@ -20,7 +20,10 @@ export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClic
         <thead>
           <tr>
             <th className="chkcol"><input type="checkbox" className="chk" checked={allChecked} onChange={(e) => toggleAll(e.target.checked)} /></th>
-            <th>Person</th><th>Company</th><th>Status</th><th>Score</th><th>Email</th><th>Found by</th><th>Verified</th><th>Source</th><th>Categories</th><th>Seen</th><th>Last seen</th>
+            <th>Person</th><th>Company</th><th>Status</th>
+            <th className={onSort ? "sortable" : ""} onClick={() => onSort && onSort("score")}>Score{sort === "score" && <span className="sortarrow">▼</span>}</th>
+            <th>Email</th><th>Found by</th><th>Verified</th><th>Source</th><th>Categories</th><th>Seen</th>
+            <th className={onSort ? "sortable" : ""} onClick={() => onSort && onSort("recent")}>Last seen{sort === "recent" && <span className="sortarrow">▼</span>}</th>
           </tr>
         </thead>
         <tbody>

@@ -4,6 +4,7 @@ import Icon from "@/components/Icon";
 import { num, ts } from "@/lib/format";
 import { j, post } from "@/lib/api";
 import { useDash } from "@/lib/ctx";
+import { useToast } from "@/lib/toast";
 import JobBox from "./JobBox";
 
 const SCR_PHASE = { working: "Scraping + finding emails", done: "Done", paused: "Paused", stopped: "Stopped", error: "Error" };
@@ -64,6 +65,7 @@ function ScrapedPosts({ posts }) {
 
 export default function Sources() {
   const { refreshTop, jobs, pollJobs } = useDash();
+  const toast = useToast();
   const [data, setData] = useState({ sources: [], lists: [], status: {} });
   const [posts, setPosts] = useState([]);
   const [scrape, setScrape] = useState(null);
@@ -97,12 +99,12 @@ export default function Sources() {
   }, [list, listPage]);
 
   // handlers
-  const addSrc = async (type, url, clear) => { if (!url.trim()) return; await post("/api/sources", { type, url: url.trim() }); clear(); load(); };
+  const addSrc = async (type, url, clear) => { if (!url.trim()) return; await post("/api/sources", { type, url: url.trim() }); clear(); load(); toast(`${type === "hub" ? "Hub" : "Influencer"} added`, "good"); };
   const delSrc = async (id) => { await fetch("/api/sources/" + id, { method: "DELETE" }); list ? setListPage((p) => p) : load(); if (list) { const d = await j(`/api/sources/list/${encodeURIComponent(list)}?skip=${listPage * 100}&limit=100`); setListRows({ rows: d.rows || [], count: d.count || 0 }); } };
-  const runNow = async () => { await post("/api/sources/run", {}); pollJobs(); };
-  const scrapePost = async () => { if (!inPost.trim()) return; await post("/api/sources/scrape-post", { postUrl: inPost.trim() }); pollScrape(); };
-  const pauseScrape = async () => { await post("/api/sources/scrape-post/pause", {}); pollScrape(); };
-  const resumeScrape = async (url) => { await post("/api/sources/scrape-post", { postUrl: url }); pollScrape(); };
+  const runNow = async () => { await post("/api/sources/run", {}); toast("Sources sweep started", "info"); pollJobs(); };
+  const scrapePost = async () => { if (!inPost.trim()) return; await post("/api/sources/scrape-post", { postUrl: inPost.trim() }); toast("Scrape started — leads will flow in as it runs", "info"); pollScrape(); };
+  const pauseScrape = async () => { await post("/api/sources/scrape-post/pause", {}); toast("Scrape paused — resume anytime", "info"); pollScrape(); };
+  const resumeScrape = async (url) => { await post("/api/sources/scrape-post", { postUrl: url }); toast("Scrape resumed", "info"); pollScrape(); };
   const setListActive = async (l, on) => { setListMsg(on ? "Enabling…" : "Pausing…"); const r = await post(`/api/sources/list/${encodeURIComponent(l)}/active`, { active: on }); setListMsg(`✓ ${on ? "Enabled" : "Paused"} “${l}” · ${num(r.matched)} influencers${on ? " — will scrape on the next run" : ""}`); load(); };
   const delList = async (l) => { if (!window.confirm(`Delete the whole list “${l}”? This removes those influencers from Sources (leads already collected stay).`)) return; await fetch(`/api/sources/list/${encodeURIComponent(l)}`, { method: "DELETE" }); setList(null); load(); };
 

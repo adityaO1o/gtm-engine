@@ -1,4 +1,6 @@
 import { num } from "@/lib/format";
+import Icon from "@/components/Icon";
+import ThemeToggle from "@/components/ThemeToggle";
 
 // Effective remaining = whichever cap (credits OR requests) is closest to 0 — RapidAPI blocks on either.
 function effLeft(b) {
@@ -19,7 +21,7 @@ function BalChip({ label, b, note }) {
   );
 }
 
-export default function Topbar({ title, stats, prospeo }) {
+export default function Topbar({ title, stats, prospeo, onCmdK }) {
   const bal = stats?.apiBalance || {};
   return (
     <div className="topbar">
@@ -36,6 +38,8 @@ export default function Topbar({ title, stats, prospeo }) {
         <BalChip label="Fresh" b={bal.fresh} note="Fresh scraper (post engagers)" />
         <BalChip label="Web-scrape" b={bal.webscrape} note="Web-scrape (company lookup)" />
       </div>
+      <button className="themebtn" title="Search — ⌘K / Ctrl-K" onClick={onCmdK}><Icon name="search" /></button>
+      <ThemeToggle />
     </div>
   );
 }

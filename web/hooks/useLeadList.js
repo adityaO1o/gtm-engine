@@ -44,6 +44,8 @@ export function useLeadList(fixed = {}) {
   const toggleAll = (checked) => setSelected(() => (checked ? new Set(data.rows.map((r) => r.linkedin_url)) : new Set()));
   const selectPage = () => setSelected(new Set(data.rows.map((r) => r.linkedin_url)));
   const clearSel = () => setSelected(new Set());
+  // Optimistic: drop rows immediately (e.g. after approve/discard) before the server confirms.
+  const removeRows = (urls) => setData((d) => ({ rows: d.rows.filter((r) => !urls.includes(r.linkedin_url)), count: Math.max(0, d.count - urls.length) }));
 
-  return { filters, setFilter, page, setPage, size, setSize, data, loading, refresh, selected, toggle, toggleAll, selectPage, clearSel, query };
+  return { filters, setFilter, page, setPage, size, setSize, data, loading, refresh, selected, toggle, toggleAll, selectPage, clearSel, removeRows, query };
 }

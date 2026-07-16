@@ -4,12 +4,14 @@ import Icon from "@/components/Icon";
 import { num } from "@/lib/format";
 import { post } from "@/lib/api";
 import { useDash } from "@/lib/ctx";
+import { useToast } from "@/lib/toast";
 import { useLeadList } from "@/hooks/useLeadList";
 import { MethodLabel } from "@/lib/cells";
 import Pager from "./Pager";
 
 export default function Review() {
   const { refreshTop } = useDash();
+  const toast = useToast();
   const L = useLeadList({ email: "review" });
   const [msg, setMsg] = useState("");
   const rows = L.data.rows, count = L.data.count;
@@ -18,15 +20,18 @@ export default function Review() {
     const urls = url ? [url] : [...L.selected];
     if (!urls.length) { setMsg("Pick at least one lead first."); return; }
     setMsg(action === "approve" ? "Approving…" : "Discarding…");
-    const r = await post("/api/leads/decision", { urls, action });
+    L.removeRows(urls);          // optimistic — they leave the review list immediately
     if (!url) L.clearSel();
+    const r = await post("/api/leads/decision", { urls, action });
     await refreshTop();
-    await L.refresh();
-    setMsg(r.ok
+    await L.refresh();           // reconcile with the server
+    const text = r.ok
       ? (action === "approve"
-        ? `✓ Approved ${num(r.approved)} · pushed ${num(r.pushed)} into their campaigns`
-        : `✓ Discarded ${num(r.discarded)}${r.dnc ? ` · ${num(r.dnc)} DNC'd (already in SendKit)` : ""}`)
-      : `✗ ${r.error || "failed"}`);
+        ? `Approved ${num(r.approved)} · pushed ${num(r.pushed)} into their campaigns`
+        : `Discarded ${num(r.discarded)}${r.dnc ? ` · ${num(r.dnc)} DNC'd (already in SendKit)` : ""}`)
+      : (r.error || "failed");
+    setMsg((r.ok ? "✓ " : "✗ ") + text);
+    toast(text, r.ok ? "good" : "bad");
   }
 
   const allChecked = rows.length > 0 && rows.every((x) => L.selected.has(x.linkedin_url));

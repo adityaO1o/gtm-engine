@@ -4,6 +4,7 @@ import Icon from "@/components/Icon";
 import { num } from "@/lib/format";
 import { j, post } from "@/lib/api";
 import { useDash } from "@/lib/ctx";
+import { useToast } from "@/lib/toast";
 import { useLeadList } from "@/hooks/useLeadList";
 import LeadToolbar from "./LeadToolbar";
 import LeadTable from "./LeadTable";
@@ -36,6 +37,7 @@ function CampaignList({ campaigns, onOpen }) {
 
 function CampaignDetail({ campaign, label, onBack }) {
   const { openLead, openReverify, jobs, pollJobs } = useDash();
+  const toast = useToast();
   const [s, setS] = useState({});
   const [cardMetrics, setCardMetrics] = useState(["total", "verified", "hot", "noEmail"]);
   const [msg, setMsg] = useState("");
@@ -52,8 +54,8 @@ function CampaignDetail({ campaign, label, onBack }) {
   const exportFiltered = () => { const p = L.query(); p.delete("limit"); p.delete("skip"); window.location = "/api/export?" + p.toString(); };
   const exportSelected = () => { if (!L.selected.size) return; window.location = "/api/export?urls=" + [...L.selected].map(encodeURIComponent).join(","); };
 
-  async function pause() { const r = await post(`/api/campaigns/${encodeURIComponent(campaign)}/pause`, { paused: true }); setMsg(r.ok ? "✓ Campaign paused." : "Pause failed: " + (r.error || "")); }
-  async function sync() { await post("/api/sync", { campaign }); pollJobs(); }
+  async function pause() { const r = await post(`/api/campaigns/${encodeURIComponent(campaign)}/pause`, { paused: true }); setMsg(r.ok ? "✓ Campaign paused." : "Pause failed: " + (r.error || "")); toast(r.ok ? "Campaign paused" : "Pause failed", r.ok ? "good" : "bad"); }
+  async function sync() { await post("/api/sync", { campaign }); toast("SendKit sync started", "info"); pollJobs(); }
 
   return (
     <>
@@ -75,15 +77,16 @@ function CampaignDetail({ campaign, label, onBack }) {
       </div>
       <LeadToolbar filters={L.filters} setFilter={L.setFilter} count={L.data.count} campaigns={[]} withCampaign={false}
         selectedSize={L.selected.size} onSelectPage={L.selectPage} onExportFiltered={exportFiltered} onExportSelected={exportSelected} />
-      <LeadTable rows={L.data.rows} loading={L.loading} selected={L.selected} toggle={L.toggle} toggleAll={L.toggleAll} onRowClick={openLead} onReverify={openReverify} />
+      <LeadTable rows={L.data.rows} loading={L.loading} selected={L.selected} toggle={L.toggle} toggleAll={L.toggleAll} onRowClick={openLead} onReverify={openReverify} sort={L.filters.sort} onSort={(f) => L.setFilter("sort", f)} />
       <Pager count={L.data.count} page={L.page} setPage={L.setPage} size={L.size} setSize={L.setSize} />
     </>
   );
 }
 
 export default function Campaigns() {
-  const { campaigns } = useDash();
+  const { campaigns, pendingCampaign, clearPending } = useDash();
   const [active, setActive] = useState(null);
+  useEffect(() => { if (pendingCampaign) { setActive(pendingCampaign); clearPending(); } }, [pendingCampaign, clearPending]);
   if (active) {
     const c = campaigns.find((x) => x.campaign === active);
     return <CampaignDetail campaign={active} label={c?.label || active} onBack={() => setActive(null)} />;

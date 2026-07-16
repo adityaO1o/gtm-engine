@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import Topbar from "@/components/Topbar";
 import Overview from "@/components/Overview";
@@ -11,9 +11,11 @@ import Campaigns from "@/components/Campaigns";
 import Sources from "@/components/Sources";
 import LeadDrawer from "@/components/LeadDrawer";
 import ReverifyMenu from "@/components/ReverifyMenu";
+import CommandPalette from "@/components/CommandPalette";
 import { num } from "@/lib/format";
 import { j } from "@/lib/api";
 import { DashContext } from "@/lib/ctx";
+import { ToastProvider } from "@/lib/toast";
 
 const TABS = [
   { id: "overview", label: "Overview", icon: "gauge" },
@@ -36,6 +38,8 @@ export default function Dashboard() {
   const [drawer, setDrawer] = useState(null);
   const [menu, setMenu] = useState(null);
   const [dataVersion, setDataVersion] = useState(0);
+  const [cmdk, setCmdk] = useState(false);
+  const [pendingCampaign, setPendingCampaign] = useState(null);
   const jobTimer = useRef(null);
   const prevRunning = useRef(false);
 
@@ -53,13 +57,20 @@ export default function Dashboard() {
     ]);
     setJobs({ retry, sync, sources });
     const now = retry.running || sync.running || sources.running;
-    if (prevRunning.current && !now) { refreshTop(); setDataVersion((v) => v + 1); } // a job just finished
+    if (prevRunning.current && !now) { refreshTop(); setDataVersion((v) => v + 1); }
     prevRunning.current = now;
     jobTimer.current = setTimeout(poll, now ? 1500 : 10000);
   }, [refreshTop]);
 
   useEffect(() => { refreshTop(); pollJobs(); return () => clearTimeout(jobTimer.current); }, [refreshTop, pollJobs]);
   useEffect(() => { const t = setInterval(refreshTop, 25000); return () => clearInterval(t); }, [refreshTop]);
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdk((v) => !v); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const openLead = useCallback((url, name) => setDrawer({ url, name }), []);
   const openReverify = useCallback((url, el) => {
@@ -67,33 +78,43 @@ export default function Dashboard() {
     setMenu({ url, x: Math.min(r.left, window.innerWidth - 210), y: r.bottom + 5 });
   }, []);
   const refreshData = useCallback(() => setDataVersion((v) => v + 1), []);
+  const openCampaign = useCallback((key) => { setPendingCampaign(key); setView("campaigns"); }, []);
+  const clearPending = useCallback(() => setPendingCampaign(null), []);
 
-  const ctx = { campaigns, stats, prospeo, jobs, dataVersion, refreshTop, pollJobs, openLead, openReverify, refreshData };
+  const ctx = useMemo(() => ({
+    campaigns, stats, prospeo, jobs, dataVersion, pendingCampaign,
+    refreshTop, pollJobs, openLead, openReverify, refreshData, openCampaign, clearPending,
+  }), [campaigns, stats, prospeo, jobs, dataVersion, pendingCampaign, refreshTop, pollJobs, openLead, openReverify, refreshData, openCampaign, clearPending]);
+
   const Body = BODIES[view];
 
   return (
-    <DashContext.Provider value={ctx}>
-      <div className="app">
-        <aside className="sidebar">
-          <div className="brand"><div className="mk"><Icon name="spark" /></div><div><b>InboxKit</b><span>GTM Engine</span></div></div>
-          <nav>
-            {TABS.map((t) => {
-              const c = t.id === "campaigns" ? campaigns.length : t.cnt ? t.cnt(stats) : null;
-              return (
-                <div key={t.id} className={`nav-i${view === t.id ? " on" : ""}`} onClick={() => setView(t.id)}>
-                  <Icon name={t.icon} />{t.label}{c != null && <span className="cnt">{num(c)}</span>}
-                </div>
-              );
-            })}
-          </nav>
-        </aside>
-        <main className="main">
-          <Topbar title={TITLES[view]} stats={stats} prospeo={prospeo} />
-          <div className="content" key={view}><Body /></div>
-        </main>
-      </div>
-      <LeadDrawer lead={drawer} onClose={() => setDrawer(null)} />
-      <ReverifyMenu menu={menu} onClose={() => setMenu(null)} onDone={() => { refreshTop(); refreshData(); }} />
-    </DashContext.Provider>
+    <ToastProvider>
+      <DashContext.Provider value={ctx}>
+        <div className="app">
+          <aside className="sidebar">
+            <div className="brand"><div className="mk"><Icon name="spark" /></div><div><b>InboxKit</b><span>GTM Engine</span></div></div>
+            <nav>
+              {TABS.map((t) => {
+                const c = t.id === "campaigns" ? campaigns.length : t.cnt ? t.cnt(stats) : null;
+                return (
+                  <div key={t.id} className={`nav-i${view === t.id ? " on" : ""}`} onClick={() => setView(t.id)}>
+                    <Icon name={t.icon} />{t.label}{c != null && <span className="cnt">{num(c)}</span>}
+                  </div>
+                );
+              })}
+            </nav>
+          </aside>
+          <main className="main">
+            <Topbar title={TITLES[view]} stats={stats} prospeo={prospeo} onCmdK={() => setCmdk(true)} />
+            <div className="content" key={view}><Body /></div>
+          </main>
+        </div>
+        <LeadDrawer lead={drawer} onClose={() => setDrawer(null)} />
+        <ReverifyMenu menu={menu} onClose={() => setMenu(null)} onDone={() => { refreshTop(); refreshData(); }} />
+        <CommandPalette open={cmdk} onClose={() => setCmdk(false)} tabs={TABS} campaigns={campaigns}
+          onTab={(id) => setView(id)} onCampaign={openCampaign} />
+      </DashContext.Provider>
+    </ToastProvider>
   );
 }
