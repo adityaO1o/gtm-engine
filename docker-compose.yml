@@ -26,6 +26,13 @@ services:
       LINKEDIN_API_KEY: ${LINKEDIN_API_KEY}
       LINKEDIN_API_HOST: ${LINKEDIN_API_HOST}
       SCRAPE_API_HOST: ${SCRAPE_API_HOST}
+      # PND (professional-network-data) — separate RapidAPI account. This compose file passes env
+      # through EXPLICITLY, so a var set in Dokploy but missing here never reaches the container.
+      PND_API_KEY: ${PND_API_KEY}
+      PND_API_HOST: ${PND_API_HOST}
+      PND_CREDIT_FLOOR: ${PND_CREDIT_FLOOR}
+      PND_MIN_GAP_MS: ${PND_MIN_GAP_MS}
+      SEO_API_BASE: ${SEO_API_BASE}
       SENDKIT_KEY: ${SENDKIT_KEY}
       PROXIES: ${PROXIES}
       DASH_USER: ${DASH_USER}
