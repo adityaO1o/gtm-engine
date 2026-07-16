@@ -138,6 +138,9 @@ export async function bouncebanScorecard() {
 
   // And of the ones everyone had written off as unverified, how many are actually fine?
   const rescued = rows.filter((r) => r._id.was === "unverified").reduce((a, r) => a + r.confirmed, 0);
-  const totalAudited = rows.reduce((a, r) => a + r.n, 0);
-  return { providers, rescued, totalAudited };
+  const overall = rows.reduce((a, r) => ({
+    audited: a.audited + r.n, confirmed: a.confirmed + r.confirmed,
+    rejected: a.rejected + r.rejected, acceptAll: a.acceptAll + r.acceptAll,
+  }), { audited: 0, confirmed: 0, rejected: 0, acceptAll: 0 });
+  return { providers, rescued, overall, totalAudited: overall.audited };
 }

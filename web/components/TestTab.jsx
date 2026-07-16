@@ -20,28 +20,53 @@ function VerdictCell({ x }) {
   );
 }
 
-function Scorecard({ card }) {
+const Hero = ({ k, v, sub, cls }) => (
+  <div className={`hero ${cls || ""}`}>
+    <div className="hk">{k}</div>
+    <div className="hv">{typeof v === "number" ? num(v) : v}</div>
+    <div className="hs">{sub}</div>
+  </div>
+);
+
+// Headline result cards. While the audit runs these track the LIVE job; once it finishes they show
+// the cumulative picture across every audit.
+function ResultCards({ job, card }) {
+  const live = !!job.running;
+  const o = card?.overall || {};
+  const checked = live ? job.processed || 0 : o.audited || 0;
+  const confirmed = live ? job.confirmed || 0 : o.confirmed || 0;
+  const rejected = live ? job.rejected || 0 : o.rejected || 0;
+  if (!checked && !live) return null;
+  const rate = checked ? Math.round((confirmed / checked) * 100) : 0;
+  return (
+    <div className="grid g-hero">
+      <Hero k="Emails checked" v={checked} sub={live ? `of ${num(job.total || 0)} · running…` : "put through BounceBan"} />
+      <Hero k="Verified" v={confirmed} sub={`${rate}% deliverable · pushed to SendKit`} cls="pri" />
+      <Hero k="Unverified" v={rejected} sub="rejected · DNC’d, never emailed" cls="bad" />
+      <Hero k="Rescued" v={card?.rescued ?? 0} sub="were written off — actually fine" cls="good" />
+    </div>
+  );
+}
+
+// One card per provider: of what IT called "verified", how much did BounceBan throw out?
+function ProviderCards({ card }) {
   if (!card?.providers?.length) return null;
   return (
-    <div className="chartbox" style={{ marginBottom: "var(--s3)" }}>
-      <h4><Icon name="trend" />Provider scorecard <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>· of what each one called “verified”, how many does BounceBan confirm?</span></h4>
-      <div className="tablewrap" style={{ border: "none" }}>
-        <table><thead><tr><th>Verified by</th><th>Checked</th><th>Confirmed</th><th>Rejected</th><th>Accuracy</th><th>Catch-all</th></tr></thead>
-          <tbody>{card.providers.map((p) => (
-            <tr key={p.provider}>
-              <td className="nm">{cap(p.provider)}</td>
-              <td className="num-c">{num(p.total)}</td>
-              <td className="num-c" style={{ color: "var(--good)", fontWeight: 600 }}>{num(p.confirmed)}</td>
-              <td className="num-c" style={{ color: "var(--hot)", fontWeight: 600 }}>{num(p.rejected)}</td>
-              <td className="num-c"><b>{p.accuracy}%</b></td>
-              <td className="num-c muted">{num(p.acceptAll)}</td>
-            </tr>
-          ))}</tbody></table>
+    <>
+      <div className="section-t"><Icon name="trend" />How accurate were they really? — of what each one called “verified”</div>
+      <div className="grid g-hero">
+        {card.providers.map((p) => (
+          <div key={p.provider} className="hero">
+            <div className="hk">{cap(p.provider)} said verified</div>
+            <div className="hv" style={{ color: p.accuracy >= 85 ? "var(--good)" : p.accuracy >= 70 ? "var(--warm)" : "var(--hot)" }}>{p.accuracy}%</div>
+            <div className="hs">
+              <b style={{ color: "var(--hot)" }}>{num(p.rejected)}</b> rejected by BounceBan · {num(p.confirmed)}/{num(p.total)} held up
+              {p.acceptAll ? <> · {num(p.acceptAll)} catch-all</> : null}
+            </div>
+          </div>
+        ))}
       </div>
-      <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
-        {num(card.rescued)} lead{card.rescued === 1 ? "" : "s"} everyone had written off as <b>unverified</b> turned out to be deliverable · {num(card.totalAudited)} audited in total.
-      </div>
-    </div>
+    </>
   );
 }
 
@@ -64,8 +89,9 @@ export default function TestTab() {
     clearTimeout(timer.current);
     const s = await j("/api/bounceban/audit/status").catch(() => ({}));
     setJob(s);
-    if (s.running) timer.current = setTimeout(p, 2000);
-    else { loadCard(); refreshTop(); refreshData(); }
+    loadCard(); // keep the provider cards climbing live while the audit runs
+    if (s.running) timer.current = setTimeout(p, 2500);
+    else { refreshTop(); refreshData(); }   // finished — refresh counts + the table's badges
   }, [loadCard, refreshTop, refreshData]);
   useEffect(() => { poll(); return () => clearTimeout(timer.current); }, [poll]);
 
@@ -105,8 +131,10 @@ export default function TestTab() {
         </div>
       )}
 
-      <Scorecard card={card} />
+      <ResultCards job={job} card={card} />
+      <ProviderCards card={card} />
 
+      <div className="section-t"><Icon name="mail" />Every lead with an email</div>
       {L.loading && !rows.length ? (
         <div className="tablewrap"><div className="loading"><span className="spin" />Loading leads…</div></div>
       ) : !rows.length ? (

@@ -111,6 +111,8 @@ nav{padding:var(--s3) var(--s2)}
 .hero.pri{background:var(--primary);border-color:var(--primary)}
 .hero.pri .hk{color:#D9CCFF} .hero.pri .hv{color:#fff} .hero.pri .hs{color:#CBB8FF}
 .hero.good .hv{color:var(--good)}
+.hero.bad .hv{color:var(--hot)}
+.hero.warn .hv{color:var(--warm)}
 .g-tiles{grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:var(--s2)}
 .tile{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--panel);border:1px solid var(--line);padding:11px 14px;box-shadow:var(--sh-sm)}
 .tile .tk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);font-weight:500}
