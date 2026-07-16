@@ -28,6 +28,19 @@ export const apiRouter = Router();
 const S = (v) => (typeof v === "string" ? v : "");
 const escRegex = (v) => S(v).slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// Tiny in-memory TTL cache for the read-heavy, slow-changing dashboard aggregates (stats/campaigns/
+// analytics). Keyed by full URL so ?campaign= variants cache separately. Repeated loads (tab
+// switches, the 25s poll, multiple tabs) hit the cache instead of recomputing on Mongo.
+const _cache = new Map();
+const ttlCache = (seconds) => (req, res, next) => {
+  const key = req.originalUrl;
+  const hit = _cache.get(key);
+  if (hit && Date.now() - hit.at < seconds * 1000) { res.set("X-Cache", "HIT"); return res.json(hit.body); }
+  const orig = res.json.bind(res);
+  res.json = (body) => { _cache.set(key, { at: Date.now(), body }); res.set("X-Cache", "MISS"); return orig(body); };
+  next();
+};
+
 // counts for a lead filter (optionally scoped to one campaign)
 async function countBlock(campaign) {
   campaign = S(campaign);
@@ -76,7 +89,7 @@ function buildLeadFilter(query) {
 }
 
 // GET /api/stats?campaign= — headline counts (all campaigns, or one), + live Trigify balance
-apiRouter.get("/stats", async (req, res) => {
+apiRouter.get("/stats", ttlCache(8), async (req, res) => {
   const campaign = S(req.query.campaign);
   const counts = await countBlock(campaign);
   const engFilter = campaign ? { campaign } : {};
@@ -94,7 +107,7 @@ apiRouter.get("/stats", async (req, res) => {
 // that made this take 17s under concurrency.
 const cnt = (field, val) => ({ $sum: { $cond: [{ $eq: ["$" + field, val] }, 1, 0] } });
 const cntTruthy = (field) => ({ $sum: { $cond: [{ $ifNull: ["$" + field, false] }, 1, 0] } });
-apiRouter.get("/campaigns", async (_req, res) => {
+apiRouter.get("/campaigns", ttlCache(10), async (_req, res) => {
   const [agg, uRows, prospeo, jina] = await Promise.all([
     leads().aggregate([
       { $match: { campaigns: { $exists: true, $ne: [] } } },
@@ -150,7 +163,7 @@ apiRouter.get("/leads/:linkedin_url/timeline", async (req, res) => {
 });
 
 // GET /api/analytics?campaign= — status split, funnel, daily series (for the Overview charts)
-apiRouter.get("/analytics", async (req, res) => {
+apiRouter.get("/analytics", ttlCache(10), async (req, res) => {
   const campaign = S(req.query.campaign);
   const match = campaign ? { campaigns: campaign } : {};
   const counts = await countBlock(campaign);

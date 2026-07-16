@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import helmet from "helmet";
@@ -25,6 +26,10 @@ const app = express();
 // Behind Traefik — trust the first proxy so rate-limit + IP allowlist see the real client IP.
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
+
+// gzip/brotli JSON + the Next JS/CSS bundles (client negotiates via Accept-Encoding; already-
+// compressed assets like fonts/images are skipped). Big transfer-size win on lead lists + first load.
+app.use(compression());
 
 // Security headers incl. a CSP that permits only self + inline styles/data-URIs (dashboard is self-hosted).
 app.use(helmet({
