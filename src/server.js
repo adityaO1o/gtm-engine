@@ -15,10 +15,10 @@ import { log } from "./lib/logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "../public");
-// New Next.js dashboard (static export). Opt-in via USE_NEXT_UI=1 in Dokploy so the current vanilla
-// dashboard stays the default until the migration is complete — flip the flag to preview/switch.
+// The Next.js dashboard (static export) is now the DEFAULT. Escape hatch: set USE_OLD_UI=1 in
+// Dokploy to instantly fall back to the vanilla dashboard (no code change) if anything regresses.
 const nextDir = path.join(__dirname, "../web/out");
-const uiDir = process.env.USE_NEXT_UI === "1" ? nextDir : publicDir;
+const uiDir = process.env.USE_OLD_UI === "1" ? publicDir : nextDir;
 
 const app = express();
 

@@ -1,0 +1,92 @@
+"use client";
+import { useEffect, useState } from "react";
+import Icon from "@/components/Icon";
+import { num } from "@/lib/format";
+import { j, post } from "@/lib/api";
+import { useDash } from "@/lib/ctx";
+import { useLeadList } from "@/hooks/useLeadList";
+import LeadToolbar from "./LeadToolbar";
+import LeadTable from "./LeadTable";
+import Pager from "./Pager";
+import JobBox from "./JobBox";
+
+const METRICS = { total: "Leads", verified: "Verified", hot: "Hot", warm: "Warm", cold: "Cold", noEmail: "No-email", recovered: "Recovered", review: "Review", competitor: "Competitors", unverified: "Unverified", verifyRate: "Verify rate %" };
+
+function CampaignList({ campaigns, onOpen }) {
+  if (!campaigns.length) return <div className="tablewrap"><div className="empty"><Icon name="mega" /><b>No campaigns yet</b>Leads will appear here as posts flow in.</div></div>;
+  return (
+    <div className="tablewrap"><table><thead><tr>
+      <th>Campaign</th><th>Leads</th><th>Hot</th><th>Warm</th>
+      <th title="Verified lead records (one per LinkedIn profile)">Verified</th>
+      <th title="Distinct email addresses — this is what SendKit holds.">In SendKit</th>
+      <th>No-email</th><th title="Emails rescued by a hand-off retry">Recovered</th><th>Competitors</th>
+      <th title="On SendKit's Do-Not-Contact list">DNC</th><th>Trigify</th><th>Prospeo</th></tr></thead>
+      <tbody>{campaigns.map((c) => (
+        <tr key={c.campaign} className="click" onClick={() => onOpen(c.campaign)}>
+          <td className="nm">{c.label}</td><td className="score">{num(c.total)}</td><td>{num(c.hot)}</td><td>{num(c.warm)}</td>
+          <td className="num-c" style={{ color: "var(--good)" }}>{num(c.verified)}</td>
+          <td className="num-c" style={{ color: "var(--primary-2)", fontWeight: 600 }}>{num(c.verifiedEmails ?? c.verified)}</td>
+          <td>{num(c.noEmail)}</td><td className="num-c" style={{ color: "var(--good)" }}>{num(c.recovered || 0)}</td><td>{num(c.competitor)}</td>
+          <td className="num-c" style={{ color: "var(--hot)", fontWeight: 600 }}>{num(c.dnc || 0)}</td>
+          <td className="num-c">{num(c.credits.trigify)}</td><td className="num-c">{num(c.credits.prospeo)}</td>
+        </tr>
+      ))}</tbody></table></div>
+  );
+}
+
+function CampaignDetail({ campaign, label, onBack }) {
+  const { openLead, openReverify, jobs, pollJobs } = useDash();
+  const [s, setS] = useState({});
+  const [cardMetrics, setCardMetrics] = useState(["total", "verified", "hot", "noEmail"]);
+  const [msg, setMsg] = useState("");
+  const L = useLeadList({ campaign });
+
+  useEffect(() => {
+    j("/api/stats?campaign=" + encodeURIComponent(campaign)).then((d) => {
+      d.verifyRate = d.total ? Math.round((d.verified / d.total) * 100) : 0;
+      setS(d);
+    });
+  }, [campaign]);
+
+  const setCard = (i, v) => setCardMetrics((m) => m.map((x, idx) => (idx === i ? v : x)));
+  const exportFiltered = () => { const p = L.query(); p.delete("limit"); p.delete("skip"); window.location = "/api/export?" + p.toString(); };
+  const exportSelected = () => { if (!L.selected.size) return; window.location = "/api/export?urls=" + [...L.selected].map(encodeURIComponent).join(","); };
+
+  async function pause() { const r = await post(`/api/campaigns/${encodeURIComponent(campaign)}/pause`, { paused: true }); setMsg(r.ok ? "✓ Campaign paused." : "Pause failed: " + (r.error || "")); }
+  async function sync() { await post("/api/sync", { campaign }); pollJobs(); }
+
+  return (
+    <>
+      <div className="toolbar">
+        <button className="btn btn-ghost btn-sm" onClick={onBack}><Icon name="back" />All campaigns</button>
+        <div className="grow" />
+        <button className="btn btn-ghost btn-sm" onClick={sync}><Icon name="sync" />Sync SendKit</button>
+        <button className="btn btn-ghost btn-sm" onClick={pause}><Icon name="pause" />Pause</button>
+      </div>
+      <div className="muted" style={{ fontSize: 12, margin: "-4px 0 0" }}>{msg}</div>
+      <div style={{ margin: "0 0 var(--s3)" }}><JobBox kind="sync" s={jobs.sync} /></div>
+      <div className="grid g-cred">
+        {cardMetrics.map((mk, i) => (
+          <div key={i} className="card pri">
+            <div className="kh"><select value={mk} onChange={(e) => setCard(i, e.target.value)}>{Object.entries(METRICS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></div>
+            <div className="v">{num(s[mk])}</div>
+          </div>
+        ))}
+      </div>
+      <LeadToolbar filters={L.filters} setFilter={L.setFilter} count={L.data.count} campaigns={[]} withCampaign={false}
+        selectedSize={L.selected.size} onSelectPage={L.selectPage} onExportFiltered={exportFiltered} onExportSelected={exportSelected} />
+      <LeadTable rows={L.data.rows} selected={L.selected} toggle={L.toggle} toggleAll={L.toggleAll} onRowClick={openLead} onReverify={openReverify} />
+      <Pager count={L.data.count} page={L.page} setPage={L.setPage} size={L.size} setSize={L.setSize} />
+    </>
+  );
+}
+
+export default function Campaigns() {
+  const { campaigns } = useDash();
+  const [active, setActive] = useState(null);
+  if (active) {
+    const c = campaigns.find((x) => x.campaign === active);
+    return <CampaignDetail campaign={active} label={c?.label || active} onBack={() => setActive(null)} />;
+  }
+  return <CampaignList campaigns={campaigns} onOpen={setActive} />;
+}
