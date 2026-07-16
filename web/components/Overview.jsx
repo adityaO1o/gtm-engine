@@ -27,8 +27,8 @@ function ApiUsagePanel({ s }) {
   const rv = s.resolver || {}, m = s.meter || {}, bal = s.apiBalance || {};
   const freshEng = m.rapid_engagers || 0;
   const eff = (b) => (b ? Math.max(0, Math.min(b.creditsRemaining ?? Infinity, b.requestsRemaining ?? Infinity)) : null);
-  const fLeft = eff(bal.fresh), wLeft = eff(bal.webscrape);
-  const fLim = bal.fresh?.creditsLimit || 500, wLim = bal.webscrape?.creditsLimit || 500;
+  const fLeft = eff(bal.fresh), wLeft = eff(bal.webscrape), pLeft = eff(bal.pnd);
+  const fLim = bal.fresh?.creditsLimit || 500, wLim = bal.webscrape?.creditsLimit || 500, pLim = bal.pnd?.creditsLimit || 10000;
   const Row = ({ name, val, note, warn }) => (
     <div className="urow">
       <span className="un">{name}</span>
@@ -40,6 +40,11 @@ function ApiUsagePanel({ s }) {
     <div className="chartbox" style={{ marginTop: "var(--s3)" }}>
       <h4><Icon name="radio" /> API consumption <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>· real balance</span></h4>
       <div className="utable">
+        <Row name="🟣 PND · scrape + enrich" warn={bal.pnd && pLeft <= 0}
+          val={bal.pnd ? `<b>${num(pLeft)}</b> left / ${num(pLim)}` : `<b>${num(m.pnd_scrape_pages || 0)}</b> pages`}
+          note={`${num(m.pnd_scrape_pages || 0)} scrape · ${num(m.pnd_profile_calls || 0)} profile · ${num(m.pnd_company_calls || 0)} company · ${num(m.pnd_cache_hits || 0)} cache-saved${bal.pnd && pLeft <= 0 ? " · OUT" : ""}`} />
+        <Row name="💡 Domain source" val={`free <b>${num(m.domain_free || 0)}</b> · paid ${num(m.domain_paid || 0)}`}
+          note="free tiers vs PND credits — higher free = cheaper" />
         <Row name="🟢 RapidAPI · Fresh (scrape)" warn={bal.fresh && fLeft <= 0}
           val={bal.fresh ? `<b>${num(fLeft)}</b> left / ${num(fLim)}` : `<b>${num(m.rapid_pages || 0)}</b> pages`}
           note={bal.fresh ? `${num(fLim - fLeft)} credits used · ${num(freshEng)} engagers scraped${fLeft <= 0 ? " · OUT" : ""}` : `${num(freshEng)} engagers`} />

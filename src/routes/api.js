@@ -4,7 +4,8 @@ import { Router } from "express";
 import { ObjectId } from "mongodb";
 import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts } from "../db/mongo.js";
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
-import { rapidScrapeStats, postDetails, activityUrn, rapidScrapeOutOfCredits } from "../services/rapidScrape.js";
+import { rapidScrapeStats, activityUrn } from "../services/rapidScrape.js";
+import { pndStats, pndPostInfo, pndOutOfCredits } from "../services/pnd.js";
 import { linkedinProfileStats } from "../services/linkedinProfile.js";
 import { meterCumulative, readBalances } from "../services/apiMeter.js";
 import { rerouteSourceLeads, rerouteStatus } from "../pipeline/reroute.js";
@@ -99,7 +100,7 @@ apiRouter.get("/stats", ttlCache(8), async (req, res) => {
   // `apiBalance` = the RapidAPI plans' REAL remaining, snapshotted from their response headers — this
   // is the source of truth for "credits left", not a plan−meter estimate.
   res.json({ ...counts, engagements: engCount, prospeo, jina, resolver: resolveStats(), meter, apiBalance,
-    apiUsage: { rapid: rapidScrapeStats(), profile: linkedinProfileStats() } });
+    apiUsage: { rapid: rapidScrapeStats(), profile: linkedinProfileStats(), pnd: pndStats() } });
 });
 
 // GET /api/campaigns — one row per campaign: counts + per-campaign credits (trigify/prospeo/sendkit)
@@ -498,12 +499,12 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
   // on the doc. Skipped when out of credits so we don't set titleTried prematurely.
   for (const p of posts) {
     if (p.title || p.titleTried) continue;
-    const det = await postDetails(activityUrn(p.postUrl)).catch(() => null);
+    const det = await pndPostInfo(activityUrn(p.postUrl)).catch(() => null);
     if (det) {
       const set = { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: det.text, expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted, titleTried: true };
       await scrapedPosts().updateOne({ postUrl: p.postUrl }, { $set: set }).catch(() => {});
       Object.assign(p, set);
-    } else if (!rapidScrapeOutOfCredits()) {
+    } else if (!pndOutOfCredits()) {
       await scrapedPosts().updateOne({ postUrl: p.postUrl }, { $set: { titleTried: true } }).catch(() => {});
     }
   }

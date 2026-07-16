@@ -103,3 +103,8 @@ export const reprocessRuns = () => db.collection("reprocess_runs");
 // computed live from leads.posts_seen, so they stay current as retries recover emails.
 export const scrapedPosts = () => db.collection("scraped_posts");
 export const scrapeEngagers = () => db.collection("scrape_engagers");
+// ── PND credit savers (permanent caches). A company's domain is looked up ONCE and then every
+// future lead at that company is free, forever, across every post. Likewise a profile lookup is
+// never paid for twice — retries reuse it.
+export const companyDomains = () => db.collection("company_domains");   // _id: companyUsername
+export const profileCache = () => db.collection("profile_cache");        // _id: profile url/urn

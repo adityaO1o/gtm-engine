@@ -35,8 +35,9 @@ export default function Topbar({ title, stats, prospeo, onCmdK }) {
             Prospeo · <b>{num(prospeo.remaining)}</b> left
           </div>
         )}
-        <BalChip label="Fresh" b={bal.fresh} note="Fresh scraper (post engagers)" />
-        <BalChip label="Web-scrape" b={bal.webscrape} note="Web-scrape (company lookup)" />
+        <BalChip label="PND" b={bal.pnd} note="professional-network-data — scrape + profile + exact domain" />
+        <BalChip label="Fresh" b={bal.fresh} note="Fresh scraper (post engagers) — legacy" />
+        <BalChip label="Web-scrape" b={bal.webscrape} note="Web-scrape (company lookup) — legacy" />
       </div>
       <button className="themebtn" title="Search — ⌘K / Ctrl-K" onClick={onCmdK}><Icon name="search" /></button>
       <ThemeToggle />

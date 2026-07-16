@@ -19,6 +19,11 @@ export const METER_FIELDS = [
   "resolver_seo", "resolver_serper", "resolver_proxy", "resolver_miss",
   "prospeo_calls", "prospeo_finds",
   "clearbit_calls", "clearbit_rejects",
+  // PND (professional-network-data): scrape pages + the PAID enrichment tier + cache savings.
+  // pnd_cache_hits = lookups served from the company/profile caches, i.e. credits NOT spent.
+  "pnd_scrape_pages", "pnd_engagers", "pnd_profile_calls", "pnd_company_calls", "pnd_cache_hits",
+  // How each lead's domain was obtained — proves the free tiers are doing the work.
+  "domain_free", "domain_paid",
 ];
 const zero = () => Object.fromEntries(METER_FIELDS.map((f) => [f, 0]));
 
@@ -67,8 +72,8 @@ export async function recordBalance(provider, bal) {
 export async function readBalances() {
   try {
     const doc = (await apiUsage().findOne({ _id: "global" })) || {};
-    return { fresh: doc.balance_fresh || null, webscrape: doc.balance_webscrape || null };
-  } catch { return { fresh: null, webscrape: null }; }
+    return { fresh: doc.balance_fresh || null, webscrape: doc.balance_webscrape || null, pnd: doc.balance_pnd || null };
+  } catch { return { fresh: null, webscrape: null, pnd: null }; }
 }
 
 // Persisted cumulative total + the delta we haven't flushed yet = the true running total.

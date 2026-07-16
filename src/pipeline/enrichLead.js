@@ -13,6 +13,8 @@ import { findEmail, verifyEmail } from "../services/prospeo.js";
 import { validateEmail, isRoleBased, findEmailByLinkedin, findEmailByNameDomain } from "../services/enrich.js";
 import { companyDomainGuarded } from "../services/clearbit.js";
 import { profileCompany } from "../services/linkedinProfile.js";
+import { pndExactDomain } from "../services/pnd.js";
+import { meter } from "../services/apiMeter.js";
 import { findOurLead, upsertLead, addToCampaign, addToDnc } from "../services/sendkit.js";
 import { scoreFromHistory } from "../services/score.js";
 import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
@@ -99,18 +101,29 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
     if (!company && resolved?.company) { company = resolved.company; await clearbitDomain(company); await tryNameDomain("enrich:name+domain"); }
   }
 
-  // (a2) LAST-RESORT company getter (PAID) — LIVE, runs in the scrape itself, not a separate retry.
-  // get-personal-profile accepts a vanity URL OR the raw URN, so it also resolves an unresolved
-  // liker. Fires only when nothing free produced a domain; its LinkedIn domain beats a Clearbit guess.
-  if (!em.found && !domain && paidOn && (vanity && !isUrn(vanity) || isUrn(linkedin_url))) {
+  // (a2) PAID LAST RESORT — only when every FREE tier above failed to produce a domain.
+  // PND accepts the raw obfuscated URN directly, so it works even when the SERP resolve missed
+  // entirely, and it returns the EXACT company website (no Clearbit guessing). Both hops are cached,
+  // so repeat leads at the same company — and any later retry of this lead — cost nothing.
+  if (!em.found && !domain && !skipPaid && (vanity || linkedin_url)) {
     paidTried = true;
-    const pc = await profileCompany(!isUrn(vanity) ? vanity : linkedin_url);
-    if (pc) {
-      if (pc.vanity) vanity = pc.vanity;
-      if (pc.company && !company) company = pc.company;
-      if (pc.domain) { domain = pc.domain; domainSource = "webscrape"; }
-      else if (company) await clearbitDomain(company);
-      await tryNameDomain("enrich:linkedin-api");
+    const ex = await pndExactDomain(vanity || linkedin_url);
+    if (ex) {
+      if (ex.vanity) vanity = ex.vanity;
+      if (ex.company && !company) company = ex.company;
+      if (ex.domain) { domain = ex.domain; domainSource = "pnd"; }
+      await tryNameDomain("enrich:pnd");
+    }
+    // Secondary net: the old web-scrape host, if it still has quota (it self-limits when drained).
+    if (!em.found && !domain && paidOn) {
+      const pc = await profileCompany(!isUrn(vanity) ? vanity : linkedin_url);
+      if (pc) {
+        if (pc.vanity) vanity = pc.vanity;
+        if (pc.company && !company) company = pc.company;
+        if (pc.domain) { domain = pc.domain; domainSource = "webscrape"; }
+        else if (company) await clearbitDomain(company);
+        await tryNameDomain("enrich:linkedin-api");
+      }
     }
   }
   // (b) Enrich linkedin-to-email by url
@@ -271,7 +284,7 @@ export async function enrichLead(input) {
     return { outcome: "no_email", ...scored, name };
   }
 
-  const email = em.email;
+  let email = em.email;
 
   // role-based inbox never replies -> save but don't send
   if (isRoleBased(email)) {
@@ -293,8 +306,36 @@ export async function enrichLead(input) {
   }
 
   // verify
-  const vr = await verifyEmailWaterfall(email, preVerified);
+  let vr = await verifyEmailWaterfall(email, preVerified);
   prospeoCalls += vr.prospeoCalls;
+
+  // ── "Verification IS Clearbit's checker" ──────────────────────────────────────────────────────
+  // A Clearbit-GUESSED domain that fails verification is almost always the WRONG company's domain
+  // (agencyu.com vs the real agencyu.co). ONLY NOW — after the free path has actually failed — do we
+  // spend a PND credit for the exact domain and retry. When the free guess was right (the common
+  // case) this never runs, so it costs nothing.
+  if (!vr.verified && domainSource === "clearbit" && !isRoleBased(email)) {
+    const ex = await pndExactDomain(w.vanity || linkedin_url);
+    const [f1, ...r1] = name.split(" ");
+    const l1 = r1.join(" ");
+    if (ex?.domain && ex.domain !== w.domain && f1 && l1) {
+      const f2 = await findEmailByNameDomain(f1, l1, ex.domain);
+      if (f2.found && f2.email && nameMatchesEmail(name, f2.email)) {
+        const vr2 = await verifyEmailWaterfall(f2.email, f2.verified);
+        prospeoCalls += vr2.prospeoCalls;
+        if (vr2.verified) {
+          log.info("recovered via PND exact domain", { name, wrong: w.domain, exact: ex.domain, email: f2.email });
+          email = f2.email; vr = vr2;
+          setDoc.email_method = "enrich:pnd-exact"; setDoc.domain_source = "pnd";
+          setDoc.company_domain = ex.domain;
+          setDoc.company = ex.company || setDoc.company;
+          setDoc.personal_email = isPersonalDomain(email);
+        }
+      }
+    }
+  }
+  meter.inc(domainSource === "pnd" || setDoc.domain_source === "pnd" ? "domain_paid" : "domain_free");
+
   const { verified, verifiedBy, verifyLabel } = vr;
   setDoc.verified_by = verifiedBy;
 

@@ -48,6 +48,16 @@ export const config = {
   // Set these to your actual plan sizes in Dokploy (Ultra = 32000). Default Ultra.
   rapidFreshPlan: parseInt(process.env.RAPID_FRESH_PLAN || "32000", 10),
   rapidWebscrapePlan: parseInt(process.env.RAPID_WEBSCRAPE_PLAN || "32000", 10),
+
+  // ── PND (professional-network-data, RapidAPI) — SEPARATE account from LINKEDIN_API_KEY.
+  // Does everything in one API: post reactions/comments (50/credit), profile→company, company→exact
+  // domain. Used for scraping, and as the PAID LAST RESORT when the free tiers can't find a domain.
+  pndKey: process.env.PND_API_KEY || "",
+  pndHost: process.env.PND_API_HOST || "professional-network-data.p.rapidapi.com",
+  // Below this many credits remaining, the PAID enrichment tier (profile/company) switches off —
+  // the free tiers keep running, so leads still flow. Safety net so a run can't drain the plan.
+  pndCreditFloor: parseInt(process.env.PND_CREDIT_FLOOR || "300", 10),
+  pndMinGapMs: parseInt(process.env.PND_MIN_GAP_MS || "250", 10),
   // Post/engager scraping host — default FRESH so its $10/500 credits are drained first.
   scrapeApiHost: process.env.SCRAPE_API_HOST || "fresh-linkedin-profile-data.p.rapidapi.com",
   // Spacing between scrape API calls (ms) — a shared limiter so we don't burst the plan's

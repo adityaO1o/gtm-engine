@@ -6,7 +6,8 @@ import { getProfilePosts, getPostEngagements, getPostComments, trigifyOutOfCredi
 import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
 import { routeSourceEngager } from "../services/campaigns.js";
-import { rapidScrapeOutOfCredits, activityUrn, postDetails, REACTION_TYPES, reactionPage, commentPage } from "../services/rapidScrape.js";
+import { activityUrn } from "../services/rapidScrape.js";
+import { pndReactionPage, pndCommentPage, pndPostInfo, pndOutOfCredits } from "../services/pnd.js";
 import { enrichLead } from "./enrichLead.js";
 import { meterFlush } from "../services/apiMeter.js";
 import { log } from "../lib/logger.js";
@@ -122,7 +123,7 @@ async function pageWithBackoff(fn) {
     if (scrapeCtl.paused) return "paused";
     const r = await fn();
     if (r !== null) return r;
-    if (rapidScrapeOutOfCredits()) return "credits";
+    if (pndOutOfCredits()) return "credits";
     const wait = 30000 * (attempt + 1); // 30s, 60s, 90s… ride out a rate-limit storm
     log.warn("scrape page transient fail — cooling then retrying", { attempt, waitMs: wait });
     await sleepMs(wait);
@@ -178,40 +179,48 @@ async function scrapeAndEnrich(postUrl, camp, category) {
 
   const rec = (await scrapedPosts().findOne({ postUrl })) || {};
   if (rec.scrape_done) return "done"; // everything scraped already; the drain above finished enrichment
-  const cp = rec.scrape_cp || { typeIdx: 0, page: 1, token: null, commentsDone: false };
+  const cp = rec.scrape_cp || { page: 1, token: "", reactionsDone: false, commentsDone: false };
 
-  for (let ti = cp.typeIdx; ti < REACTION_TYPES.length; ti++) {
-    let page = ti === cp.typeIdx ? (cp.page || 1) : 1;
+  // Absorb one scraped page: queue it, then enrich it immediately (interleaved), then checkpoint.
+  const absorb = async (engagers, nextCp) => {
+    const ekeys = await queueUpsert(postUrl, engagers);
+    scrapeOneStatus.total = await scrapeEngagers().countDocuments({ postUrl });
+    await enrichPage(postUrl, ekeys, camp, category);
+    Object.assign(cp, nextCp);
+    await saveCp(postUrl, { ...cp });
+  };
+
+  // REACTIONS — PND pages over ALL reactions (50/credit); no per-type cap to work around.
+  if (!cp.reactionsDone) {
     let collected = 0, total = Infinity;
-    for (; page <= 250; page++) {
-      if (scrapeCtl.paused) { await saveCp(postUrl, { typeIdx: ti, page, token: null, commentsDone: false }); return "paused"; }
-      const r = await pageWithBackoff(() => reactionPage(urn, REACTION_TYPES[ti], page));
-      if (r === "paused") { await saveCp(postUrl, { typeIdx: ti, page, token: null, commentsDone: false }); return "paused"; }
-      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { typeIdx: ti, page, token: null, commentsDone: false }); return "stopped"; }
-      const ekeys = await queueUpsert(postUrl, r.engagers);
-      scrapeOneStatus.total = await scrapeEngagers().countDocuments({ postUrl });
-      await enrichPage(postUrl, ekeys, camp, category);        // enrich THIS page now (interleaved)
-      await saveCp(postUrl, { typeIdx: ti, page: page + 1, token: null, commentsDone: false });
+    for (let page = cp.page || 1; page <= 400; page++) {
+      if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp, page }); return "paused"; }
+      const r = await pageWithBackoff(() => pndReactionPage(postUrl, page));
+      if (r === "paused") { await saveCp(postUrl, { ...cp, page }); return "paused"; }
+      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp, page }); return "stopped"; }
+      await absorb(r.engagers, { page: page + 1 });
       collected += r.count;
       if (typeof r.total === "number") total = r.total;
       if (!r.count || collected >= total) break;
     }
+    Object.assign(cp, { reactionsDone: true, page: 1, token: "" });
+    await saveCp(postUrl, { ...cp });
   }
-  // comments (token-paginated). typeIdx === REACTION_TYPES.length marks "reactions done".
+
+  // COMMENTS — token-paginated; commenters arrive WITH their real vanity URL (no resolve needed).
   if (!cp.commentsDone) {
-    let token = cp.typeIdx >= REACTION_TYPES.length ? (cp.token || null) : null;
+    let page = 1;
     for (let i = 0; i < 400; i++) {
-      if (scrapeCtl.paused) { await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: false }); return "paused"; }
-      const r = await pageWithBackoff(() => commentPage(urn, token));
-      if (r === "paused") { await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: false }); return "paused"; }
-      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: false }); return "stopped"; }
-      const ekeys = await queueUpsert(postUrl, r.engagers);
-      scrapeOneStatus.total = await scrapeEngagers().countDocuments({ postUrl });
-      await enrichPage(postUrl, ekeys, camp, category);
-      token = r.token;
-      await saveCp(postUrl, { typeIdx: REACTION_TYPES.length, page: 1, token, commentsDone: !token || !r.count });
-      if (!token || !r.count) break;
+      if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp }); return "paused"; }
+      const r = await pageWithBackoff(() => pndCommentPage(urn, { page, token: cp.token }));
+      if (r === "paused") { await saveCp(postUrl, { ...cp }); return "paused"; }
+      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp }); return "stopped"; }
+      await absorb(r.engagers, { token: r.token || "", commentsDone: !r.token || !r.count });
+      if (!r.token || !r.count) break;
+      page++;
     }
+    Object.assign(cp, { commentsDone: true });
+    await saveCp(postUrl, { ...cp });
   }
   return "done";
 }
@@ -222,7 +231,7 @@ async function finalizeScrape(postUrl, phase) {
   scrapeOneStatus = { ...scrapeOneStatus, running: false, phase, paused, finishedAt: new Date() };
   await scrapedPosts().updateOne({ postUrl }, { $set: {
     running: false, phase, paused, enriched_count: scrapeOneStatus.enriched, sent: scrapeOneStatus.sent,
-    out_of_credits: rapidScrapeOutOfCredits(), finishedAt: new Date(),
+    out_of_credits: pndOutOfCredits(), finishedAt: new Date(),
   } }).catch(() => {});
   scrapeOneRunning = false;
   scrapeCtl.paused = false;
@@ -257,7 +266,7 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
       }, $unset: { backfilled: "", finishedAt: "" } }, { upsert: true });
 
       // title/expected counts (once)
-      if (!rec.titleTried) postDetails(activityUrn(postUrl)).then((det) => {
+      if (!rec.titleTried) pndPostInfo(activityUrn(postUrl)).then((det) => {
         const set = det
           ? { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: det.text, expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted, titleTried: true }
           : { titleTried: true };
@@ -266,7 +275,7 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
 
       // INTERLEAVED: scrape a page -> enrich that page -> next page. Leads flow from the start.
       const res = await scrapeAndEnrich(postUrl, camp, category);
-      scrapeOneStatus.outOfCredits = rapidScrapeOutOfCredits();
+      scrapeOneStatus.outOfCredits = pndOutOfCredits();
       if (res === "done") await scrapedPosts().updateOne({ postUrl }, { $set: { scrape_done: true, engager_total: await scrapeEngagers().countDocuments({ postUrl }) } });
       return await finalizeScrape(postUrl, res === "paused" ? "paused" : res === "stopped" ? "stopped" : "done");
     } catch (e) {
