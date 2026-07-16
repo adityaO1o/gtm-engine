@@ -76,15 +76,14 @@ export async function connect() {
   // paused so the dashboard offers Resume (its queue + checkpoint are intact, so it continues cleanly).
   await db.collection("scraped_posts").updateMany({ running: true }, { $set: { running: false, paused: true, phase: "paused" } });
 
-  // Seed the last-known RapidAPI plan balances so the topbar shows the REAL remaining immediately
-  // (both BASIC plans are currently drained). Real API-response headers overwrite these as calls happen.
+  // Drop any SEEDED (hand-entered) RapidAPI balances. A RapidAPI plan's remaining is only knowable
+  // from a real response header, and we no longer call the drained fresh/web-scrape hosts — so a
+  // seeded number just sits there forever showing a stale, wrong figure. Only balances captured
+  // from an actual API response are kept; the dashboard simply omits a provider we haven't called.
   try {
-    const au = (await db.collection("api_usage").findOne({ _id: "global" })) || {};
-    const seed = {};
-    if (!au.balance_fresh) seed.balance_fresh = { creditsRemaining: 8, creditsLimit: 500, requestsRemaining: 0, requestsLimit: 500, at: new Date(), seeded: true };
-    if (!au.balance_webscrape) seed.balance_webscrape = { creditsRemaining: 0, creditsLimit: 500, requestsRemaining: 209, requestsLimit: 500, at: new Date(), seeded: true };
-    if (Object.keys(seed).length) await db.collection("api_usage").updateOne({ _id: "global" }, { $set: seed }, { upsert: true });
-  } catch (e) { log.warn("seed api balance failed", { err: e.message }); }
+    await db.collection("api_usage").updateOne({ _id: "global", "balance_fresh.seeded": true }, { $unset: { balance_fresh: "" } });
+    await db.collection("api_usage").updateOne({ _id: "global", "balance_webscrape.seeded": true }, { $unset: { balance_webscrape: "" } });
+  } catch (e) { log.warn("clearing seeded api balances failed", { err: e.message }); }
 
   log.info("mongo connected", { db: config.mongoDb });
   return db;

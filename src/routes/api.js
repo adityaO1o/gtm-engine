@@ -6,6 +6,7 @@ import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts } from 
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
 import { rapidScrapeStats, activityUrn } from "../services/rapidScrape.js";
 import { pndStats, pndPostInfo, pndOutOfCredits } from "../services/pnd.js";
+import { bouncebanStats, bouncebanBalance } from "../services/bounceban.js";
 import { linkedinProfileStats } from "../services/linkedinProfile.js";
 import { meterCumulative, readBalances } from "../services/apiMeter.js";
 import { rerouteSourceLeads, rerouteStatus } from "../pipeline/reroute.js";
@@ -95,12 +96,12 @@ apiRouter.get("/stats", ttlCache(8), async (req, res) => {
   const counts = await countBlock(campaign);
   const engFilter = campaign ? { campaign } : {};
   const engCount = await engagements().countDocuments(engFilter);
-  const [prospeo, jina, meter, apiBalance] = await Promise.all([prospeoBalance(), jinaBalance(), meterCumulative(), readBalances()]);
+  const [prospeo, jina, meter, apiBalance, bounceban] = await Promise.all([prospeoBalance(), jinaBalance(), meterCumulative(), readBalances(), bouncebanBalance()]);
   // `meter` = cumulative counters we tracked (started mid-life, so it UNDER-counts historical usage).
   // `apiBalance` = the RapidAPI plans' REAL remaining, snapshotted from their response headers — this
   // is the source of truth for "credits left", not a plan−meter estimate.
-  res.json({ ...counts, engagements: engCount, prospeo, jina, resolver: resolveStats(), meter, apiBalance,
-    apiUsage: { rapid: rapidScrapeStats(), profile: linkedinProfileStats(), pnd: pndStats() } });
+  res.json({ ...counts, engagements: engCount, prospeo, jina, bounceban, resolver: resolveStats(), meter, apiBalance,
+    apiUsage: { rapid: rapidScrapeStats(), profile: linkedinProfileStats(), pnd: pndStats(), bounceban: bouncebanStats() } });
 });
 
 // GET /api/campaigns — one row per campaign: counts + per-campaign credits (trigify/prospeo/sendkit)

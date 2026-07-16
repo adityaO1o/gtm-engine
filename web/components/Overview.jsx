@@ -45,6 +45,8 @@ function ApiUsagePanel({ s }) {
           note={`${num(m.pnd_scrape_pages || 0)} scrape · ${num(m.pnd_profile_calls || 0)} profile · ${num(m.pnd_company_calls || 0)} company · ${num(m.pnd_cache_hits || 0)} cache-saved${bal.pnd && pLeft <= 0 ? " · OUT" : ""}`} />
         <Row name="💡 Domain source" val={`free <b>${num(m.domain_free || 0)}</b> · paid ${num(m.domain_paid || 0)}`}
           note="free tiers vs PND credits — higher free = cheaper" />
+        <Row name="🎯 BounceBan (verifier)" val={`<b>${num(m.bounceban_deliverable || 0)}</b>/${num(m.bounceban_calls || 0)} deliverable`}
+          note={`${num(m.bounceban_undeliverable || 0)} undeliverable · ${num(m.bounceban_ambiguous || 0)} ambiguous · ${num(s.bounceban?.remaining ?? 0)} credits left`} />
         <Row name="🟢 RapidAPI · Fresh (scrape)" warn={bal.fresh && fLeft <= 0}
           val={bal.fresh ? `<b>${num(fLeft)}</b> left / ${num(fLim)}` : `<b>${num(m.rapid_pages || 0)}</b> pages`}
           note={bal.fresh ? `${num(fLim - fLeft)} credits used · ${num(freshEng)} engagers scraped${fLeft <= 0 ? " · OUT" : ""}` : `${num(freshEng)} engagers`} />

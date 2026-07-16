@@ -21,8 +21,11 @@ function BalChip({ label, b, note }) {
   );
 }
 
+// Only LIVE balances are shown. RapidAPI plans only reveal their remaining in a response header, so
+// a provider we haven't called simply doesn't appear (better than a stale hand-entered number).
 export default function Topbar({ title, stats, prospeo, onCmdK }) {
   const bal = stats?.apiBalance || {};
+  const bb = stats?.bounceban;
   return (
     <div className="topbar">
       <div className="crumb">
@@ -30,14 +33,20 @@ export default function Topbar({ title, stats, prospeo, onCmdK }) {
       </div>
       <div className="grow" />
       <div className="bals" id="bals">
+        {bb?.remaining != null && (
+          <div className="balc" title="BounceBan — primary email verifier (live balance).">
+            BounceBan · <b>{num(bb.remaining)}</b> left
+          </div>
+        )}
+        <BalChip label="PND" b={bal.pnd} note="professional-network-data — scrape + profile + exact domain" />
         {prospeo && (
           <div className="balc" title="Prospeo email-finder credits (live).">
             Prospeo · <b>{num(prospeo.remaining)}</b> left
           </div>
         )}
-        <BalChip label="PND" b={bal.pnd} note="professional-network-data — scrape + profile + exact domain" />
-        <BalChip label="Fresh" b={bal.fresh} note="Fresh scraper (post engagers) — legacy" />
-        <BalChip label="Web-scrape" b={bal.webscrape} note="Web-scrape (company lookup) — legacy" />
+        {/* fresh / web-scrape only appear if a REAL response header ever populated them */}
+        <BalChip label="Fresh" b={bal.fresh} note="Fresh scraper — legacy" />
+        <BalChip label="Web-scrape" b={bal.webscrape} note="Web-scrape — legacy" />
       </div>
       <button className="themebtn" title="Search — ⌘K / Ctrl-K" onClick={onCmdK}><Icon name="search" /></button>
       <ThemeToggle />

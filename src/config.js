@@ -58,6 +58,9 @@ export const config = {
   // the free tiers keep running, so leads still flow. Safety net so a run can't drain the plan.
   pndCreditFloor: parseInt(process.env.PND_CREDIT_FLOOR || "300", 10),
   pndMinGapMs: parseInt(process.env.PND_MIN_GAP_MS || "250", 10),
+
+  // BounceBan — PRIMARY email verifier (before Enrich/Prospeo). Big pool, 100/s, flags catch-all.
+  bouncebanKey: process.env.BOUNCEBAN_KEY || "",
   // Post/engager scraping host — default FRESH so its $10/500 credits are drained first.
   scrapeApiHost: process.env.SCRAPE_API_HOST || "fresh-linkedin-profile-data.p.rapidapi.com",
   // Spacing between scrape API calls (ms) — a shared limiter so we don't burst the plan's

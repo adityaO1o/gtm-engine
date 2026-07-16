@@ -24,6 +24,8 @@ export const METER_FIELDS = [
   "pnd_scrape_pages", "pnd_engagers", "pnd_profile_calls", "pnd_company_calls", "pnd_cache_hits",
   // How each lead's domain was obtained — proves the free tiers are doing the work.
   "domain_free", "domain_paid",
+  // BounceBan (primary verifier). undeliverable verdicts are terminal → Enrich/Prospeo credits saved.
+  "bounceban_calls", "bounceban_deliverable", "bounceban_undeliverable", "bounceban_ambiguous",
 ];
 const zero = () => Object.fromEntries(METER_FIELDS.map((f) => [f, 0]));
 

@@ -14,6 +14,7 @@ import { validateEmail, isRoleBased, findEmailByLinkedin, findEmailByNameDomain 
 import { companyDomainGuarded } from "../services/clearbit.js";
 import { profileCompany } from "../services/linkedinProfile.js";
 import { pndExactDomain } from "../services/pnd.js";
+import { bouncebanVerify } from "../services/bounceban.js";
 import { meter } from "../services/apiMeter.js";
 import { findOurLead, upsertLead, addToCampaign, addToDnc } from "../services/sendkit.js";
 import { scoreFromHistory } from "../services/score.js";
@@ -144,8 +145,19 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
   return { em, emailSource, emailMethod, preVerified, prospeoCalls, company, domain, domainSource, guardRejected, paidTried, vanity, key: vanity || linkedin_url };
 }
 
-// ── Email VERIFY waterfall (Enrich first, Prospeo second opinion).
+// ── Email VERIFY waterfall — BounceBan FIRST, then Enrich, then Prospeo as a second opinion.
+// BounceBan leads because it has the deepest credit pool (~228k), runs at 100/s, and flags
+// catch-all/role/disposable. Its "undeliverable" is terminal, so we stop there instead of spending
+// Enrich + Prospeo credits to learn the same thing; only an ambiguous verdict falls through.
 export async function verifyEmailWaterfall(email, preVerified) {
+  const b = await bouncebanVerify(email);
+  if (b?.deliverable) {
+    return { verified: true, verifiedBy: "bounceban", verifyLabel: `bounceban:${b.result}/${b.score}${b.acceptAll ? "/accept-all" : ""}`, acceptAll: b.acceptAll, prospeoCalls: 0 };
+  }
+  if (b?.hardFail) {
+    return { verified: false, verifiedBy: null, verifyLabel: `bounceban:${b.result}`, prospeoCalls: 0 };
+  }
+  // ambiguous (risky/unknown) or BounceBan unavailable -> second opinions below
   if (preVerified) return { verified: true, verifiedBy: "enrich", verifyLabel: "enrich:finder-verified", prospeoCalls: 0 };
   const v1 = await validateEmail(email);
   if (v1.good) return { verified: true, verifiedBy: "enrich", verifyLabel: `enrichso:${v1.result}/${v1.confidence}`, prospeoCalls: 0 };
