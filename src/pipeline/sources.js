@@ -179,7 +179,17 @@ async function scrapeAndEnrich(postUrl, camp, category) {
 
   const rec = (await scrapedPosts().findOne({ postUrl })) || {};
   if (rec.scrape_done) return "done"; // everything scraped already; the drain above finished enrichment
-  const cp = rec.scrape_cp || { page: 1, token: "", reactionsDone: false, commentsDone: false };
+
+  // Checkpoint compatibility: the old (fresh-era) format was {typeIdx,…} and paged per reaction TYPE.
+  // Under PND's single-stream pagination those page numbers mean something completely different, so
+  // resuming from one would silently SKIP everything before it. Detect the old shape and restart the
+  // paging — the queue dedups on ekey and already-enriched rows are skipped, so nothing is lost or
+  // re-charged for enrichment; only the (cheap) scrape pages are re-read.
+  const saved = rec.scrape_cp;
+  const cp = saved && saved.reactionsDone !== undefined
+    ? saved
+    : { page: 1, token: "", reactionsDone: false, commentsDone: false };
+  if (saved && saved.reactionsDone === undefined) log.info("old scrape checkpoint — restarting paging under PND", { postUrl });
 
   // Absorb one scraped page: queue it, then enrich it immediately (interleaved), then checkpoint.
   const absorb = async (engagers, nextCp) => {
