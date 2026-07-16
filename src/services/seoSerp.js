@@ -30,7 +30,16 @@ export async function seoSerp(query) {
     await slot();
     const r = await axios.post(`${config.seoApiBase}/api/serp`, { query },
       { headers: { "Content-Type": "application/json" }, timeout: 30000, validateStatus: () => true });
-    if (r.status === 500) { coolUntil = Date.now() + 120_000; log.warn("seo serp 500 — cooling 120s (host jina key?)"); return null; }
+    // The SEO host turns Jina's 422 ("no results") into a 500 — but "nobody matched this query" is a
+    // NORMAL, common outcome, NOT a broken tier. Treating it as a failure cooled the tier for 120s on
+    // every obscure name, which is why SEO resolved ~6 while proxies did 335. Only a REAL error cools.
+    if (r.status === 500) {
+      const body = typeof r.data === "string" ? r.data : JSON.stringify(r.data || "");
+      if (/\b422\b/.test(body)) return [];               // no results — just fall through for THIS query
+      coolUntil = Date.now() + 120_000;
+      log.warn("seo serp 500 — cooling 120s (host jina key?)", { body: body.slice(0, 120) });
+      return null;
+    }
     if (r.status === 429) { coolUntil = Date.now() + 20_000; return null; }
     if (r.status !== 200) { log.warn("seo serp non-200", { status: r.status }); return []; }
     return (r.data?.results || []).map((x) => ({ url: x.url, title: x.title, description: x.description }));
