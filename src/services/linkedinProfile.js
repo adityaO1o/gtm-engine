@@ -8,13 +8,23 @@
 
 import axios from "axios";
 import { config } from "../config.js";
-import { meter } from "./apiMeter.js";
+import { meter, recordBalance } from "./apiMeter.js";
 import { log } from "../lib/logger.js";
+
+// Latest web-scrape plan balance from a RapidAPI rate-limit header (real remaining, incl. on 429s).
+let wsBal = null;
+const hnum = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
+function captureWsBalance(r) {
+  const h = r?.headers || {};
+  const b = { creditsRemaining: hnum(h["x-ratelimit-credits-remaining"]), creditsLimit: hnum(h["x-ratelimit-credits-limit"]),
+              requestsRemaining: hnum(h["x-ratelimit-requests-remaining"]), requestsLimit: hnum(h["x-ratelimit-requests-limit"]) };
+  if (b.creditsRemaining !== null || b.requestsRemaining !== null) { wsBal = b; recordBalance("webscrape", b).catch(() => {}); }
+}
 
 let outOfQuota = false; // TRUE only on a real monthly-quota exhaust (terminal until plan renews)
 let coolUntil = 0;      // transient rate-limit (429) -> brief pause, NOT a permanent kill
 const stats = { calls: 0, hits: 0, quota: 0 };
-export function linkedinProfileStats() { return { ...stats, outOfQuota, coolingDown: Date.now() < coolUntil }; }
+export function linkedinProfileStats() { return { ...stats, outOfQuota, coolingDown: Date.now() < coolUntil, balance: wsBal }; }
 
 // Shared rate limiter — the Basic plan allows 20 req/min, but a hand-off retry runs many workers
 // concurrently. Space calls ~3.3s apart (≈18/min) across all of them so we never trip a 429.
@@ -66,6 +76,7 @@ export async function profileCompany(linkedinUrlOrUrn) {
       headers: { "x-rapidapi-host": config.linkedinApiHost, "x-rapidapi-key": config.linkedinApiKey },
       timeout: 60000, validateStatus: () => true,
     });
+    captureWsBalance(r); // record the plan's real remaining from the response headers (even on 429)
     if (r.status === 402 || r.status === 403 || r.status === 429) {
       // Distinguish a drained MONTHLY quota (terminal) from a transient per-minute rate-limit.
       const remaining = r.headers?.["x-ratelimit-credits-remaining"];

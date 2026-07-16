@@ -6,7 +6,7 @@ import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts } from 
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
 import { rapidScrapeStats, postDetails, activityUrn, rapidScrapeOutOfCredits } from "../services/rapidScrape.js";
 import { linkedinProfileStats } from "../services/linkedinProfile.js";
-import { meterCumulative } from "../services/apiMeter.js";
+import { meterCumulative, readBalances } from "../services/apiMeter.js";
 import { rerouteSourceLeads, rerouteStatus } from "../pipeline/reroute.js";
 import { trigifyBalance, setWorkflowEnabled } from "../services/trigify.js";
 import { prospeoBalance, verifyEmail } from "../services/prospeo.js";
@@ -81,11 +81,11 @@ apiRouter.get("/stats", async (req, res) => {
   const counts = await countBlock(campaign);
   const engFilter = campaign ? { campaign } : {};
   const engCount = await engagements().countDocuments(engFilter);
-  const [prospeo, jina, meter] = await Promise.all([prospeoBalance(), jinaBalance(), meterCumulative()]);
-  // `meter` = cumulative totals that SURVIVE deploys (Fresh, web-scrape, resolver, Prospeo, Clearbit).
-  // `apiPlans` lets the topbar show RapidAPI credits LEFT (plan − used; no live balance exists).
-  res.json({ ...counts, engagements: engCount, prospeo, jina, resolver: resolveStats(), meter,
-    apiPlans: { fresh: config.rapidFreshPlan, webscrape: config.rapidWebscrapePlan },
+  const [prospeo, jina, meter, apiBalance] = await Promise.all([prospeoBalance(), jinaBalance(), meterCumulative(), readBalances()]);
+  // `meter` = cumulative counters we tracked (started mid-life, so it UNDER-counts historical usage).
+  // `apiBalance` = the RapidAPI plans' REAL remaining, snapshotted from their response headers — this
+  // is the source of truth for "credits left", not a plan−meter estimate.
+  res.json({ ...counts, engagements: engCount, prospeo, jina, resolver: resolveStats(), meter, apiBalance,
     apiUsage: { rapid: rapidScrapeStats(), profile: linkedinProfileStats() } });
 });
 

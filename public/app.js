@@ -38,16 +38,26 @@ const verifiedCell = (r) => r.email
 async function loadTop() {
   const [d, s] = await Promise.all([j("/api/campaigns"), j("/api/stats")]);
   CAMPAIGNS = d.campaigns || []; BAL = { prospeo: d.prospeo, jina: d.jina }; STATS = s;
-  // Topbar: Prospeo (live balance) + both RapidAPI pools' credits LEFT (plan − used). RapidAPI has
-  // no live-balance API, so "left" is computed from the plan cap minus what we've metered.
+  // Topbar: Prospeo (live) + both RapidAPI pools' REAL remaining, read from the plans' own rate-limit
+  // response headers (source of truth). Effective "left" = whichever cap — credits OR requests — is
+  // closest to 0, since RapidAPI blocks on either.
   const chip = (label, val, sub, title, warn) => `<div class="balc${warn ? " warn" : ""}" ${title ? `title="${esc(title)}"` : ""}>${label} · <b>${num(val)}</b> ${sub}</div>`;
-  const m = s.meter || {}, pl = s.apiPlans || {};
-  const freshLeft = Math.max(0, (pl.fresh || 0) - (m.rapid_pages || 0));
-  const wsLeft = Math.max(0, (pl.webscrape || 0) - (m.webscrape_calls || 0));
+  const bal = s.apiBalance || {};
+  const effLeft = (b) => {
+    if (!b) return null;
+    const vals = [b.creditsRemaining, b.requestsRemaining].filter((v) => v !== null && v !== undefined);
+    return vals.length ? Math.max(0, Math.min(...vals)) : null;
+  };
+  const balChip = (label, b, note) => {
+    if (!b) return "";
+    const left = effLeft(b), lim = b.creditsLimit || b.requestsLimit || 500;
+    const tip = `${note} · REAL RapidAPI balance — credits ${num(Math.max(0, b.creditsRemaining))}/${num(b.creditsLimit || 0)}, requests ${num(Math.max(0, b.requestsRemaining))}/${num(b.requestsLimit || 0)}.`;
+    return chip(label, left, `left / ${num(lim)}`, tip, left <= lim * 0.1);
+  };
   let bh = "";
   if (d.prospeo) bh += chip("Prospeo", d.prospeo.remaining, "left", "Prospeo email-finder credits (live).");
-  if (pl.fresh) bh += chip("Fresh", freshLeft, "left", `RapidAPI Fresh scraper: ${num(m.rapid_pages || 0)} used of ${num(pl.fresh)} plan.`, freshLeft < pl.fresh * 0.1);
-  if (pl.webscrape) bh += chip("Web-scrape", wsLeft, "left", `RapidAPI web-scrape (profile): ${num(m.webscrape_calls || 0)} used of ${num(pl.webscrape)} plan.`, wsLeft < pl.webscrape * 0.1);
+  bh += balChip("Fresh", bal.fresh, "Fresh scraper (post engagers)");
+  bh += balChip("Web-scrape", bal.webscrape, "Web-scrape (company lookup)");
   $("#bals").innerHTML = bh;
   // DISTINCT counts from /stats — NOT the sum of per-campaign totals. A lead can sit in two
   // campaigns, so summing campaign rows double-counts it (that was the sidebar/overview mismatch).
@@ -128,21 +138,27 @@ async function renderOverview() {
 // DISTINCT RapidAPI cards with credit math, because they're billed separately. Totals come from
 // `s.meter` — cumulative counters persisted in Mongo, so they SURVIVE deploys (unlike the old
 // since-restart numbers that always read 0 after a deploy). OUT flags come from the live stats.
-const RAPID_PLAN = 32000; // Ultra plan credits — the denominator for the "credits used" bars
 function apiUsagePanel(s) {
-  const rv = s.resolver || {}, u = s.apiUsage || {}, rapid = u.rapid || {}, prof = u.profile || {}, m = s.meter || {};
-  const freshPages = m.rapid_pages || 0, freshEng = m.rapid_engagers || 0;
-  const wsCalls = m.webscrape_calls || 0, wsHits = m.webscrape_hits || 0;
+  const rv = s.resolver || {}, m = s.meter || {}, bal = s.apiBalance || {};
+  const freshEng = m.rapid_engagers || 0;
   const row = (name, val, note, warn) => `<div class="urow"><span class="un">${name}</span><span class="uv ${warn ? "warn" : ""}">${val}</span><span class="uc">${esc(note)}</span></div>`;
-  return `<div class="chartbox" style="margin-top:var(--s3)"><h4>${ic("radio")}API consumption <span class="muted" style="font-size:11px;font-weight:400">· cumulative</span></h4>
+  // REAL remaining from the plans' rate-limit headers (blocks on whichever of credits/requests hits 0).
+  const eff = (b) => b ? Math.max(0, Math.min(b.creditsRemaining ?? Infinity, b.requestsRemaining ?? Infinity)) : null;
+  const fLeft = eff(bal.fresh), wLeft = eff(bal.webscrape);
+  const fLim = bal.fresh?.creditsLimit || 500, wLim = bal.webscrape?.creditsLimit || 500;
+  const freshVal = bal.fresh ? `<b>${num(fLeft)}</b> left / ${num(fLim)}` : `<b>${num(m.rapid_pages || 0)}</b> pages`;
+  const freshNote = bal.fresh ? `${num(fLim - fLeft)} credits used · ${num(freshEng)} engagers scraped${fLeft <= 0 ? " · OUT" : ""}` : `${num(freshEng)} engagers`;
+  const wsVal = bal.webscrape ? `<b>${num(wLeft)}</b> left / ${num(wLim)}` : `<b>${num(m.webscrape_calls || 0)}</b> calls`;
+  const wsNote = bal.webscrape ? `${num(wLim - wLeft)} credits used · company lookups${wLeft <= 0 ? " · OUT" : ""}` : "company lookups";
+  return `<div class="chartbox" style="margin-top:var(--s3)"><h4>${ic("radio")}API consumption <span class="muted" style="font-size:11px;font-weight:400">· real balance</span></h4>
     <div class="utable">
-      ${row("🟢 RapidAPI · Fresh (scrape)", `<b>${num(freshPages)}</b> pages`, `${num(freshEng)} engagers · ~${num(freshPages)} credits used${rapid.outOfCredits ? " · OUT" : ""}`, rapid.outOfCredits)}
-      ${row("🔵 RapidAPI · Web-scrape (profile)", `<b>${num(wsHits)}</b>/${num(wsCalls)} hits`, `company lookups · ~${num(wsCalls)} credits used${prof.outOfQuota ? " · OUT" : ""}`, prof.outOfQuota)}
-      ${row("🔎 Resolver", `SEO <b>${num(m.resolver_seo || 0)}</b> · Serper ${num(m.resolver_serper || 0)} · Proxy ${num(m.resolver_proxy || 0)}`, `URN→URL · ${num(m.resolver_miss || 0)} missed · ${num(rv.serperKeysLive || 0)}/${num(rv.serperKeysTotal || 0)} serper keys${rv.seoDead ? " · SEO down" : ""}`, rv.seoDead)}
+      ${row("🟢 RapidAPI · Fresh (scrape)", freshVal, freshNote, bal.fresh && fLeft <= 0)}
+      ${row("🔵 RapidAPI · Web-scrape (profile)", wsVal, wsNote, bal.webscrape && wLeft <= 0)}
+      ${row("🔎 Resolver", `SEO <b>${num(m.resolver_seo || 0)}</b> · Serper ${num(m.resolver_serper || 0)} · Proxy ${num(m.resolver_proxy || 0)}`, `URN→URL · ${num(m.resolver_miss || 0)} missed · ${num(rv.serperKeysLive || 0)}/${num(rv.serperKeysTotal || 0)} serper keys`)}
       ${row("✉️ Prospeo", `<b>${num(m.prospeo_finds || 0)}</b>/${num(m.prospeo_calls || 0)} finds`, `email finder · ${num(BAL.prospeo?.remaining ?? 0)} credits left`)}
       ${row("🛡️ Clearbit", `<b>${num(m.clearbit_calls || 0)}</b> lookups`, `name→domain · ${num(m.clearbit_rejects || 0)} wrong-domain blocked`)}
     </div>
-    <div class="muted" style="font-size:11.5px;margin-top:10px">Fresh &amp; Web-scrape are billed 1 credit per call shown above (Ultra plan = ${num(RAPID_PLAN)} credits). Prospeo balance is live; RapidAPI credits are the running total we've spent.</div></div>`;
+    <div class="muted" style="font-size:11.5px;margin-top:10px">Fresh &amp; Web-scrape "left" is the plans' REAL remaining from their RapidAPI rate-limit headers (blocks on whichever of credits/requests hits 0). Resolver/Prospeo/Clearbit are counters tracked since the meter was added.</div></div>`;
 }
 
 // ---------------- table ----------------

@@ -15,15 +15,25 @@
 
 import axios from "axios";
 import { config } from "../config.js";
-import { meter } from "./apiMeter.js";
+import { meter, recordBalance } from "./apiMeter.js";
 import { log } from "../lib/logger.js";
+
+// Latest plan balance seen in a RapidAPI rate-limit header (the real remaining, incl. on 429s).
+let freshBal = null;
+const hnum = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
+function captureFreshBalance(r) {
+  const h = r?.headers || {};
+  const b = { creditsRemaining: hnum(h["x-ratelimit-credits-remaining"]), creditsLimit: hnum(h["x-ratelimit-credits-limit"]),
+              requestsRemaining: hnum(h["x-ratelimit-requests-remaining"]), requestsLimit: hnum(h["x-ratelimit-requests-limit"]) };
+  if (b.creditsRemaining !== null || b.requestsRemaining !== null) { freshBal = b; recordBalance("fresh", b).catch(() => {}); }
+}
 
 // type=ALL is capped; these six cover every LinkedIn reaction and each paginates fully.
 const REACTION_TYPES = ["LIKE", "PRAISE", "EMPATHY", "INTEREST", "APPRECIATION", "ENTERTAINMENT"];
 
 let outOfCredits = false;
 const stats = { reactionPages: 0, commentPages: 0, engagers: 0, throttled: 0 };
-export function rapidScrapeStats() { return { ...stats, outOfCredits, gapMs: dynamicGap, host: config.scrapeApiHost }; }
+export function rapidScrapeStats() { return { ...stats, outOfCredits, gapMs: dynamicGap, balance: freshBal, host: config.scrapeApiHost }; }
 export function rapidScrapeOutOfCredits() { return outOfCredits; }
 export function resetRapidScrape() { outOfCredits = false; dynamicGap = config.scrapeMinGapMs; stats.reactionPages = 0; stats.commentPages = 0; stats.engagers = 0; stats.throttled = 0; }
 
@@ -67,6 +77,7 @@ async function get(path, params, { retries = 3 } = {}) {
       log.warn("rapid scrape network error — giving up this page", { path, err: e.message });
       return null;
     }
+    captureFreshBalance(r); // record the plan's real remaining from the response headers (even on 429)
     if (r.status === 402 || r.status === 403) {
       outOfCredits = true;
       log.warn("rapid scrape host out of credits — stopping (no auto-switch)", { host: config.scrapeApiHost, status: r.status });

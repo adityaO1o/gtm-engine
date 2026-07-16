@@ -55,6 +55,22 @@ export async function meterFlush() {
   }
 }
 
+// RapidAPI returns the plan's TRUE remaining in every response's rate-limit headers (even on a
+// 429). We snapshot the latest into the api_usage doc so the dashboard shows the real balance —
+// not a "plan − metered" estimate (the meter started mid-life, so that estimate over-counts what's
+// left). Persisted, so it survives restarts and reflects usage from before the meter existed.
+export async function recordBalance(provider, bal) {
+  try {
+    await apiUsage().updateOne({ _id: "global" }, { $set: { [`balance_${provider}`]: { ...bal, at: new Date() } } }, { upsert: true });
+  } catch { /* best effort */ }
+}
+export async function readBalances() {
+  try {
+    const doc = (await apiUsage().findOne({ _id: "global" })) || {};
+    return { fresh: doc.balance_fresh || null, webscrape: doc.balance_webscrape || null };
+  } catch { return { fresh: null, webscrape: null }; }
+}
+
 // Persisted cumulative total + the delta we haven't flushed yet = the true running total.
 export async function meterCumulative() {
   try {
