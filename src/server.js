@@ -15,6 +15,10 @@ import { log } from "./lib/logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "../public");
+// New Next.js dashboard (static export). Opt-in via USE_NEXT_UI=1 in Dokploy so the current vanilla
+// dashboard stays the default until the migration is complete — flip the flag to preview/switch.
+const nextDir = path.join(__dirname, "../web/out");
+const uiDir = process.env.USE_NEXT_UI === "1" ? nextDir : publicDir;
 
 const app = express();
 
@@ -64,10 +68,15 @@ app.use("/", enrichLimiter, enrichRouter);
 // Dashboard API — IP allowlist + brute-force guard + basic-auth + rate-limit.
 app.use("/api", ipAllow, authLimiter, apiLimiter, basicAuth, apiRouter);
 
-// Static UI — long-cache fonts (fixes the font flash on reload) behind the same guards.
-app.use("/", ipAllow, authLimiter, basicAuth, express.static(publicDir, {
+// Fonts are shared by both dashboards — always served from the backend's public/fonts, long-cached.
+app.use("/fonts", ipAllow, authLimiter, basicAuth, express.static(path.join(publicDir, "fonts"), {
+  setHeaders: (res) => res.setHeader("Cache-Control", "public, max-age=31536000, immutable"),
+}));
+// Static UI — the vanilla dashboard, or the Next.js static export when USE_NEXT_UI=1.
+app.use("/", ipAllow, authLimiter, basicAuth, express.static(uiDir, {
   setHeaders: (res, p) => {
     if (/[\\/]fonts[\\/]/.test(p)) res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    if (/[\\/]_next[\\/]/.test(p)) res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   },
 }));
 

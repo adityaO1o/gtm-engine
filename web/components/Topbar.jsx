@@ -1,0 +1,41 @@
+import { num } from "@/lib/format";
+
+// Effective remaining = whichever cap (credits OR requests) is closest to 0 — RapidAPI blocks on either.
+function effLeft(b) {
+  if (!b) return null;
+  const vals = [b.creditsRemaining, b.requestsRemaining].filter((v) => v !== null && v !== undefined);
+  return vals.length ? Math.max(0, Math.min(...vals)) : null;
+}
+
+function BalChip({ label, b, note }) {
+  if (!b) return null;
+  const left = effLeft(b);
+  const lim = b.creditsLimit || b.requestsLimit || 500;
+  const tip = `${note} · REAL RapidAPI balance — credits ${num(Math.max(0, b.creditsRemaining))}/${num(b.creditsLimit || 0)}, requests ${num(Math.max(0, b.requestsRemaining))}/${num(b.requestsLimit || 0)}.`;
+  return (
+    <div className={`balc${left <= lim * 0.1 ? " warn" : ""}`} title={tip}>
+      {label} · <b>{num(left)}</b> {`left / ${num(lim)}`}
+    </div>
+  );
+}
+
+export default function Topbar({ title, stats, prospeo }) {
+  const bal = stats?.apiBalance || {};
+  return (
+    <div className="topbar">
+      <div className="crumb">
+        <h2>{title}</h2>
+      </div>
+      <div className="grow" />
+      <div className="bals" id="bals">
+        {prospeo && (
+          <div className="balc" title="Prospeo email-finder credits (live).">
+            Prospeo · <b>{num(prospeo.remaining)}</b> left
+          </div>
+        )}
+        <BalChip label="Fresh" b={bal.fresh} note="Fresh scraper (post engagers)" />
+        <BalChip label="Web-scrape" b={bal.webscrape} note="Web-scrape (company lookup)" />
+      </div>
+    </div>
+  );
+}
