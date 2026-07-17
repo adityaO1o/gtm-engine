@@ -70,6 +70,54 @@ function ProviderCards({ card }) {
   );
 }
 
+// Proof, checked against SendKit's own block list rather than our counters. The only question it
+// answers: can an address BounceBan rejected still be emailed?
+function ProofPanel({ proof, busy, onRun }) {
+  return (
+    <>
+      <div className="section-t">
+        <Icon name="check" />Proof — verified against SendKit itself
+        <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto" }} disabled={busy} onClick={onRun}>
+          <Icon name={busy ? "refresh" : "shield"} />{busy ? "Checking…" : proof ? "Re-check" : "Run proof"}
+        </button>
+      </div>
+
+      {!proof ? (
+        <div className="note"><Icon name="shield" /><div>
+          Reads SendKit’s entire Do-Not-Contact list live and cross-checks it against every lead BounceBan rejected.
+          Nothing here trusts this dashboard’s own numbers. Takes ~30–60s.
+        </div></div>
+      ) : (
+        <>
+          <div className={`note ${proof.clean ? "ok" : "bad"}`}>
+            <Icon name={proof.clean ? "check" : "warn"} />
+            <div>{proof.truncated ? (
+              <><b>Inconclusive.</b> SendKit’s DNC list could not be read all the way to the end, so this is <b>not</b> a clean bill of health. Re-run it.</>
+            ) : proof.clean ? (
+              <><b>Clean — {num(proof.rejected)} of {num(proof.rejected)} rejected addresses can never be emailed.</b> {num(proof.blocked)} are on SendKit’s DNC list;
+                the other {num(proof.neverSent)} never reached SendKit at all. Zero leaks.</>
+            ) : (
+              <><b>{num(proof.leaked)} LEAK{proof.leaked === 1 ? "" : "S"}.</b> These were rejected by BounceBan, reached SendKit, and are <b>not</b> blocked —
+                they can still be emailed: {proof.leakSample?.map((x) => x.email).join(", ")}</>
+            )}</div>
+          </div>
+
+          <div className="grid g-hero">
+            <Hero k="Rejected + blocked" v={proof.blocked} sub="on SendKit’s own DNC list" cls="good" />
+            <Hero k="Rejected, never sent" v={proof.neverSent} sub="never reached SendKit — nothing to block" />
+            <Hero k="Leaks" v={proof.leaked} sub={proof.leaked ? "rejected but still emailable" : "none — the guarantee holds"} cls={proof.leaked ? "bad" : "good"} />
+            <Hero k="Push failures" v={proof.pushFailed} sub="confirmed but SendKit never took them" cls={proof.pushFailed ? "warn" : ""} />
+          </div>
+          <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
+            SendKit’s DNC list: <b>{num(proof.dncListSize)}</b> addresses · <b>{num(proof.confirmedOnDnc)}</b> BounceBan-approved leads are blocked by SendKit for other reasons
+            (competitors, complaints) and are deliberately not pushed · checked {ts(proof.checkedAt)}.
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 export default function TestTab() {
   const { openLead, openReverify, refreshTop, refreshData } = useDash();
   const toast = useToast();
@@ -77,7 +125,20 @@ export default function TestTab() {
   const [job, setJob] = useState({});
   const [card, setCard] = useState(null);
   const [count, setCount] = useState(null);
+  const [proof, setProof] = useState(null);
+  const [proofBusy, setProofBusy] = useState(false);
   const timer = useRef(null);
+
+  async function runProof() {
+    setProofBusy(true);
+    try {
+      const p = await j("/api/bounceban/proof");
+      setProof(p);
+      toast(p.truncated ? "Proof inconclusive — could not read the whole DNC list" : p.clean ? `Clean · ${num(p.rejected)} rejected, 0 leaks` : `${num(p.leaked)} leaks found`,
+        p.clean && !p.truncated ? "good" : "bad");
+    } catch { toast("Proof check failed", "bad"); }
+    setProofBusy(false);
+  }
 
   const loadCard = useCallback(() => { j("/api/bounceban/scorecard").then(setCard).catch(() => {}); }, []);
   useEffect(() => {
@@ -125,7 +186,9 @@ export default function TestTab() {
         <div className={`jobbox${job.running ? " on" : ""}`}>
           <div className="jobh"><Icon name={job.running ? "refresh" : "check"} />
             <span>{job.running ? <>Verifying <b>{num(job.processed)}</b> / <b>{num(job.total)}</b> · {pct}%</> : <>Done · {num(job.processed)} checked</>}
-              {" · "}<b className="ok">{num(job.confirmed || 0)}</b> confirmed · <b style={{ color: "var(--hot)" }}>{num(job.rejected || 0)}</b> rejected · {num(job.dnc || 0)} DNC’d</span>
+              {" · "}<b className="ok">{num(job.confirmed || 0)}</b> confirmed · <b style={{ color: "var(--hot)" }}>{num(job.rejected || 0)}</b> rejected · {num(job.dnc || 0)} DNC’d
+              {job.pushFailed ? <> · <b style={{ color: "var(--hot)" }}>{num(job.pushFailed)}</b> push failed</> : null}
+              {job.skippedDnc ? <> · {num(job.skippedDnc)} skipped (already blocked)</> : null}</span>
           </div>
           <div className={`prog${job.running ? " on" : ""}`}><i style={{ width: `${Math.max(job.running ? pct : 100, job.running ? 3 : 0)}%` }} /></div>
         </div>
@@ -133,6 +196,7 @@ export default function TestTab() {
 
       <ResultCards job={job} card={card} />
       <ProviderCards card={card} />
+      <ProofPanel proof={proof} busy={proofBusy} onRun={runProof} />
 
       <div className="section-t"><Icon name="mail" />Every lead with an email</div>
       {L.loading && !rows.length ? (

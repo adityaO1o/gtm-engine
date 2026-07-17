@@ -25,18 +25,28 @@ export async function findOurLead(email) {
   }
 }
 
+// Push one lead. MUST go through withRetry: SendKit rate-limits bursts of single calls, and this
+// was the one write in this file without it — the BounceBan audit fired ~8k of these concurrently,
+// ate 429s, and returned false silently (no retry, no log) while the caller counted them "pushed".
 export async function upsertLead(lead) {
   // lead: {email, firstName, lastName, companyName, jobTitle, linkedinUrl, tags:[...] }
   try {
     // tags must be an ARRAY here — the bulk endpoint stores a comma-string as a single literal tag
-    const r = await axios.post(
+    const r = await withRetry(() => axios.post(
       `${base}/v1/leads/bulk`,
       { skipDuplicates: false, leads: [{ ...lead, tags: lead.tags }] },
       { headers: h(), timeout: 20000, validateStatus: () => true }
-    );
-    return r.status < 300;
+    ));
+    if (r.status >= 300) {
+      log.warn("sendkit upsert failed", {
+        email: lead.email, status: r.status,
+        body: typeof r.data === "string" ? r.data.slice(0, 200) : JSON.stringify(r.data || {}).slice(0, 200),
+      });
+      return false;
+    }
+    return true;
   } catch (e) {
-    log.warn("sendkit upsert threw", { err: e.message });
+    log.warn("sendkit upsert threw", { email: lead.email, err: e.message });
     return false;
   }
 }
@@ -77,22 +87,27 @@ export async function addToDnc(emails = []) {
 }
 
 // Every email on the workspace DNC list (domain entries are skipped — we match addresses).
+//
+// Returns { emails, truncated }. `truncated` is the important half: a short read used to look
+// identical to "this address is not blocked", and the reconcile would then happily clear dnc on
+// leads SendKit is still blocking. Callers must never CLEAR a block on a truncated read.
 export async function fetchDncEmails() {
-  const out = new Set();
-  let cursor = "";
-  for (let i = 0; i < 80; i++) {
+  const emails = new Set();
+  let cursor = "", truncated = true; // assume incomplete until we actually see the end of the list
+  for (let i = 0; i < 1000; i++) {
     const r = await withRetry(() => axios.get(`${base}/v1/dnc`, {
       headers: h(), params: { limit: 100, ...(cursor ? { cursor } : {}) },
       timeout: 30000, validateStatus: () => true,
     }));
-    if (r.status >= 300) { log.warn("sendkit dnc list failed", { status: r.status }); break; }
+    if (r.status >= 300) { log.warn("sendkit dnc list failed", { status: r.status, page: i, got: emails.size }); break; }
     for (const e of (r.data?.data || [])) {
-      if (e?.entryType === "email" && e.email) out.add(String(e.email).trim().toLowerCase());
+      if (e?.entryType === "email" && e.email) emails.add(String(e.email).trim().toLowerCase());
     }
     cursor = r.data?.pagination?.nextCursor || "";
-    if (!cursor) break;
+    if (!cursor) { truncated = false; break; } // walked the whole list
   }
-  return out;
+  if (truncated) log.warn("sendkit dnc list truncated — not clearing any blocks", { got: emails.size });
+  return { emails, truncated };
 }
 
 // Bulk-upsert leads, 100 at a time (the /leads/bulk endpoint takes an array).

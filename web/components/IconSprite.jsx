@@ -11,6 +11,7 @@ export default function IconSprite() {
         <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3L4 14h6l-1 7 9-11h-6z" /></symbol>
         <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M8.5 12.5l2.2 2.2 4.8-5.4" /></symbol>
         <symbol id="i-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M9 9l6 6M15 9l-6 6" /></symbol>
+        <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6z" /><path d="M9 12l2 2 4-4.5" /></symbol>
         <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" /><path d="M3 6l9 7 9-7" /></symbol>
         <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3l9 16H3z" /><path d="M12 9v5M12 17v.5" /></symbol>
         <symbol id="i-trend" viewBox="0 0 24 24"><path d="M4 15l5-5 3 3 6-7" /><path d="M15 6h4v4" /></symbol>

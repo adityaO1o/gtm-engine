@@ -17,7 +17,8 @@ import { resolveStats } from "../services/resolve.js";
 import { validateEmail } from "../services/enrich.js";
 import { findEmailWaterfall } from "../pipeline/enrichLead.js";
 import { reprocessNoEmail, reprocessStatus, noEmailQuery, MISS_REASONS } from "../pipeline/reprocess.js";
-import { runBouncebanAudit, bouncebanAuditStatus, bouncebanScorecard, auditQuery } from "../pipeline/bouncebanAudit.js";
+import { runBouncebanAudit, bouncebanAuditStatus, bouncebanScorecard, bouncebanProof, auditQuery } from "../pipeline/bouncebanAudit.js";
+import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { campaignByKey, campaignLabel, sendkitIdsFor } from "../services/campaigns.js";
 import { upsertLeads, addLeadsToCampaign, addToDnc } from "../services/sendkit.js";
@@ -352,6 +353,21 @@ apiRouter.get("/bounceban/scorecard", async (_req, res) => {
 });
 // Count of what the audit would cover (leads with an email: verified + unverified).
 apiRouter.get("/bounceban/count", async (_req, res) => res.json({ count: await leads().countDocuments(auditQuery()) }));
+
+// Verify the audit's guarantee against SendKit itself, rather than against our own counters.
+// Walks SendKit's whole DNC list, so it takes ~30-60s — no TTL cache, it must be a live read.
+apiRouter.get("/bounceban/proof", async (_req, res) => {
+  try { res.json(await bouncebanProof()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Pull SendKit's block list onto our leads on demand (it also runs before every audit and sync).
+apiRouter.post("/dnc/reconcile", async (_req, res) => {
+  try {
+    const r = await reconcileDnc();
+    res.json({ ok: true, dncEmails: r.emails.size, marked: r.marked, cleared: r.cleared, truncated: r.truncated });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // GET /api/reprocess/runs — history of retry runs (recovered per run + why the rest missed)
 apiRouter.get("/reprocess/runs", async (_req, res) => {

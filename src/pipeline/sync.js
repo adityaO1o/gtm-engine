@@ -6,7 +6,8 @@
 
 import { leads } from "../db/mongo.js";
 import { findEmailWaterfall } from "./enrichLead.js";
-import { upsertLeads, addLeadsToCampaign, addToDnc, fetchDncEmails } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc } from "../services/sendkit.js";
+import { reconcileDnc } from "./dncSync.js";
 import { resolveKey, campaignByKey, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
 import { nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { log } from "../lib/logger.js";
@@ -65,14 +66,7 @@ export async function syncVerified({ campaign = "" } = {}) {
 
   // Reconcile SendKit's DNC list onto our leads, so the dashboard tells the truth about who
   // can never be emailed (whether we DNC'd them or you did it by hand in SendKit).
-  try {
-    const dncSet = await fetchDncEmails();
-    if (dncSet.size) {
-      await leads().updateMany({ email: { $in: [...dncSet] } }, { $set: { dnc: true } });
-      await leads().updateMany({ dnc: true, email: { $nin: [...dncSet] } }, { $set: { dnc: false } });
-      log.info("dnc reconciled", { dncEmails: dncSet.size });
-    }
-  } catch (e) { log.warn("dnc reconcile failed", { err: e.message }); }
+  try { await reconcileDnc(); } catch (e) { log.warn("dnc reconcile failed", { err: e.message }); }
 
   const q = { email_status: "verified" };
   if (campaign) q.campaigns = campaign;
