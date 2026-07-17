@@ -561,7 +561,7 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
   // on the doc. Skipped when out of credits so we don't set titleTried prematurely.
   for (const p of posts) {
     if (p.title || p.titleTried) continue;
-    const det = await pndPostInfo(activityUrn(p.postUrl)).catch(() => null);
+    const det = await pndPostInfo(p.postUrl).catch(() => null);
     if (det) {
       const set = { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: det.text, expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted, titleTried: true };
       await scrapedPosts().updateOne({ postUrl: p.postUrl }, { $set: set }).catch(() => {});
@@ -580,11 +580,12 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
     ]);
     return {
       postUrl: p.postUrl,
-      activityId: p.activityId || (String(p.postUrl).match(/activity[:-](\d+)/) || [])[1] || null,
+      activityId: p.activityId || activityUrn(p.postUrl),
       title: p.title || null, posterName: p.poster_name || null,
       campaign: p.campaign || null, at: p.finishedAt || p.startedAt, running: !!p.running,
       engagers, verified, noEmail, unverified,
       expectedReactions: p.expected_reactions ?? null, expectedComments: p.expected_comments ?? null,
+      commentsSkipped: !!p.comments_skipped, commentsSkipReason: p.comments_skip_reason || null,
     };
   }));
   res.json({ posts: out });

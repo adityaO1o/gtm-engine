@@ -40,15 +40,21 @@ export function resetRapidScrape() { outOfCredits = false; dynamicGap = config.s
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // activity id out of any post URL / urn
-// Pull the numeric post id out of any LinkedIn post URL.
+// The ACTIVITY urn of a post, or null — and null is a real answer, not a bug to paper over.
 //
-// LinkedIn shifted the share-link slug from "...-activity-7430459358192369664-lwwr" to
-// "...-share-7430459358192369664-lwwr". Matching only "activity" meant every post copied from the
-// modern share button resolved to null — which silently cost us the ENTIRE comments phase
-// (pndCommentPage needs the urn; reactions take the raw URL, so scrapes looked like they worked)
-// and every post title. Both came back the moment this matched "share" too.
+// LinkedIn post URLs carry one of several urn types, and their ids are NOT interchangeable:
+//   .../posts/x_slug-activity-7403825223109738496-Hcja   -> urn:li:activity  (what the APIs want)
+//   .../posts/x_slug-share-7430459358192369664-lwwr      -> urn:li:share     (a DIFFERENT id)
+// The same post above reports urn 7403825223109738496 and shareUrn urn:li:ugcPost:7403825206529687552
+// — different numbers for the same post. Verified against the API: the activity id resolves, the
+// share id returns "The request failed".
+//
+// So do NOT be tempted to widen this to (activity|share|ugcPost). Those ids live in the same numeric
+// space as activity ids, so a share id can silently BE some unrelated post's activity id — that
+// scrapes a stranger's commenters into your post rather than failing. Use pndActivityUrn() to
+// resolve a share URL properly.
 export function activityUrn(postUrl = "") {
-  const m = String(postUrl).match(/(?:activity|share|ugcPost)[-:](\d{15,25})/);
+  const m = String(postUrl).match(/activity[-:](\d{15,25})/);
   return m ? m[1] : null;
 }
 

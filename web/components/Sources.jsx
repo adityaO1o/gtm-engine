@@ -33,6 +33,20 @@ function ScrapeBox({ s, onPause, onResume }) {
   );
 }
 
+// A post URL's own slug is human-readable — "penn-frank_quite-a-few-people-have-asked-how-we-handle"
+// beats falling back to "activity:—", which is what a row showed whenever the title lookup hadn't
+// landed. Free, offline, and always available, so the title fetch is a bonus rather than the only
+// thing standing between you and knowing which post this is.
+function labelFromUrl(u = "") {
+  const m = String(u).match(/\/posts\/([^/?]+)/);
+  if (!m) return null;
+  const raw = decodeURIComponent(m[1]).replace(/-(?:activity|share|ugcPost)-\d{15,25}.*$/, "");
+  const [who, ...rest] = raw.split("_");
+  const text = rest.join(" ").replace(/-/g, " ").trim();
+  const name = who.replace(/-\w{6,}$/, "").replace(/-/g, " ").trim();
+  return text ? `${name} — ${text}` : name || null;
+}
+
 function ScrapedPosts({ posts }) {
   if (!posts.length) return null;
   return (
@@ -42,11 +56,14 @@ function ScrapedPosts({ posts }) {
         <table><thead><tr><th>Post</th><th>Campaign</th><th>Engagers</th><th>Verified</th><th>No-email</th><th>Unverified</th><th title="verified ÷ engagers">Hit</th><th>When</th></tr></thead>
           <tbody>{posts.map((p) => {
             const hit = p.engagers ? Math.round((p.verified / p.engagers) * 100) : 0;
-            const label = p.title || p.posterName || ("activity:" + (p.activityId || "—"));
+            const label = p.title || labelFromUrl(p.postUrl) || p.posterName || ("activity:" + (p.activityId || "—"));
             const expected = (p.expectedReactions || 0) + (p.expectedComments || 0);
             return (
               <tr key={p.postUrl}>
-                <td><a href={p.postUrl} target="_blank" rel="noopener" className="postlink" title={p.postUrl}>{label}<Icon name="external" /></a></td>
+                <td>
+                  <a href={p.postUrl} target="_blank" rel="noopener" className="postlink" title={p.postUrl}>{label}<Icon name="external" /></a>
+                  {p.commentsSkipped ? <span className="tag-man" title={p.commentsSkipReason || "Commenters were not scraped for this post"}>likers only</span> : null}
+                </td>
                 <td>{p.campaign ? <b>{p.campaign}</b> : <span className="muted">—</span>}</td>
                 <td className="num-c">{num(p.engagers)}{expected ? <span className="muted" style={{ fontSize: 11 }}> of ~{num(expected)}</span> : null}</td>
                 <td className="num-c" style={{ color: "var(--good)", fontWeight: 600 }}>{num(p.verified)}</td>

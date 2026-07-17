@@ -78,17 +78,16 @@ export async function connect() {
   // paused so the dashboard offers Resume (its queue + checkpoint are intact, so it continues cleanly).
   await db.collection("scraped_posts").updateMany({ running: true }, { $set: { running: false, paused: true, phase: "paused" } });
 
-  // activityUrn used to miss LinkedIn's newer "share-" post URLs, so every such post failed its
-  // title lookup and got marked titleTried — which permanently stops the retry. Clear that mark on
-  // the posts the old matcher couldn't parse, so they get one honest attempt with the fixed regex.
-  // Scoped to non-"activity-" URLs: posts that legitimately have no title stay marked and don't
-  // burn a credit on every boot.
+  // Post titles were looked up with activityUrn(url), which is null for a share-link — so those
+  // lookups could never have succeeded, and titleTried then made the failure permanent. pndPostInfo
+  // now resolves the URL itself, so clear the mark once and let every title-less post retry.
+  // One-shot: a post that still can't be resolved gets re-marked and won't be retried again.
   try {
     const r = await db.collection("scraped_posts").updateMany(
-      { title: { $exists: false }, titleTried: true, postUrl: { $not: /activity[-:]\d/ } },
-      { $unset: { titleTried: "" } }
+      { title: { $exists: false }, titleTried: true, titleRetriedAfterUrnFix: { $ne: true } },
+      { $unset: { titleTried: "" }, $set: { titleRetriedAfterUrnFix: true } }
     );
-    if (r.modifiedCount) log.info("cleared titleTried on share-URL posts the old regex couldn't parse", { posts: r.modifiedCount });
+    if (r.modifiedCount) log.info("cleared titleTried so posts retry with URL-based resolution", { posts: r.modifiedCount });
   } catch (e) { log.warn("titleTried reconcile failed", { err: e.message }); }
 
   // Drop any SEEDED (hand-entered) RapidAPI balances. A RapidAPI plan's remaining is only knowable

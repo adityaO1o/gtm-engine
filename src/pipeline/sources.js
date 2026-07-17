@@ -7,7 +7,7 @@ import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
 import { routeSourceEngager } from "../services/campaigns.js";
 import { activityUrn } from "../services/rapidScrape.js";
-import { pndReactionPage, pndCommentPage, pndPostInfo, pndOutOfCredits } from "../services/pnd.js";
+import { pndReactionPage, pndCommentPage, pndPostInfo, pndActivityUrn, pndOutOfCredits } from "../services/pnd.js";
 import { enrichLead } from "./enrichLead.js";
 import { meterFlush } from "../services/apiMeter.js";
 import { log } from "../lib/logger.js";
@@ -172,7 +172,6 @@ async function enrichPending(postUrl, camp, category) {
 // so leads flow from page 1 and the enrichment load is paced by scraping (no 5k-at-once spike).
 // Fully resumable (checkpoint + queue) and pausable. -> "done" | "paused" | "stopped"
 async function scrapeAndEnrich(postUrl, camp, category) {
-  const urn = activityUrn(postUrl);
   // On resume, first finish anything already scraped but not yet enriched.
   await enrichPending(postUrl, camp, category);
   if (scrapeCtl.paused) return "paused";
@@ -218,7 +217,22 @@ async function scrapeAndEnrich(postUrl, camp, category) {
   }
 
   // COMMENTS — token-paginated; commenters arrive WITH their real vanity URL (no resolve needed).
+  //
+  // Reactions above took the raw URL, so they work on any post. Comments need the ACTIVITY urn, and
+  // a URL from LinkedIn's share button carries urn:li:share instead — a different id for the same
+  // post. Passing that through fetched nothing while the scrape still reported success, so every
+  // share-linked post silently lost its commenters. Resolve it properly, and if we can't, record
+  // that on the post instead of pretending the comments phase ran.
   if (!cp.commentsDone) {
+    const urn = await pndActivityUrn(postUrl);
+    if (!urn) {
+      log.warn("no activity urn for post — commenters NOT scraped", { postUrl });
+      await scrapedPosts().updateOne({ postUrl }, { $set: { comments_skipped: true, comments_skip_reason: "could not resolve the post URL to an activity urn" } });
+      Object.assign(cp, { commentsDone: true });
+      await saveCp(postUrl, { ...cp });
+      return "done";
+    }
+    await scrapedPosts().updateOne({ postUrl }, { $unset: { comments_skipped: "", comments_skip_reason: "" } });
     let page = 1;
     for (let i = 0; i < 400; i++) {
       if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp }); return "paused"; }
@@ -276,7 +290,7 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
       }, $unset: { backfilled: "", finishedAt: "" } }, { upsert: true });
 
       // title/expected counts (once)
-      if (!rec.titleTried) pndPostInfo(activityUrn(postUrl)).then((det) => {
+      if (!rec.titleTried) pndPostInfo(postUrl).then((det) => {
         const set = det
           ? { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: det.text, expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted, titleTried: true }
           : { titleTried: true };
