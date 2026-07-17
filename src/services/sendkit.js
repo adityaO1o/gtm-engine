@@ -86,13 +86,15 @@ export async function addToDnc(emails = []) {
   return { added, failed };
 }
 
-// Every email on the workspace DNC list (domain entries are skipped — we match addresses).
+// The workspace DNC list: BOTH the blocked addresses and the blocked DOMAINS. A third of this list
+// is domain entries (1,515 of 4,672) — ignoring them made every lead at a blocked domain look
+// contactable, which is how the proof reported an address as "leaked" that was blocked all along.
 //
-// Returns { emails, truncated }. `truncated` is the important half: a short read used to look
-// identical to "this address is not blocked", and the reconcile would then happily clear dnc on
-// leads SendKit is still blocking. Callers must never CLEAR a block on a truncated read.
+// Returns { emails, domains, truncated }. `truncated` is the important half: a short read looks
+// identical to "this address is not blocked", and the reconcile would then clear dnc on leads
+// SendKit is still blocking. Callers must never CLEAR a block on a truncated read.
 export async function fetchDncEmails() {
-  const emails = new Set();
+  const emails = new Set(), domains = new Set();
   let cursor = "", truncated = true; // assume incomplete until we actually see the end of the list
   for (let i = 0; i < 1000; i++) {
     const r = await withRetry(() => axios.get(`${base}/v1/dnc`, {
@@ -101,13 +103,25 @@ export async function fetchDncEmails() {
     }));
     if (r.status >= 300) { log.warn("sendkit dnc list failed", { status: r.status, page: i, got: emails.size }); break; }
     for (const e of (r.data?.data || [])) {
-      if (e?.entryType === "email" && e.email) emails.add(String(e.email).trim().toLowerCase());
+      const v = String(e?.email || e?.domain || "").trim().toLowerCase();
+      if (!v) continue;
+      if (e.entryType === "domain") domains.add(v.replace(/^@/, ""));
+      else emails.add(v);
     }
     cursor = r.data?.pagination?.nextCursor || "";
     if (!cursor) { truncated = false; break; } // walked the whole list
   }
   if (truncated) log.warn("sendkit dnc list truncated — not clearing any blocks", { got: emails.size });
-  return { emails, truncated };
+  return { emails, domains, truncated };
+}
+
+// Is this address blocked — either directly, or because its whole domain is?
+export function isBlockedBy(dnc, email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) return false;
+  if (dnc.emails?.has(e)) return true;
+  const d = e.split("@")[1];
+  return !!d && !!dnc.domains?.has(d);
 }
 
 // Bulk-upsert leads, 100 at a time (the /leads/bulk endpoint takes an array).

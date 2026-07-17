@@ -222,6 +222,7 @@ export default function TestTab() {
             <span>{job.running ? <>Verifying <b>{num(job.processed)}</b> / <b>{num(job.total)}</b> · {pct}%</> : <>Done · {num(job.processed)} checked</>}
               {" · "}<b className="ok">{num(job.confirmed || 0)}</b> confirmed · <b style={{ color: "var(--hot)" }}>{num(job.rejected || 0)}</b> rejected · {num(job.dnc || 0)} DNC’d
               {job.pushFailed ? <> · <b style={{ color: "var(--hot)" }}>{num(job.pushFailed)}</b> push failed</> : null}
+              {job.dncFailed ? <> · <b style={{ color: "var(--hot)" }}>{num(job.dncFailed)}</b> DNC failed</> : null}
               {job.skippedDnc ? <> · {num(job.skippedDnc)} skipped (already blocked)</> : null}</span>
           </div>
           <div className={`prog${job.running ? " on" : ""}`}><i style={{ width: `${Math.max(job.running ? pct : 100, job.running ? 3 : 0)}%` }} /></div>

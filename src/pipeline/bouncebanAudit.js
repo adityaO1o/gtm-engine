@@ -13,13 +13,13 @@
 
 import { leads, bouncebanRuns } from "../db/mongo.js";
 import { bouncebanVerify } from "../services/bounceban.js";
-import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails } from "../services/sendkit.js";
+import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails, isBlockedBy } from "../services/sendkit.js";
 import { reconcileDnc } from "./dncSync.js";
 import { sendkitIdsFor } from "../services/campaigns.js";
 import { log } from "../lib/logger.js";
 
 let running = false;
-let status = { running: false, processed: 0, total: 0, confirmed: 0, rejected: 0, dnc: 0, pushed: 0, pushFailed: 0, skippedDnc: 0, startedAt: null, finishedAt: null };
+let status = { running: false, processed: 0, total: 0, confirmed: 0, rejected: 0, dnc: 0, dncFailed: 0, pushed: 0, pushFailed: 0, skippedDnc: 0, startedAt: null, finishedAt: null };
 export function bouncebanAuditStatus() { return status; }
 
 // Every lead we ever produced an email for — verified AND unverified.
@@ -34,7 +34,7 @@ const tagsFor = (d) => [
   "score:" + d.score, "seen:" + d.times_seen, d.status + "-lead", "bounceban-verified",
 ];
 
-async function auditOne(d, blockedSet) {
+async function auditOne(d, dnc) {
   const b = await bouncebanVerify(d.email);
   if (!b) return; // BounceBan unusable for this one — leave the lead exactly as it was
 
@@ -55,7 +55,7 @@ async function auditOne(d, blockedSet) {
     // SendKit is already blocking this address for a reason that has nothing to do with
     // deliverability (a competitor, a complaint, a manual block). BounceBan saying "deliverable"
     // is not a licence to push it back into a campaign.
-    const blocked = blockedSet.has(String(d.email).trim().toLowerCase());
+    const blocked = isBlockedBy(dnc, d.email);
     if (blocked) set.dnc = true;
     await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: set });
 
@@ -90,10 +90,19 @@ async function auditOne(d, blockedSet) {
     // Pull it back out of SendKit: DNC is the only real guarantee (no remove endpoint exists).
     if (d.sendkit_campaigns?.length || d.email_status === "verified") {
       try {
-        await addToDnc([d.email]);
-        await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { dnc: true, dnc_at: new Date(), dnc_reason: "bounceban-rejected" } });
-        status.dnc++;
-      } catch (e) { log.warn("bb audit dnc failed", { err: e.message }); }
+        // addToDnc swallows its own errors and returns {added, failed} — it does NOT throw. Ignoring
+        // that is how mark@stackoptimise.com ended up flagged dnc:true in our DB while SendKit had
+        // never blocked him. A block we only *believe* in is worse than no block at all.
+        const r = await addToDnc([d.email]);
+        if (r.failed) {
+          status.dncFailed++;
+          await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { dnc_failed: true } });
+          log.warn("bb audit dnc did not land", { email: d.email });
+        } else {
+          await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { dnc: true, dnc_at: new Date(), dnc_reason: "bounceban-rejected" }, $unset: { dnc_failed: "" } });
+          status.dnc++;
+        }
+      } catch (e) { status.dncFailed++; log.warn("bb audit dnc failed", { email: d.email, err: e.message }); }
     }
     status.rejected++;
   }
@@ -104,23 +113,23 @@ export async function runBouncebanAudit({ concurrency = 8, campaigns = [], limit
   running = true;
   const all = await leads().find(auditQuery(campaigns)).toArray();
   const list = limit ? all.slice(0, limit) : all;
-  status = { running: true, processed: 0, total: list.length, confirmed: 0, rejected: 0, dnc: 0, pushed: 0, pushFailed: 0, skippedDnc: 0, campaigns, startedAt: new Date(), finishedAt: null };
+  status = { running: true, processed: 0, total: list.length, confirmed: 0, rejected: 0, dnc: 0, dncFailed: 0, pushed: 0, pushFailed: 0, skippedDnc: 0, campaigns, startedAt: new Date(), finishedAt: null };
 
   // Pull SendKit's block list FIRST, so a "deliverable" verdict can never re-push someone SendKit
   // is deliberately holding back, and so our own dnc flags stop drifting from SendKit's truth.
-  let blockedSet = new Set();
+  let dncList = { emails: new Set(), domains: new Set() };
   try {
     const r = await reconcileDnc();
-    blockedSet = r.emails;
+    dncList = r;
     status.dncSynced = r.marked;
-    status.dncListSize = r.emails.size;
+    status.dncListSize = r.emails.size + r.domains.size;
   } catch (e) { log.warn("bb audit dnc preload failed", { err: e.message }); }
 
   let idx = 0;
   const worker = async () => {
     while (idx < list.length) {
       const d = list[idx++];
-      try { await auditOne(d, blockedSet); } catch (e) { log.warn("bb audit one failed", { err: e.message }); }
+      try { await auditOne(d, dncList); } catch (e) { log.warn("bb audit one failed", { err: e.message }); }
       status.processed++;
     }
   };
@@ -160,9 +169,9 @@ export async function runBouncebanRepair() {
 
   try {
     // Pull SendKit's block list first — a repair must not quietly re-contact someone SendKit blocks.
-    let blocked = new Set();
-    try { blocked = (await reconcileDnc()).emails; } catch (e) { log.warn("repair dnc preload failed", { err: e.message }); }
-    const isBlocked = (e) => blocked.has(String(e || "").trim().toLowerCase());
+    let blocked = { emails: new Set(), domains: new Set() };
+    try { blocked = await reconcileDnc(); } catch (e) { log.warn("repair dnc preload failed", { err: e.message }); }
+    const isBlocked = (e) => isBlockedBy(blocked, e);
 
     const docs = await leads().find({ bb_verdict: "confirmed", email: { $nin: [null, ""] } }).toArray();
     repairStatus.total = docs.length;
@@ -222,8 +231,9 @@ export async function runBouncebanRepair() {
 //   neverSent— rejected, not on DNC, never pushed      -> nothing to block      ✅
 //   LEAKED   — rejected, not on DNC, but IS in SendKit -> could still be emailed ❌
 export async function bouncebanProof() {
-  const { emails: dnc, truncated } = await fetchDncEmails();
-  const has = (e) => dnc.has(String(e || "").trim().toLowerCase());
+  const dnc = await fetchDncEmails();
+  const { emails, domains, truncated } = dnc;
+  const has = (e) => isBlockedBy(dnc, e);
 
   const proj = { projection: { email: 1, dnc: 1, sendkit_campaigns: 1, bb_prev_status: 1, bb_push_failed: 1, status: 1, name: 1 } };
   const [rejected, confirmed] = await Promise.all([
@@ -243,7 +253,8 @@ export async function bouncebanProof() {
 
   return {
     checkedAt: new Date(),
-    dncListSize: dnc.size,
+    dncListSize: emails.size,
+    dncDomains: domains.size,
     truncated, // if true the proof is INCOMPLETE — say so rather than claim a clean bill
     rejected: rejected.length,
     blocked: blocked.length,

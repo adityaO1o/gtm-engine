@@ -8,28 +8,33 @@
 // SendKit is deliberately holding back.
 
 import { leads } from "../db/mongo.js";
-import { fetchDncEmails } from "../services/sendkit.js";
+import { fetchDncEmails, isBlockedBy } from "../services/sendkit.js";
 import { log } from "../lib/logger.js";
 
 export async function reconcileDnc() {
-  const { emails, truncated } = await fetchDncEmails();
-  if (!emails.size) return { emails, truncated, marked: 0, cleared: 0 };
-  const list = [...emails];
+  const dnc = await fetchDncEmails();
+  const { emails, domains, truncated } = dnc;
+  if (!emails.size && !domains.size) return { ...dnc, marked: 0, cleared: 0 };
 
-  const marked = (await leads().updateMany(
-    { email: { $in: list }, dnc: { $ne: true } },
-    { $set: { dnc: true, dnc_at: new Date() } }
-  )).modifiedCount;
+  // Decide blocked/not in JS rather than in the query: a lead is blocked by its address OR by its
+  // whole domain, and a $in over 1.5k domain regexes would be a collection scan anyway.
+  const docs = await leads().find({ email: { $nin: [null, ""] } }, { projection: { email: 1, dnc: 1 } }).toArray();
+  const blocked = [], unblocked = [];
+  for (const d of docs) (isBlockedBy(dnc, d.email) ? blocked : unblocked).push(d.email);
+
+  const marked = blocked.length
+    ? (await leads().updateMany({ email: { $in: blocked }, dnc: { $ne: true } }, { $set: { dnc: true, dnc_at: new Date() } })).modifiedCount
+    : 0;
 
   // Only ever clear blocks when we know we saw the WHOLE list.
   let cleared = 0;
-  if (!truncated) {
+  if (!truncated && unblocked.length) {
     cleared = (await leads().updateMany(
-      { dnc: true, email: { $nin: list } },
+      { email: { $in: unblocked }, dnc: true },
       { $set: { dnc: false }, $unset: { dnc_reason: "" } }
     )).modifiedCount;
   }
 
-  log.info("dnc reconciled", { dncEmails: emails.size, marked, cleared, truncated });
-  return { emails, truncated, marked, cleared };
+  log.info("dnc reconciled", { dncEmails: emails.size, dncDomains: domains.size, marked, cleared, truncated });
+  return { ...dnc, marked, cleared };
 }
