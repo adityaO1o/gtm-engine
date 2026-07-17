@@ -5,7 +5,7 @@ import { ObjectId } from "mongodb";
 import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, bouncebanRuns } from "../db/mongo.js";
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
 import { rapidScrapeStats, activityUrn } from "../services/rapidScrape.js";
-import { pndStats, pndPostInfo, pndOutOfCredits } from "../services/pnd.js";
+import { pndStats, pndPostInfo, pndRaw, pndOutOfCredits } from "../services/pnd.js";
 import { bouncebanStats, bouncebanBalance } from "../services/bounceban.js";
 import { linkedinProfileStats } from "../services/linkedinProfile.js";
 import { meterCumulative, readBalances } from "../services/apiMeter.js";
@@ -600,6 +600,18 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
 // POST /api/sources/pause { paused } — master switch for the auto influencer/hub sweep
 apiRouter.post("/sources/pause", (req, res) => res.json({ paused: setAutoScrape(!!req.body?.paused) }));
 apiRouter.get("/sources/pause", (_req, res) => res.json({ paused: isAutoScrapePaused(), rapid: rapidScrapeStats() }));
+
+// GET /api/debug/pnd?path=&urn=... — raw PND response, so a parser can be written against what the
+// API actually returns rather than what we assume it returns. Ingest-token guarded; read-only.
+apiRouter.get("/debug/pnd", async (req, res) => {
+  if (!safeEqual(req.headers["x-ingest-token"] || "", config.ingestToken)) return res.status(401).json({ ok: false });
+  const path = S(req.query.path);
+  if (!path) return res.status(400).json({ error: "path required" });
+  const params = { ...req.query };
+  delete params.path;
+  const d = await pndRaw(path, { params });
+  res.json({ path, params, response: d });
+});
 
 // POST /api/reset — wipe all leads + engagements (guarded by the ingest token). For clearing test data.
 apiRouter.post("/reset", async (req, res) => {

@@ -87,6 +87,13 @@ async function call(path, { method = "GET", params, body, retries = 2 } = {}) {
   return null;
 }
 
+// Raw passthrough for diagnosing a PND endpoint's actual response shape. Every parser in this file
+// is a guess about that shape until something like this proves it — pndCommentPage silently
+// returned [] for months because its shape guess was never checked against a real response.
+export async function pndRaw(path, { params, method = "GET", body } = {}) {
+  return call(path, { params, method, body });
+}
+
 // ── SCRAPE ───────────────────────────────────────────────────────────────────
 // Reactions paginate over ALL reactions (no per-type cap like the old host) — 50 per credit.
 export async function pndReactionPage(postUrl, page) {
