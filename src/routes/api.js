@@ -630,7 +630,7 @@ apiRouter.get("/debug/pnd", async (req, res) => {
   delete params.method;
   // reactions is a POST that takes {url, page}; everything else is a GET with query params.
   const d = method === "POST"
-    ? await pndRaw(path, { method: "POST", body: { url: params.url, page: Number(params.page) || 1 } })
+    ? await pndRaw(path, { method: "POST", body: { ...params, page: Number(params.page) || 1 } })
     : await pndRaw(path, { params });
   const summary = Array.isArray(d?.data)
     ? { isArray: true, count: d.data.length, total: d.total ?? d.data?.total, totalPage: d.totalPage }
