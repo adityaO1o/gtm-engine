@@ -47,13 +47,13 @@ function labelFromUrl(u = "") {
   return text ? `${name} — ${text}` : name || null;
 }
 
-function ScrapedPosts({ posts }) {
+function ScrapedPosts({ posts, onResume, busy }) {
   if (!posts.length) return null;
   return (
     <div className="chartbox" style={{ marginBottom: "var(--s3)" }}>
       <h4><Icon name="check" />Scraped posts <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>· live counts</span></h4>
       <div className="tablewrap" style={{ border: "none" }}>
-        <table><thead><tr><th>Post</th><th>Campaign</th><th>Engagers</th><th>Verified</th><th>No-email</th><th>Unverified</th><th title="verified ÷ engagers">Hit</th><th>When</th></tr></thead>
+        <table><thead><tr><th>Post</th><th>Campaign</th><th>Engagers</th><th>Verified</th><th>No-email</th><th>Unverified</th><th title="verified ÷ engagers">Hit</th><th>When</th><th></th></tr></thead>
           <tbody>{posts.map((p) => {
             const hit = p.engagers ? Math.round((p.verified / p.engagers) * 100) : 0;
             const label = p.title || labelFromUrl(p.postUrl) || p.posterName || ("activity:" + (p.activityId || "—"));
@@ -86,6 +86,15 @@ function ScrapedPosts({ posts }) {
                 <td className="num-c muted">{num(p.unverified)}</td>
                 <td className="num-c">{hit}%</td>
                 <td className="tstamp">{p.running ? <span style={{ color: "var(--primary)" }}>scraping…</span> : ts(p.at)}</td>
+                <td>
+                  {!p.running && !p.scrapeDone ? (
+                    <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => onResume(p.postUrl)} title={
+                      p.cp?.legacy
+                        ? "This post's checkpoint predates the current scraper, whose pages mean something different — resuming from it would skip everything before it, so paging restarts from page 1. Only the scrape pages are re-read (~1 credit per 50 engagers); nobody already enriched is charged for again."
+                        : `Resumes from page ${p.cp?.page ?? 1}. Engagers already scraped are deduped and nobody already enriched is charged for again.`
+                    }><Icon name="bolt" />Resume</button>
+                  ) : null}
+                </td>
               </tr>
             );
           })}</tbody></table>
@@ -206,7 +215,7 @@ export default function Sources() {
         <div style={{ marginTop: 10 }}><ScrapeBox s={scrape} onPause={pauseScrape} onResume={resumeScrape} /></div>
       </div>
 
-      <ScrapedPosts posts={posts} />
+      <ScrapedPosts posts={posts} onResume={resumeScrape} busy={!!scrape?.running} />
       <JobBox kind="sources" s={jobs.sources} />
 
       <div className="chartbox" style={{ marginBottom: "var(--s3)" }}>
