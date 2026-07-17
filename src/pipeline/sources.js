@@ -7,7 +7,7 @@ import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
 import { routeSourceEngager } from "../services/campaigns.js";
 import { activityUrn } from "../services/rapidScrape.js";
-import { pndReactionPage, pndCommentPage, pndPostInfo, pndOutOfCredits } from "../services/pnd.js";
+import { pndReactionPage, pndCommentPage, pndPostInfo, pndOutOfCredits, REACTION_TYPES } from "../services/pnd.js";
 import { resolveActivityUrn } from "../services/postUrn.js";
 import { enrichLead } from "./enrichLead.js";
 import { meterFlush } from "../services/apiMeter.js";
@@ -178,18 +178,28 @@ async function scrapeAndEnrich(postUrl, camp, category) {
   if (scrapeCtl.paused) return "paused";
 
   const rec = (await scrapedPosts().findOne({ postUrl })) || {};
-  if (rec.scrape_done) return "done"; // everything scraped already; the drain above finished enrichment
 
-  // Checkpoint compatibility: the old (fresh-era) format was {typeIdx,…} and paged per reaction TYPE.
-  // Under PND's single-stream pagination those page numbers mean something completely different, so
-  // resuming from one would silently SKIP everything before it. Detect the old shape and restart the
-  // paging — the queue dedups on ekey and already-enriched rows are skipped, so nothing is lost or
-  // re-charged for enrichment; only the (cheap) scrape pages are re-read.
+  // Checkpoint migration. Three eras have existed:
+  //   • fresh-era  : {typeIdx,…}, no reactionsDone
+  //   • PND-ALL    : {reactionsDone, page}, paged the whole-post ALL stream (topped out at 1,900)
+  //   • per-type   : {mode:"per-type", reactionsDone, typeIdx, page}   ← current
+  // Any pre-per-type checkpoint has its REACTIONS reset so they re-page per type — that's how a post
+  // already "done" under ALL picks up the reactions the per-type budget can reach that ALL couldn't.
+  // Comments are unaffected, so commentsDone is preserved. The queue dedups on ekey and enrichment
+  // only touches enriched:false, so nobody already processed is re-charged; only scrape pages re-read.
   const saved = rec.scrape_cp;
-  const cp = saved && saved.reactionsDone !== undefined
-    ? saved
-    : { page: 1, token: "", reactionsDone: false, commentsDone: false };
-  if (saved && saved.reactionsDone === undefined) log.info("old scrape checkpoint — restarting paging under PND", { postUrl });
+  let cp, reactionsReset = false;
+  if (saved && saved.mode === "per-type") {
+    cp = saved;
+  } else {
+    reactionsReset = !!saved; // there was an old checkpoint we're upgrading
+    cp = { mode: "per-type", typeIdx: 0, page: 1, token: "", reactionsDone: false, commentsDone: !!saved?.commentsDone };
+    if (saved) log.info("migrating checkpoint to per-type reactions — re-paging reactions", { postUrl });
+  }
+
+  // A post fully done under the OLD scraper should still re-run reactions once, to gather the extra
+  // per-type reactions; otherwise "done" means done.
+  if (rec.scrape_done && !reactionsReset) return "done";
 
   // Absorb one scraped page: queue it, then enrich it immediately (interleaved), then checkpoint.
   const absorb = async (engagers, nextCp) => {
@@ -200,20 +210,28 @@ async function scrapeAndEnrich(postUrl, camp, category) {
     await saveCp(postUrl, { ...cp });
   };
 
-  // REACTIONS — PND pages over ALL reactions (50/credit); no per-type cap to work around.
+  // REACTIONS — page each TYPE separately. PND caps every request at page 38 (1,900 reactions), but
+  // that cap is PER reactionType, so LIKE/PRAISE/EMPATHY/… each get their own budget. type=ALL
+  // topped out at 1,900 for the whole post; this reaches 1,900 of the dominant type PLUS every
+  // reaction of every smaller type. typeIdx walks REACTION_TYPES so a pause/resume continues from
+  // the exact (type, page) it stopped at.
   if (!cp.reactionsDone) {
-    let collected = 0, total = Infinity;
-    for (let page = cp.page || 1; page <= 400; page++) {
-      if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp, page }); return "paused"; }
-      const r = await pageWithBackoff(() => pndReactionPage(postUrl, page));
-      if (r === "paused") { await saveCp(postUrl, { ...cp, page }); return "paused"; }
-      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp, page }); return "stopped"; }
-      await absorb(r.engagers, { page: page + 1 });
-      collected += r.count;
-      if (typeof r.total === "number") total = r.total;
-      if (!r.count || collected >= total) break;
+    for (let ti = cp.typeIdx || 0; ti < REACTION_TYPES.length; ti++) {
+      const rt = REACTION_TYPES[ti];
+      let collected = 0, total = Infinity;
+      const startPage = ti === (cp.typeIdx || 0) ? (cp.page || 1) : 1; // resume mid-type only for the saved type
+      for (let page = startPage; page <= 38; page++) { // PND hard-caps at 38; no point paging past it
+        if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp, typeIdx: ti, page }); return "paused"; }
+        const r = await pageWithBackoff(() => pndReactionPage(postUrl, page, rt));
+        if (r === "paused") { await saveCp(postUrl, { ...cp, typeIdx: ti, page }); return "paused"; }
+        if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp, typeIdx: ti, page }); return "stopped"; }
+        await absorb(r.engagers, { typeIdx: ti, page: page + 1 });
+        collected += r.count;
+        if (typeof r.total === "number") total = r.total;
+        if (!r.count || collected >= total) break;
+      }
     }
-    Object.assign(cp, { reactionsDone: true, page: 1, token: "" });
+    Object.assign(cp, { reactionsDone: true, typeIdx: 0, page: 1, token: "" });
     await saveCp(postUrl, { ...cp });
   }
 

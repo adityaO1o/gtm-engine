@@ -95,9 +95,18 @@ export async function pndRaw(path, { params, method = "GET", body } = {}) {
 }
 
 // ── SCRAPE ───────────────────────────────────────────────────────────────────
-// Reactions paginate over ALL reactions (no per-type cap like the old host) — 50 per credit.
-export async function pndReactionPage(postUrl, page) {
-  const d = await call("get-post-reactions", { method: "POST", body: { url: postUrl, page } });
+// PND's reactions endpoint hard-caps at page 38 (= 1,900 reactions) no matter the true count — its
+// own error is "page can not be more than 38". BUT it also filters by reactionType, and each type
+// gets its OWN 38-page budget. So paging every type separately reaches min(1900, count) PER TYPE
+// instead of 1,900 across the whole post: on a 4,300-like post, ALL yields 1,900 while per-type
+// yields 1,900 likes + every praise/empathy/interest/appreciation/entertainment in full. Verified
+// against the live API: reactionType=PRAISE returns total:257 of only PRAISE, etc.
+export const REACTION_TYPES = ["LIKE", "PRAISE", "EMPATHY", "INTEREST", "APPRECIATION", "ENTERTAINMENT"];
+
+export async function pndReactionPage(postUrl, page, reactionType) {
+  const body = { url: postUrl, page };
+  if (reactionType) body.reactionType = reactionType;
+  const d = await call("get-post-reactions", { method: "POST", body });
   if (!d) return null;
   stats.scrapePages++; meter.inc("pnd_scrape_pages");
   const items = d?.data?.items || [];
