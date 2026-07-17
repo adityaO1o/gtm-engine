@@ -129,6 +129,29 @@ export async function campaignLeadCount(campaignId) {
   } catch (e) { log.warn("sendkit campaign count threw", { campaignId, err: e.message }); return null; }
 }
 
+// Every member of a campaign, as SendKit records them: address, send status, and WHEN they were
+// added. addedAt is the only honest source for "was this lead in the campaign before the audit" —
+// our own dnc/verified flags were inflated by pushes that silently failed, so they can't answer it.
+export async function campaignMembers(campaignId) {
+  if (!campaignId) return [];
+  const out = [];
+  let cursor = "";
+  for (let i = 0; i < 400; i++) {
+    const r = await withRetry(() => axios.get(`${base}/v1/campaigns/${campaignId}/leads`, {
+      headers: h(), params: { limit: 100, ...(cursor ? { cursor } : {}) },
+      timeout: 30000, validateStatus: () => true,
+    }));
+    if (r.status >= 300) { log.warn("sendkit campaign members failed", { campaignId, status: r.status, got: out.length }); break; }
+    for (const m of (r.data?.data || [])) {
+      const email = String(m.leadId?.email || "").trim().toLowerCase();
+      if (email) out.push({ email, status: m.status, addedAt: m.addedAt });
+    }
+    cursor = r.data?.pagination?.nextCursor || "";
+    if (!cursor) break;
+  }
+  return out;
+}
+
 // Is this address blocked — either directly, or because its whole domain is?
 export function isBlockedBy(dnc, email) {
   const e = String(email || "").trim().toLowerCase();

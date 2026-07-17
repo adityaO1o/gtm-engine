@@ -134,8 +134,8 @@ function CampaignReport({ rep, busy, onRun }) {
 
       {!rep ? (
         <div className="note"><Icon name="mega" /><div>
-          What each campaign looked like before the BounceBan audit vs now — kept, removed, and rescued —
-          with SendKit’s own membership count next to ours as the check.
+          What each campaign looked like before the BounceBan audit vs now, read <b>from SendKit itself</b> — its member list,
+          its <code>addedAt</code>, its send status. Takes ~1–2 min (it walks every member of every campaign).
         </div></div>
       ) : (
         <>
@@ -143,53 +143,46 @@ function CampaignReport({ rep, busy, onRun }) {
             <table>
               <thead><tr>
                 <th>Campaign</th>
-                <th title="Verified and being emailed before the audit">Before</th>
-                <th title="BounceBan-confirmed and not blocked — who actually gets emailed now">Emailable now</th>
-                <th>Change</th>
-                <th title="Rejected by BounceBan — DNC'd, will never be emailed again">Removed</th>
-                <th title="Written off as unverified before; BounceBan says they're fine">Rescued</th>
-                <th title="Deliverable, but SendKit blocks them (competitor / blocked domain)">Blocked</th>
-                <th title="SendKit's own count. Does NOT drop on removal — blocked leads stay members and are skipped at send time">In SendKit</th>
+                <th title="SendKit's total member count. It never falls — blocked leads stay members and are skipped at send time">Members</th>
+                <th title="SendKit already had them before the audit started (its own addedAt)">Before</th>
+                <th title="We added them during the audit / repair — the rescued ones">Added</th>
+                <th title="Members SendKit will actually email — total minus blocked. This is the number that matters">Emailable</th>
+                <th title="Members SendKit will skip at send time: DNC'd or on a blocked domain">Blocked</th>
+                <th title="Rejected by BounceBan, still a member, but blocked — they can never be emailed">Rejected, held</th>
               </tr></thead>
               <tbody>
-                {rep.campaigns.map((c) => {
-                  const delta = c.now - c.before;
-                  return (
-                    <tr key={c.key}>
-                      <td><span className="nm trunc" title={c.key}>{c.label}</span></td>
-                      <td className="num-c muted">{num(c.before)}</td>
-                      <td className="num-c"><b>{num(c.now)}</b></td>
-                      <td className="num-c" style={{ color: delta > 0 ? "var(--good)" : delta < 0 ? "var(--hot)" : "var(--dim)", fontWeight: 600 }}>
-                        {delta > 0 ? "+" : ""}{num(delta)}
-                      </td>
-                      <td className="num-c" style={{ color: c.removed ? "var(--hot)" : "var(--dim)" }}>{num(c.removed)}</td>
-                      <td className="num-c" style={{ color: c.added ? "var(--good)" : "var(--dim)" }}>{num(c.added)}</td>
-                      <td className="num-c muted">{num(c.blocked)}</td>
-                      <td className="num-c muted">{c.sendkitTotal == null ? "—" : num(c.sendkitTotal)}</td>
-                    </tr>
-                  );
-                })}
+                {rep.campaigns.map((c) => (
+                  <tr key={c.key}>
+                    <td><span className="nm trunc" title={c.key}>{c.label}</span></td>
+                    <td className="num-c muted">{num(c.members)}</td>
+                    <td className="num-c muted">{num(c.before)}</td>
+                    <td className="num-c" style={{ color: c.added ? "var(--good)" : "var(--dim)", fontWeight: c.added ? 600 : 400 }}>
+                      {c.added ? "+" : ""}{num(c.added)}
+                    </td>
+                    <td className="num-c"><b>{num(c.emailable)}</b></td>
+                    <td className="num-c" style={{ color: c.blocked ? "var(--hot)" : "var(--dim)" }}>{num(c.blocked)}</td>
+                    <td className="num-c muted">{num(c.rejectedStillIn)}</td>
+                  </tr>
+                ))}
                 {t && (
                   <tr style={{ fontWeight: 700, borderTop: "2px solid var(--line)" }}>
                     <td>Total</td>
+                    <td className="num-c">{num(t.members)}</td>
                     <td className="num-c">{num(t.before)}</td>
-                    <td className="num-c">{num(t.now)}</td>
-                    <td className="num-c" style={{ color: t.now - t.before > 0 ? "var(--good)" : "var(--hot)" }}>
-                      {t.now - t.before > 0 ? "+" : ""}{num(t.now - t.before)}
-                    </td>
-                    <td className="num-c" style={{ color: "var(--hot)" }}>{num(t.removed)}</td>
-                    <td className="num-c" style={{ color: "var(--good)" }}>{num(t.added)}</td>
-                    <td className="num-c">{num(t.blocked)}</td>
-                    <td className="num-c">—</td>
+                    <td className="num-c" style={{ color: "var(--good)" }}>+{num(t.added)}</td>
+                    <td className="num-c">{num(t.emailable)}</td>
+                    <td className="num-c" style={{ color: "var(--hot)" }}>{num(t.blocked)}</td>
+                    <td className="num-c">{num(t.rejectedStillIn)}</td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
           <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
-            <b>In SendKit</b> counts <i>membership</i>, not who gets emailed — SendKit has no remove-from-campaign endpoint, so the {num(t?.removed || 0)} removed
-            leads are still members and are skipped at send time by DNC. <b>Emailable now</b> is the real number. “Before” is reconstructed from each lead’s
-            frozen pre-audit verdict · built {ts(rep.checkedAt)}.
+            Every column here is <b>SendKit’s own record</b>, not ours — “Before” is its <code>addedAt</code> against the audit start, because our verified flags
+            were inflated by pushes that silently failed and can’t answer that question honestly. <b>Members never falls</b> on removal (SendKit has no
+            remove-from-campaign endpoint): the {num(t?.rejectedStillIn || 0)} rejected leads still counted as members are blocked and skipped at send time.
+            <b> Emailable</b> is who actually gets contacted · built {ts(rep.checkedAt)}.
           </div>
         </>
       )}

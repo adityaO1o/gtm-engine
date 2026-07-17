@@ -13,7 +13,7 @@
 
 import { leads, bouncebanRuns } from "../db/mongo.js";
 import { bouncebanVerify } from "../services/bounceban.js";
-import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails, isBlockedBy, campaignLeadCount } from "../services/sendkit.js";
+import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails, isBlockedBy, campaignMembers } from "../services/sendkit.js";
 import { reconcileDnc } from "./dncSync.js";
 import { sendkitIdsFor, CAMPAIGNS } from "../services/campaigns.js";
 import { log } from "../lib/logger.js";
@@ -269,51 +269,57 @@ export async function bouncebanProof() {
   };
 }
 
-// Per-campaign before/after, with SendKit's own membership count alongside ours as the check.
+// Per-campaign before/after, built from SendKit's OWN member list rather than our belief about it.
 //
-// "before" is reconstructed from bb_prev_status, which the audit froze on each lead the first time
-// it saw it — that is the only record of the pre-audit world, so this report is only as honest as
-// that field.
+// The first version of this reported "before" from bb_prev_status (= "our DB called it verified, so
+// it must have been in the campaign"). That was fiction: of 861 rejected Cold Email addresses, only
+// 67 had ever actually been members — the other 794 were leads the silent upsertLead failure never
+// delivered. Any "before" derived from our own flags inherits that lie, so this reads SendKit's
+// addedAt instead and compares it to when the audit started.
 //
-// The one number people misread: sendkitTotal does NOT drop when leads are removed. SendKit has no
-// remove-from-campaign endpoint, so a rejected lead stays a MEMBER of the campaign and is skipped
-// at send time by DNC. Membership ≠ who gets emailed. `now` is who actually gets emailed.
+//   before  — SendKit had this member before the audit ran
+//   added   — we put them there during/after it (the rescued ones)
+//   blocked — a member SendKit will skip at send time (DNC / blocked domain)
+//   emailable — members who will actually receive an email. This is the number that matters.
+//
+// Membership never falls: SendKit has no remove-from-campaign endpoint, so a rejected lead stays a
+// member and is skipped. rejectedStillIn counts exactly those.
+//
+// Costs ~1 API call per 100 members (~120 for the full workspace), so it is on-demand, not cached.
 export async function bouncebanCampaignReport() {
   const dnc = await fetchDncEmails();
-  const docs = await leads().find(
-    { email: { $nin: [null, ""] }, bb_verdict: { $in: ["confirmed", "rejected"] } },
-    { projection: { email: 1, campaigns: 1, bb_verdict: 1, bb_prev_status: 1 } }
-  ).toArray();
 
-  const map = new Map();
-  for (const c of CAMPAIGNS) map.set(c.key, { key: c.key, label: c.label, sendkitId: c.sendkitId, before: 0, kept: 0, removed: 0, added: 0, blocked: 0, now: 0 });
+  // When the first audit started — the line between "was already in the campaign" and "we put it
+  // there". SendKit's addedAt is compared against this, so `before` is SendKit's record, not ours.
+  const firstRun = await bouncebanRuns().find({}).sort({ startedAt: 1 }).limit(1).next();
+  const since = firstRun?.startedAt ? new Date(firstRun.startedAt) : null;
 
-  for (const d of docs) {
-    for (const key of d.campaigns || []) {
-      const m = map.get(key);
-      if (!m) continue;
-      const wasIn = d.bb_prev_status === "verified"; // verified pre-audit => it had been pushed
-      if (wasIn) m.before++;
-      if (d.bb_verdict === "rejected") {
-        if (wasIn) m.removed++; // was being emailed, now DNC'd
-      } else if (isBlockedBy(dnc, d.email)) {
-        m.blocked++; // deliverable, but SendKit blocks it (competitor / blocked domain)
-      } else {
-        m.now++;
-        if (wasIn) m.kept++; else m.added++; // added = rescued: written off before, emailable now
-      }
+  // Which addresses BounceBan rejected — used to label members, not to count them.
+  const rejectedDocs = await leads().find({ bb_verdict: "rejected" }, { projection: { email: 1 } }).toArray();
+  const rejected = new Set(rejectedDocs.map((d) => String(d.email).trim().toLowerCase()));
+
+  const rows = [];
+  for (const c of CAMPAIGNS) {
+    const members = await campaignMembers(c.sendkitId);
+    const r = { key: c.key, label: c.label, sendkitId: c.sendkitId, members: members.length, before: 0, added: 0, emailable: 0, blocked: 0, rejectedStillIn: 0, byStatus: {} };
+    for (const m of members) {
+      r.byStatus[m.status] = (r.byStatus[m.status] || 0) + 1;
+      if (since && m.addedAt && new Date(m.addedAt) >= since) r.added++; else r.before++;
+      if (isBlockedBy(dnc, m.email)) {
+        r.blocked++;
+        if (rejected.has(m.email)) r.rejectedStillIn++;
+      } else r.emailable++;
     }
+    rows.push(r);
   }
 
-  const rows = [...map.values()];
-  await Promise.all(rows.map(async (m) => { m.sendkitTotal = await campaignLeadCount(m.sendkitId); }));
-
-  const sum = (f) => rows.reduce((a, r) => a + r[f], 0);
+  const sum = (f) => rows.reduce((a, x) => a + x[f], 0);
   return {
     checkedAt: new Date(),
+    since,
     truncated: dnc.truncated,
-    campaigns: rows.filter((r) => r.before || r.now || r.removed || r.sendkitTotal).sort((a, b) => b.now - a.now),
-    totals: { before: sum("before"), now: sum("now"), removed: sum("removed"), added: sum("added"), kept: sum("kept"), blocked: sum("blocked") },
+    campaigns: rows.filter((r) => r.members).sort((a, b) => b.emailable - a.emailable),
+    totals: { members: sum("members"), before: sum("before"), added: sum("added"), emailable: sum("emailable"), blocked: sum("blocked"), rejectedStillIn: sum("rejectedStillIn") },
   };
 }
 
