@@ -16,6 +16,10 @@ export const config = {
   // Dashboard + /api/* basic-auth. If unset, the dashboard stays OPEN (with a loud warning).
   dashUser: process.env.DASH_USER || "",
   dashPass: process.env.DASH_PASS || "",
+  // /internal — the personal internal-tool tool. Its OWN login, separate from the main dashboard, so it
+  // never shares credentials or data surface with the GTM engine.
+  internalUser: process.env.internal_USER || "",
+  internalPass: process.env.internal_PASS || "",
   // Optional extra layer: comma-separated IP allowlist for the dashboard (empty = allow all).
   allowIps: (process.env.ALLOW_IPS || "").split(",").map((s) => s.trim()).filter(Boolean),
 

@@ -49,6 +49,11 @@ export async function connect() {
   await db.collection("leads").createIndex({ bb_verdict: 1 });          // BounceBan audit + scorecard
   await db.collection("bounceban_runs").createIndex({ finishedAt: -1 });
   await db.collection("scraped_posts").createIndex({ postUrl: 1 }, { unique: true });
+  // /internal internal-tool tool — one doc per job/hiring-post, deduped by a stable key.
+  await db.collection("internal_jobs").createIndex({ dedup_key: 1 }, { unique: true });
+  await db.collection("internal_jobs").createIndex({ created_at: -1 });
+  await db.collection("internal_jobs").createIndex({ status: 1 });
+  await db.collection("internal_searches").createIndex({ query: 1 }, { unique: true });
   // Durable engager queue for the resumable "Scrape via post" job — scraped engagers are parked
   // here, then drained by the enrichment phase, so a restart/pause resumes instead of losing work.
   await db.collection("scrape_engagers").createIndex({ postUrl: 1, ekey: 1 }, { unique: true });
@@ -119,6 +124,8 @@ export const reprocessRuns = () => db.collection("reprocess_runs");
 // computed live from leads.posts_seen, so they stay current as retries recover emails.
 export const scrapedPosts = () => db.collection("scraped_posts");
 export const scrapeEngagers = () => db.collection("scrape_engagers");
+export const internalJobs = () => db.collection("internal_jobs");
+export const internalSearches = () => db.collection("internal_searches");
 // ── PND credit savers (permanent caches). A company's domain is looked up ONCE and then every
 // future lead at that company is free, forever, across every post. Likewise a profile lookup is
 // never paid for twice — retries reuse it.

@@ -117,6 +117,78 @@ export async function pndReactionPage(postUrl, page, reactionType) {
   return { engagers, count: items.length, total: typeof d?.data?.total === "number" ? d.data.total : null };
 }
 
+// ── internal-tool (the /internal tool) ───────────────────────────────────────────────
+// Same professional-network-data plan as everything above — verified the engine's key can hit
+// these. These search LinkedIn's structured job board and post feed; nothing here scrapes engagers,
+// so it's cheap (one search = one credit for ~25 results).
+
+// Structured job listings. salary/datePosted/onsiteRemote are LinkedIn's own server-side filters,
+// so "100k+, pastWeek, remote" is enforced before results ever reach us.
+// Returns { jobs:[{id,title,url,company,location,postAt,postedTimestamp}], total }.
+export async function pndSearchJobs({ keywords, datePosted = "pastWeek", salary = "", onsiteRemote = "", sort = "mostRecent", locationId = "", start = "" } = {}) {
+  const params = { keywords, datePosted, sort };
+  if (salary) params.salary = salary;
+  if (onsiteRemote) params.onsiteRemote = onsiteRemote;
+  if (locationId) params.locationId = locationId;
+  if (start) params.start = String(start);
+  const d = await call("search-jobs", { params });
+  if (!d) return null;
+  meter.inc("pnd_profile_calls");
+  const items = Array.isArray(d.data?.items) ? d.data.items : Array.isArray(d.data) ? d.data : [];
+  const jobs = items.map((j) => ({
+    id: String(j.id || j.jobId || ""),
+    title: j.title || "",
+    url: j.url || j.jobUrl || (j.id ? `https://www.linkedin.com/jobs/view/${j.id}/` : ""),
+    company: j.company?.name || j.companyName || "",
+    companyLogo: j.company?.logo || null,
+    location: j.location || "",
+    postAt: j.postAt || j.postedAt || null,
+    postedTimestamp: j.postedTimestamp || j.postedDateTimestamp || null,
+  })).filter((j) => j.id || j.url);
+  return { jobs, total: d.data?.total ?? jobs.length };
+}
+
+// The recruiter(s)/hiring manager attached to a job — the actual person to reach.
+// Returns [{name, linkedin, title, headline}].
+export async function pndHiringTeam(jobId) {
+  if (!jobId) return [];
+  const d = await call("get-hiring-team", { params: { id: String(jobId) } });
+  if (!d) return [];
+  meter.inc("pnd_profile_calls");
+  const members = Array.isArray(d.data?.items) ? d.data.items : Array.isArray(d.data) ? d.data : (d.data ? [d.data] : []);
+  return members.map((m) => ({
+    name: m.fullName || m.name || [m.firstName, m.lastName].filter(Boolean).join(" "),
+    linkedin: m.profileUrl || m.url || m.linkedinUrl || (m.username ? `https://www.linkedin.com/in/${m.username}` : ""),
+    title: m.title || "",
+    headline: m.headline || m.title || "",
+  })).filter((m) => m.name || m.linkedin);
+}
+
+// Keyword post search — surfaces "we're hiring" posts whose author is a REAL person (founder / HM),
+// often with an email right in the text. Returns [{postUrl, urn, text, author:{name,linkedin,headline}, postedAt}].
+export async function pndSearchPosts({ keyword, datePosted = "past-week", sortBy = "date_posted", page = 1 } = {}) {
+  const d = await call("search-posts", { method: "POST", body: { keyword, datePosted, sortBy, page } });
+  if (!d) return null;
+  meter.inc("pnd_scrape_pages");
+  const items = Array.isArray(d.data?.items) ? d.data.items : Array.isArray(d.data) ? d.data : [];
+  const posts = items.map((p) => {
+    const a = p.author || p.poster || {};
+    return {
+      postUrl: p.url || p.postUrl || "",
+      urn: String(p.urn || p.activityUrn || "").match(/(\d{15,25})/)?.[1] || null,
+      text: String(p.text || p.commentary || "").replace(/\s+/g, " ").trim(),
+      author: {
+        name: a.fullName || a.name || [a.firstName, a.lastName].filter(Boolean).join(" "),
+        linkedin: a.profileUrl || a.url || a.linkedinUrl || (a.username ? `https://www.linkedin.com/in/${a.username}` : ""),
+        headline: a.headline || a.title || "",
+      },
+      postedAt: p.postedAt || p.postedDate || null,
+      postedTimestamp: p.postedDateTimestamp || p.postedTimestamp || null,
+    };
+  }).filter((p) => p.postUrl || p.text);
+  return { posts, total: d.data?.total ?? posts.length };
+}
+
 // Commenters, with their REAL vanity URL (no resolve needed).
 //
 // This parser was three guesses deep and every one was wrong, which is why not a single commenter

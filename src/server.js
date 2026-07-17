@@ -8,7 +8,8 @@ import { config } from "./config.js";
 import { connect } from "./db/mongo.js";
 import { enrichRouter } from "./routes/enrich.js";
 import { apiRouter } from "./routes/api.js";
-import { basicAuth } from "./lib/auth.js";
+import { internalRouter } from "./routes/internal.js";
+import { basicAuth, internalAuth } from "./lib/auth.js";
 import { poolSize } from "./lib/proxies.js";
 import { runSources } from "./pipeline/sources.js";
 import { meterFlush } from "./services/apiMeter.js";
@@ -72,6 +73,13 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 
 // Trigify ingest — token-guarded (inside the router) + rate-limited.
 app.use("/", enrichLimiter, enrichRouter);
+
+// /internal — the personal internal-tool tool. Its OWN login (internalAuth), mounted BEFORE the main /api and
+// the catch-all so the dashboard's basic-auth never applies to it and vice-versa.
+app.use("/api/internal", ipAllow, authLimiter, apiLimiter, internalAuth, internalRouter);
+app.use("/internal", ipAllow, authLimiter, internalAuth, express.static(path.join(publicDir, "internal"), {
+  setHeaders: (res) => res.setHeader("Cache-Control", "no-store"),
+}));
 
 // Dashboard API — IP allowlist + brute-force guard + basic-auth + rate-limit.
 app.use("/api", ipAllow, authLimiter, apiLimiter, basicAuth, apiRouter);
