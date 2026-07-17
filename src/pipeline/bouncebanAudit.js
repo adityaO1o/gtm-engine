@@ -13,7 +13,7 @@
 
 import { leads, bouncebanRuns } from "../db/mongo.js";
 import { bouncebanVerify } from "../services/bounceban.js";
-import { upsertLead, addToCampaign, addToDnc, fetchDncEmails } from "../services/sendkit.js";
+import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails } from "../services/sendkit.js";
 import { reconcileDnc } from "./dncSync.js";
 import { sendkitIdsFor } from "../services/campaigns.js";
 import { log } from "../lib/logger.js";
@@ -138,6 +138,80 @@ export async function runBouncebanAudit({ concurrency = 8, campaigns = [], limit
   } catch (e) { log.warn("bb audit run log failed", { err: e.message }); }
   log.info("bounceban audit done", { processed: status.processed, confirmed: status.confirmed, rejected: status.rejected, dnc: status.dnc, pushed: status.pushed, pushFailed: status.pushFailed, skippedDnc: status.skippedDnc });
   return { processed: status.processed, confirmed: status.confirmed, rejected: status.rejected, dnc: status.dnc, pushed: status.pushed, pushFailed: status.pushFailed };
+}
+
+// REPAIR: re-push every lead BounceBan confirmed, over the BULK path.
+//
+// The first audit pushed one HTTP call per lead at 8x concurrency, hit the rate limit, and (because
+// upsertLead had no retry and its result was ignored) reported ~2.7k leads as pushed that SendKit
+// never received. upsertLead is fixed now, but the leads it lost are still missing — this is the
+// clean-up. Costs no BounceBan credits: every lead here was already verified.
+//
+// Idempotent by construction: SendKit upserts by email, and a lead already in a campaign comes back
+// as "skipped", not an error. Safe to run twice.
+let repairRunning = false;
+let repairStatus = { running: false, phase: "idle", total: 0, uniqueEmails: 0, upserted: 0, added: 0, alreadyIn: 0, failed: 0, skippedDnc: 0, startedAt: null, finishedAt: null };
+export function bouncebanRepairStatus() { return repairStatus; }
+
+export async function runBouncebanRepair() {
+  if (repairRunning) return { alreadyRunning: true, ...repairStatus };
+  repairRunning = true;
+  repairStatus = { running: true, phase: "reconciling dnc", total: 0, uniqueEmails: 0, upserted: 0, added: 0, alreadyIn: 0, failed: 0, skippedDnc: 0, startedAt: new Date(), finishedAt: null };
+
+  try {
+    // Pull SendKit's block list first — a repair must not quietly re-contact someone SendKit blocks.
+    let blocked = new Set();
+    try { blocked = (await reconcileDnc()).emails; } catch (e) { log.warn("repair dnc preload failed", { err: e.message }); }
+    const isBlocked = (e) => blocked.has(String(e || "").trim().toLowerCase());
+
+    const docs = await leads().find({ bb_verdict: "confirmed", email: { $nin: [null, ""] } }).toArray();
+    repairStatus.total = docs.length;
+
+    // Dedupe by email: two LinkedIn profiles can resolve to the same address, and SendKit stores
+    // ONE lead per email — pushing both is just an overwrite race.
+    repairStatus.phase = "upserting";
+    const byEmail = new Map();
+    for (const d of docs) {
+      const e = String(d.email).trim().toLowerCase();
+      if (isBlocked(e)) { repairStatus.skippedDnc++; continue; }
+      if (byEmail.has(e)) continue;
+      const [first, ...rest] = (d.name || "").split(" ");
+      byEmail.set(e, { email: e, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags: tagsFor(d) });
+    }
+    repairStatus.uniqueEmails = byEmail.size;
+
+    const up = await upsertLeads([...byEmail.values()]);
+    repairStatus.upserted = up.ok || 0;
+    repairStatus.failed += up.failed || 0;
+
+    // Then put each campaign's addresses in, 100 at a time.
+    repairStatus.phase = "adding to campaigns";
+    const perCampaign = new Map();
+    for (const d of docs) {
+      const e = String(d.email).trim().toLowerCase();
+      if (isBlocked(e)) continue;
+      for (const cid of sendkitIdsFor(d.campaigns)) {
+        if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
+        perCampaign.get(cid).add(e);
+      }
+    }
+    for (const [cid, set] of perCampaign) {
+      const r = await addLeadsToCampaign(cid, [...set]);
+      repairStatus.added += r.added || 0;
+      repairStatus.alreadyIn += r.skipped || 0;
+      repairStatus.failed += r.failed || 0;
+    }
+
+    // Only clear the failure flag if the bulk push actually went through.
+    if (!repairStatus.failed) await leads().updateMany({ bb_verdict: "confirmed" }, { $unset: { bb_push_failed: "" } });
+
+    repairStatus = { ...repairStatus, running: false, phase: "done", finishedAt: new Date() };
+    log.info("bounceban repair done", { total: repairStatus.total, uniqueEmails: repairStatus.uniqueEmails, upserted: repairStatus.upserted, added: repairStatus.added, alreadyIn: repairStatus.alreadyIn, failed: repairStatus.failed, skippedDnc: repairStatus.skippedDnc });
+  } catch (e) {
+    repairStatus = { ...repairStatus, running: false, phase: "failed", error: e.message, finishedAt: new Date() };
+    log.warn("bounceban repair failed", { err: e.message });
+  } finally { repairRunning = false; }
+  return repairStatus;
 }
 
 // PROOF: don't take this pipeline's word for anything. Ask SendKit for its own block list and

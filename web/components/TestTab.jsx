@@ -127,7 +127,25 @@ export default function TestTab() {
   const [count, setCount] = useState(null);
   const [proof, setProof] = useState(null);
   const [proofBusy, setProofBusy] = useState(false);
+  const [repair, setRepair] = useState({});
   const timer = useRef(null);
+  const rtimer = useRef(null);
+
+  const pollRepair = useCallback(async function p() {
+    clearTimeout(rtimer.current);
+    const s = await j("/api/bounceban/repair/status").catch(() => ({}));
+    setRepair(s);
+    if (s.running) rtimer.current = setTimeout(p, 2000);
+    else if (s.finishedAt) refreshData();
+  }, [refreshData]);
+  useEffect(() => { pollRepair(); return () => clearTimeout(rtimer.current); }, [pollRepair]);
+
+  async function runRepair() {
+    if (!window.confirm("Re-push every BounceBan-confirmed lead to SendKit?\n\nThe first audit lost ~2,700 of them to SendKit's rate limit and wrongly reported them as pushed. This re-sends them over the bulk path.\n\nThis puts real people into live email campaigns. Costs no BounceBan credits. Leads SendKit blocks are skipped.")) return;
+    await post("/api/bounceban/repair", {});
+    toast("Repair started — re-pushing confirmed leads", "info");
+    pollRepair();
+  }
 
   async function runProof() {
     setProofBusy(true);
@@ -177,10 +195,26 @@ export default function TestTab() {
       <div className="toolbar">
         <span className="resn"><b>{num(count ?? L.data.count)}</b> leads with an email · <b>{num(L.data.count)}</b> in view</span>
         <div className="grow" />
-        <button className="btn" disabled={job.running} onClick={runAudit}>
+        <button className="btn btn-ghost" disabled={repair.running || job.running} onClick={runRepair} title="Re-push confirmed leads the first audit lost to SendKit's rate limit">
+          <Icon name={repair.running ? "refresh" : "sync"} />{repair.running ? "Repairing…" : "Repair pushes"}
+        </button>
+        <button className="btn" disabled={job.running || repair.running} onClick={runAudit}>
           <Icon name={job.running ? "refresh" : "check"} />{job.running ? "Verifying…" : "Verify with BounceBan"}
         </button>
       </div>
+
+      {(repair.running || repair.finishedAt) && (
+        <div className={`jobbox${repair.running ? " on" : ""}`}>
+          <div className="jobh"><Icon name={repair.running ? "refresh" : repair.failed ? "warn" : "check"} />
+            <span>{repair.running ? <>Repairing · <b>{repair.phase}</b></> : <>Repair {repair.phase === "failed" ? "failed" : "done"}</>}
+              {" · "}<b>{num(repair.uniqueEmails || 0)}</b> unique emails from {num(repair.total || 0)} leads
+              {" · "}<b className="ok">{num(repair.added || 0)}</b> newly added · {num(repair.alreadyIn || 0)} already in
+              {repair.skippedDnc ? <> · {num(repair.skippedDnc)} skipped (blocked)</> : null}
+              {repair.failed ? <> · <b style={{ color: "var(--hot)" }}>{num(repair.failed)}</b> failed</> : null}</span>
+          </div>
+          {repair.running && <div className="prog on"><i style={{ width: "100%" }} /></div>}
+        </div>
+      )}
 
       {(job.running || job.finishedAt) && (
         <div className={`jobbox${job.running ? " on" : ""}`}>
