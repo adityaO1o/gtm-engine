@@ -115,6 +115,20 @@ export async function fetchDncEmails() {
   return { emails, domains, truncated };
 }
 
+// How many leads SendKit itself says are in a campaign. NOTE this number does not fall when we
+// DNC someone: SendKit has no remove-from-campaign endpoint, so a blocked lead stays a member and
+// is skipped at send time. Membership and deliverability are different questions.
+export async function campaignLeadCount(campaignId) {
+  if (!campaignId) return null;
+  try {
+    const r = await withRetry(() => axios.get(`${base}/v1/campaigns/${campaignId}/leads`, {
+      headers: h(), params: { limit: 1 }, timeout: 20000, validateStatus: () => true,
+    }));
+    if (r.status >= 300) { log.warn("sendkit campaign count failed", { campaignId, status: r.status }); return null; }
+    return r.data?.pagination?.total ?? null;
+  } catch (e) { log.warn("sendkit campaign count threw", { campaignId, err: e.message }); return null; }
+}
+
 // Is this address blocked — either directly, or because its whole domain is?
 export function isBlockedBy(dnc, email) {
   const e = String(email || "").trim().toLowerCase();

@@ -118,6 +118,85 @@ function ProofPanel({ proof, busy, onRun }) {
   );
 }
 
+// Per-campaign before/after. The column that trips people up is "In SendKit": it does not fall when
+// leads are removed, because SendKit keeps blocked leads as campaign members and skips them at send
+// time. "Emailable now" is the number that decides who actually gets contacted.
+function CampaignReport({ rep, busy, onRun }) {
+  const t = rep?.totals;
+  return (
+    <>
+      <div className="section-t">
+        <Icon name="mega" />Per-campaign · before vs now
+        <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto" }} disabled={busy} onClick={onRun}>
+          <Icon name={busy ? "refresh" : "trend"} />{busy ? "Building…" : rep ? "Refresh" : "Build report"}
+        </button>
+      </div>
+
+      {!rep ? (
+        <div className="note"><Icon name="mega" /><div>
+          What each campaign looked like before the BounceBan audit vs now — kept, removed, and rescued —
+          with SendKit’s own membership count next to ours as the check.
+        </div></div>
+      ) : (
+        <>
+          <div className="tablewrap">
+            <table>
+              <thead><tr>
+                <th>Campaign</th>
+                <th title="Verified and being emailed before the audit">Before</th>
+                <th title="BounceBan-confirmed and not blocked — who actually gets emailed now">Emailable now</th>
+                <th>Change</th>
+                <th title="Rejected by BounceBan — DNC'd, will never be emailed again">Removed</th>
+                <th title="Written off as unverified before; BounceBan says they're fine">Rescued</th>
+                <th title="Deliverable, but SendKit blocks them (competitor / blocked domain)">Blocked</th>
+                <th title="SendKit's own count. Does NOT drop on removal — blocked leads stay members and are skipped at send time">In SendKit</th>
+              </tr></thead>
+              <tbody>
+                {rep.campaigns.map((c) => {
+                  const delta = c.now - c.before;
+                  return (
+                    <tr key={c.key}>
+                      <td><span className="nm trunc" title={c.key}>{c.label}</span></td>
+                      <td className="num-c muted">{num(c.before)}</td>
+                      <td className="num-c"><b>{num(c.now)}</b></td>
+                      <td className="num-c" style={{ color: delta > 0 ? "var(--good)" : delta < 0 ? "var(--hot)" : "var(--dim)", fontWeight: 600 }}>
+                        {delta > 0 ? "+" : ""}{num(delta)}
+                      </td>
+                      <td className="num-c" style={{ color: c.removed ? "var(--hot)" : "var(--dim)" }}>{num(c.removed)}</td>
+                      <td className="num-c" style={{ color: c.added ? "var(--good)" : "var(--dim)" }}>{num(c.added)}</td>
+                      <td className="num-c muted">{num(c.blocked)}</td>
+                      <td className="num-c muted">{c.sendkitTotal == null ? "—" : num(c.sendkitTotal)}</td>
+                    </tr>
+                  );
+                })}
+                {t && (
+                  <tr style={{ fontWeight: 700, borderTop: "2px solid var(--line)" }}>
+                    <td>Total</td>
+                    <td className="num-c">{num(t.before)}</td>
+                    <td className="num-c">{num(t.now)}</td>
+                    <td className="num-c" style={{ color: t.now - t.before > 0 ? "var(--good)" : "var(--hot)" }}>
+                      {t.now - t.before > 0 ? "+" : ""}{num(t.now - t.before)}
+                    </td>
+                    <td className="num-c" style={{ color: "var(--hot)" }}>{num(t.removed)}</td>
+                    <td className="num-c" style={{ color: "var(--good)" }}>{num(t.added)}</td>
+                    <td className="num-c">{num(t.blocked)}</td>
+                    <td className="num-c">—</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
+            <b>In SendKit</b> counts <i>membership</i>, not who gets emailed — SendKit has no remove-from-campaign endpoint, so the {num(t?.removed || 0)} removed
+            leads are still members and are skipped at send time by DNC. <b>Emailable now</b> is the real number. “Before” is reconstructed from each lead’s
+            frozen pre-audit verdict · built {ts(rep.checkedAt)}.
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 export default function TestTab() {
   const { openLead, openReverify, refreshTop, refreshData } = useDash();
   const toast = useToast();
@@ -128,8 +207,17 @@ export default function TestTab() {
   const [proof, setProof] = useState(null);
   const [proofBusy, setProofBusy] = useState(false);
   const [repair, setRepair] = useState({});
+  const [rep, setRep] = useState(null);
+  const [repBusy, setRepBusy] = useState(false);
   const timer = useRef(null);
   const rtimer = useRef(null);
+
+  async function runReport() {
+    setRepBusy(true);
+    try { setRep(await j("/api/bounceban/campaign-report")); }
+    catch { toast("Campaign report failed", "bad"); }
+    setRepBusy(false);
+  }
 
   const pollRepair = useCallback(async function p() {
     clearTimeout(rtimer.current);
@@ -231,6 +319,7 @@ export default function TestTab() {
 
       <ResultCards job={job} card={card} />
       <ProviderCards card={card} />
+      <CampaignReport rep={rep} busy={repBusy} onRun={runReport} />
       <ProofPanel proof={proof} busy={proofBusy} onRun={runProof} />
 
       <div className="section-t"><Icon name="mail" />Every lead with an email</div>

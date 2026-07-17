@@ -13,9 +13,9 @@
 
 import { leads, bouncebanRuns } from "../db/mongo.js";
 import { bouncebanVerify } from "../services/bounceban.js";
-import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails, isBlockedBy } from "../services/sendkit.js";
+import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails, isBlockedBy, campaignLeadCount } from "../services/sendkit.js";
 import { reconcileDnc } from "./dncSync.js";
-import { sendkitIdsFor } from "../services/campaigns.js";
+import { sendkitIdsFor, CAMPAIGNS } from "../services/campaigns.js";
 import { log } from "../lib/logger.js";
 
 let running = false;
@@ -266,6 +266,54 @@ export async function bouncebanProof() {
     confirmedOnDncSample: confirmedOnDnc.slice(0, 10).map((d) => ({ email: d.email, status: d.status })),
     pushFailed: pushFailed.length,
     clean: !truncated && leaked.length === 0,
+  };
+}
+
+// Per-campaign before/after, with SendKit's own membership count alongside ours as the check.
+//
+// "before" is reconstructed from bb_prev_status, which the audit froze on each lead the first time
+// it saw it — that is the only record of the pre-audit world, so this report is only as honest as
+// that field.
+//
+// The one number people misread: sendkitTotal does NOT drop when leads are removed. SendKit has no
+// remove-from-campaign endpoint, so a rejected lead stays a MEMBER of the campaign and is skipped
+// at send time by DNC. Membership ≠ who gets emailed. `now` is who actually gets emailed.
+export async function bouncebanCampaignReport() {
+  const dnc = await fetchDncEmails();
+  const docs = await leads().find(
+    { email: { $nin: [null, ""] }, bb_verdict: { $in: ["confirmed", "rejected"] } },
+    { projection: { email: 1, campaigns: 1, bb_verdict: 1, bb_prev_status: 1 } }
+  ).toArray();
+
+  const map = new Map();
+  for (const c of CAMPAIGNS) map.set(c.key, { key: c.key, label: c.label, sendkitId: c.sendkitId, before: 0, kept: 0, removed: 0, added: 0, blocked: 0, now: 0 });
+
+  for (const d of docs) {
+    for (const key of d.campaigns || []) {
+      const m = map.get(key);
+      if (!m) continue;
+      const wasIn = d.bb_prev_status === "verified"; // verified pre-audit => it had been pushed
+      if (wasIn) m.before++;
+      if (d.bb_verdict === "rejected") {
+        if (wasIn) m.removed++; // was being emailed, now DNC'd
+      } else if (isBlockedBy(dnc, d.email)) {
+        m.blocked++; // deliverable, but SendKit blocks it (competitor / blocked domain)
+      } else {
+        m.now++;
+        if (wasIn) m.kept++; else m.added++; // added = rescued: written off before, emailable now
+      }
+    }
+  }
+
+  const rows = [...map.values()];
+  await Promise.all(rows.map(async (m) => { m.sendkitTotal = await campaignLeadCount(m.sendkitId); }));
+
+  const sum = (f) => rows.reduce((a, r) => a + r[f], 0);
+  return {
+    checkedAt: new Date(),
+    truncated: dnc.truncated,
+    campaigns: rows.filter((r) => r.before || r.now || r.removed || r.sendkitTotal).sort((a, b) => b.now - a.now),
+    totals: { before: sum("before"), now: sum("now"), removed: sum("removed"), added: sum("added"), kept: sum("kept"), blocked: sum("blocked") },
   };
 }
 
