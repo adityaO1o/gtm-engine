@@ -559,15 +559,21 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
   const posts = await scrapedPosts().find({}).sort({ startedAt: -1 }).limit(50).toArray();
   // Lazily fetch a human title (poster + post text) for any post missing one — once, then cached
   // on the doc. Skipped when out of credits so we don't set titleTried prematurely.
+  // titleTried used to be a permanent tombstone: one failed lookup and the post could never get a
+  // title again, so every fix to the resolver needed a migration to undo it. Store WHEN we tried
+  // instead and retry after a day — a post fixed by new code heals itself, and one that genuinely
+  // has no title costs at most a credit a day. (Legacy `true` values aren't dates, so they retry.)
+  const DAY = 24 * 60 * 60 * 1000;
   for (const p of posts) {
-    if (p.title || p.titleTried) continue;
+    const triedAt = p.titleTried instanceof Date ? p.titleTried.getTime() : null;
+    if (p.title || (triedAt && Date.now() - triedAt < DAY)) continue;
     const det = await pndPostInfo(p.postUrl).catch(() => null);
     if (det) {
-      const set = { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: det.text, expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted, titleTried: true };
+      const set = { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: det.text, expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted, titleTried: new Date(), activity_urn: det.urn || p.activity_urn || null };
       await scrapedPosts().updateOne({ postUrl: p.postUrl }, { $set: set }).catch(() => {});
       Object.assign(p, set);
     } else if (!pndOutOfCredits()) {
-      await scrapedPosts().updateOne({ postUrl: p.postUrl }, { $set: { titleTried: true } }).catch(() => {});
+      await scrapedPosts().updateOne({ postUrl: p.postUrl }, { $set: { titleTried: new Date() } }).catch(() => {});
     }
   }
   const out = await Promise.all(posts.map(async (p) => {
