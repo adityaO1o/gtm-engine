@@ -76,8 +76,15 @@ app.use("/", enrichLimiter, enrichRouter);
 
 // /internal — the personal internal-tool tool. Its OWN login (internalAuth), mounted BEFORE the main /api and
 // the catch-all so the dashboard's basic-auth never applies to it and vice-versa.
-app.use("/api/internal", ipAllow, authLimiter, apiLimiter, internalAuth, internalRouter);
-app.use("/internal", ipAllow, authLimiter, internalAuth, express.static(path.join(publicDir, "internal"), {
+//
+// The API lives UNDER the page's own prefix (/internal/api, not /api/internal) on purpose: browsers only
+// send cached basic-auth credentials proactively to paths at or below where auth succeeded. With
+// the API on a different prefix, every poll fired a credential-less request first (401, then a
+// 200 retry) — and the 401s tripped the 25-per-15-min auth limiter within a minute, which is the
+// "too many requests" you saw. Same prefix = creds sent up front = no 401 storm. And this surface
+// is gated by internalAuth + the 150/min apiLimiter, so the strict auth limiter isn't needed here.
+app.use("/internal/api", ipAllow, apiLimiter, internalAuth, internalRouter);
+app.use("/internal", ipAllow, internalAuth, express.static(path.join(publicDir, "internal"), {
   setHeaders: (res) => res.setHeader("Cache-Control", "no-store"),
 }));
 
