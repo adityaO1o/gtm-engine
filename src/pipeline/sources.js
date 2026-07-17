@@ -7,7 +7,8 @@ import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
 import { routeSourceEngager } from "../services/campaigns.js";
 import { activityUrn } from "../services/rapidScrape.js";
-import { pndReactionPage, pndCommentPage, pndPostInfo, pndActivityUrn, pndOutOfCredits } from "../services/pnd.js";
+import { pndReactionPage, pndCommentPage, pndPostInfo, pndOutOfCredits } from "../services/pnd.js";
+import { resolveActivityUrn } from "../services/postUrn.js";
 import { enrichLead } from "./enrichLead.js";
 import { meterFlush } from "../services/apiMeter.js";
 import { log } from "../lib/logger.js";
@@ -224,7 +225,7 @@ async function scrapeAndEnrich(postUrl, camp, category) {
   // share-linked post silently lost its commenters. Resolve it properly, and if we can't, record
   // that on the post instead of pretending the comments phase ran.
   if (!cp.commentsDone) {
-    const urn = await pndActivityUrn(postUrl);
+    const urn = await resolveActivityUrn(postUrl);
     if (!urn) {
       log.warn("no activity urn for post — commenters NOT scraped", { postUrl });
       await scrapedPosts().updateOne({ postUrl }, { $set: { comments_skipped: true, comments_skip_reason: "could not resolve the post URL to an activity urn" } });

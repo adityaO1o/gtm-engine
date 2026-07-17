@@ -16,7 +16,7 @@ import axios from "axios";
 import { config } from "../config.js";
 import { companyDomains, profileCache } from "../db/mongo.js";
 import { meter, recordBalance } from "./apiMeter.js";
-import { activityUrn } from "./rapidScrape.js";
+import { resolveActivityUrn } from "./postUrn.js";
 import { log } from "../lib/logger.js";
 
 const stats = { scrapePages: 0, engagers: 0, profileCalls: 0, companyCalls: 0, cacheHits: 0, throttled: 0 };
@@ -101,23 +101,6 @@ export async function pndReactionPage(postUrl, page) {
   return { engagers, count: items.length, total: typeof d?.data?.total === "number" ? d.data.total : null };
 }
 
-// Resolve ANY post URL to its activity urn — the only id the comment/post endpoints accept.
-//
-// Reactions take the raw URL, so PND resolves share-links internally; comments do not, and every
-// post copied from LinkedIn's modern share button carries urn:li:share (a different id) instead of
-// urn:li:activity. That mismatch silently cost us the whole comments phase on those posts.
-//
-// A share id must never be passed off as an activity id — same numeric space, so it can land on an
-// unrelated post. When we can't resolve one, we return null and the caller skips comments loudly.
-// Costs 1 credit only for URLs we can't read the activity id straight out of, and only once.
-export async function pndActivityUrn(postUrl) {
-  const direct = activityUrn(postUrl);
-  if (direct) return direct; // already an activity URL — free and certain
-  const info = await pndPostInfo(postUrl); // asks PND to resolve the link itself
-  if (!info?.urn) log.warn("could not resolve post URL to an activity urn — comments will be skipped", { postUrl });
-  return info?.urn || null;
-}
-
 // Comments are token-paginated and hand back the commenter's REAL vanity URL (no resolve needed).
 export async function pndCommentPage(urn, { page = 1, token = "" } = {}) {
   const params = { urn, sort: "mostRecent", page: String(page) };
@@ -134,20 +117,20 @@ export async function pndCommentPage(urn, { page = 1, token = "" } = {}) {
   return { engagers, count: items.length, token: d?.data?.paginationToken || d?.paginationToken || "" };
 }
 
-// Takes a post URL or a bare activity urn. A share-link carries no activity id, so rather than
-// passing off its share id as one, hand PND the URL and let it resolve the link — the same trick
-// get-post-reactions already relies on. Returns the resolved activity `urn` alongside the details.
+// Takes a post URL or a bare activity urn. get-post only accepts an activity urn — it rejects both
+// a share id and a raw share URL — so a share-link is resolved (free, via proxy) before we ask.
 export async function pndPostInfo(urlOrUrn) {
   const s = String(urlOrUrn || "");
   if (!s) return null;
-  const known = /^\d{15,25}$/.test(s) ? s : activityUrn(s);
-  const d = await call("get-post", { params: known ? { urn: known } : { url: s } });
+  const known = /^\d{15,25}$/.test(s) ? s : await resolveActivityUrn(s);
+  if (!known) return null; // unresolvable — say nothing rather than guess an id
+  const d = await call("get-post", { params: { urn: known } });
   const p = d?.data;
   if (!p) return null;
   const poster = p.poster || {};
   const text = String(p.text || "").replace(/\s+/g, " ").trim();
   return {
-    urn: known || String(p.urn || p.activityUrn || "").match(/(\d{15,25})/)?.[1] || null,
+    urn: known,
     title: [[poster.first, poster.last].filter(Boolean).join(" "), text].filter(Boolean).join(" — ").slice(0, 120) || null,
     posterName: [poster.first, poster.last].filter(Boolean).join(" ") || null, posterUrl: poster.linkedin_url || null,
     text: text.slice(0, 300) || null, numReactions: p.num_reactions ?? null, numComments: p.num_comments ?? null, posted: p.posted || null,

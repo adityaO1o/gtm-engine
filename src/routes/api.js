@@ -580,7 +580,7 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
     ]);
     return {
       postUrl: p.postUrl,
-      activityId: p.activityId || activityUrn(p.postUrl),
+      activityId: p.activity_urn || p.activityId || activityUrn(p.postUrl),
       title: p.title || null, posterName: p.poster_name || null,
       campaign: p.campaign || null, at: p.finishedAt || p.startedAt, running: !!p.running,
       engagers, verified, noEmail, unverified,
