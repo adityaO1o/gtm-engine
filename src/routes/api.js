@@ -563,10 +563,13 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
   // title again, so every fix to the resolver needed a migration to undo it. Store WHEN we tried
   // instead and retry after a day — a post fixed by new code heals itself, and one that genuinely
   // has no title costs at most a credit a day. (Legacy `true` values aren't dates, so they retry.)
+  // ?refreshTitles=1 ignores the retry gate — for when a fix has just landed and waiting a day to
+  // find out whether it worked is not an option.
   const DAY = 24 * 60 * 60 * 1000;
+  const force = S(_req.query.refreshTitles) === "1";
   for (const p of posts) {
     const triedAt = p.titleTried instanceof Date ? p.titleTried.getTime() : null;
-    if (p.title || (triedAt && Date.now() - triedAt < DAY)) continue;
+    if (!force && (p.title || (triedAt && Date.now() - triedAt < DAY))) continue;
     const det = await pndPostInfo(p.postUrl).catch(() => null);
     if (det) {
       const set = { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: det.text, expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted, titleTried: new Date(), activity_urn: det.urn || p.activity_urn || null };
