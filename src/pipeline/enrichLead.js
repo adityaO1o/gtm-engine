@@ -1,7 +1,7 @@
 // The orchestration. Trigify calls /enrich once per engager with the raw scrape data;
 // everything else happens here, and this NEVER throws a non-200 back to Trigify.
 //
-//   find email (Enrich-first waterfall) -> verify (Enrich, then Prospeo)
+//   find email (Enrich-first waterfall) -> verify (BounceBan, and only BounceBan)
 //   -> score (deterministic) -> Mongo + SendKit
 //
 // Nobody is dropped: no-email and unverified people are still written to Mongo so you
@@ -9,8 +9,8 @@
 
 import { leads, engagements } from "../db/mongo.js";
 import { resolveVanity, isUrn } from "../services/resolve.js";
-import { findEmail, verifyEmail } from "../services/prospeo.js";
-import { validateEmail, isRoleBased, findEmailByLinkedin, findEmailByNameDomain } from "../services/enrich.js";
+import { findEmail } from "../services/prospeo.js";  // finding only — BounceBan is the sole verifier
+import { isRoleBased, findEmailByLinkedin, findEmailByNameDomain } from "../services/enrich.js";
 import { companyDomainGuarded } from "../services/clearbit.js";
 import { profileCompany } from "../services/linkedinProfile.js";
 import { pndExactDomain } from "../services/pnd.js";
@@ -145,24 +145,28 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
   return { em, emailSource, emailMethod, preVerified, prospeoCalls, company, domain, domainSource, guardRejected, paidTried, vanity, key: vanity || linkedin_url };
 }
 
-// ── Email VERIFY waterfall — BounceBan FIRST, then Enrich, then Prospeo as a second opinion.
-// BounceBan leads because it has the deepest credit pool (~228k), runs at 100/s, and flags
-// catch-all/role/disposable. Its "undeliverable" is terminal, so we stop there instead of spending
-// Enrich + Prospeo credits to learn the same thing; only an ambiguous verdict falls through.
-export async function verifyEmailWaterfall(email, preVerified) {
+// ── Email VERIFY — BounceBan and nothing else.
+//
+// Enrich and Prospeo used to get a second vote on anything BounceBan called ambiguous. The audit
+// measured that vote against BounceBan across ~8.8k addresses they had called "verified": Enrich
+// held up 83% of the time, Prospeo 59% — i.e. 2 in 5 Prospeo "verified" addresses would bounce.
+// A second opinion that wrong isn't a second opinion, it's volume bought with deliverability.
+//
+// So the rule is now: BounceBan says deliverable, or the lead does not get emailed. Anything else —
+// undeliverable, risky, unknown, or BounceBan itself being unusable — is unverified.
+//
+// This fails CLOSED on purpose. If BounceBan is down or out of credits, leads come out unverified
+// rather than sent on a guess; the retry path picks them up once it's back.
+//
+// Note `preVerified` is now ignored (it was Enrich's finder saying "trust me"). Kept in the
+// signature because callers pass it, and to make it obvious it is deliberately not consulted.
+export async function verifyEmailWaterfall(email, _preVerified) {
   const b = await bouncebanVerify(email);
   if (b?.deliverable) {
     return { verified: true, verifiedBy: "bounceban", verifyLabel: `bounceban:${b.result}/${b.score}${b.acceptAll ? "/accept-all" : ""}`, acceptAll: b.acceptAll, prospeoCalls: 0 };
   }
-  if (b?.hardFail) {
-    return { verified: false, verifiedBy: null, verifyLabel: `bounceban:${b.result}`, prospeoCalls: 0 };
-  }
-  // ambiguous (risky/unknown) or BounceBan unavailable -> second opinions below
-  if (preVerified) return { verified: true, verifiedBy: "enrich", verifyLabel: "enrich:finder-verified", prospeoCalls: 0 };
-  const v1 = await validateEmail(email);
-  if (v1.good) return { verified: true, verifiedBy: "enrich", verifyLabel: `enrichso:${v1.result}/${v1.confidence}`, prospeoCalls: 0 };
-  const v2 = await verifyEmail(email);
-  return { verified: v2.ok, verifiedBy: v2.ok ? "prospeo" : null, verifyLabel: `enrichso:${v1.result}|prospeo:${v2.status}`, prospeoCalls: 1 };
+  if (!b) log.warn("bounceban unusable — lead left unverified rather than sent on a guess", { email });
+  return { verified: false, verifiedBy: null, verifyLabel: b ? `bounceban:${b.result}` : "bounceban:unusable", prospeoCalls: 0 };
 }
 
 export async function enrichLead(input) {

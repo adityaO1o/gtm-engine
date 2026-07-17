@@ -17,7 +17,7 @@ import { resolveStats } from "../services/resolve.js";
 import { validateEmail } from "../services/enrich.js";
 import { findEmailWaterfall } from "../pipeline/enrichLead.js";
 import { reprocessNoEmail, reprocessStatus, noEmailQuery, MISS_REASONS } from "../pipeline/reprocess.js";
-import { runBouncebanAudit, bouncebanAuditStatus, bouncebanScorecard, bouncebanProof, runBouncebanRepair, bouncebanRepairStatus, bouncebanCampaignReport, auditQuery } from "../pipeline/bouncebanAudit.js";
+import { runBouncebanAudit, bouncebanAuditStatus, bouncebanScorecard, bouncebanProof, runBouncebanRepair, bouncebanRepairStatus, bouncebanCampaignReport, dncUnvouched, auditQuery } from "../pipeline/bouncebanAudit.js";
 import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { campaignByKey, campaignLabel, sendkitIdsFor } from "../services/campaigns.js";
@@ -373,6 +373,12 @@ apiRouter.get("/bounceban/proof", async (_req, res) => {
 // Per-campaign before/after, checked against SendKit's own membership counts.
 apiRouter.get("/bounceban/campaign-report", async (_req, res) => {
   try { res.json(await bouncebanCampaignReport()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Block every emailable address BounceBan never approved (strays from outside our pipeline).
+apiRouter.post("/bounceban/dnc-unvouched", async (_req, res) => {
+  try { res.json(await dncUnvouched()); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 

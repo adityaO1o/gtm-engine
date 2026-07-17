@@ -72,7 +72,7 @@ function ProviderCards({ card }) {
 
 // Proof, checked against SendKit's own block list rather than our counters. The only question it
 // answers: can an address BounceBan rejected still be emailed?
-function ProofPanel({ proof, busy, onRun }) {
+function ProofPanel({ proof, busy, onRun, onDnc }) {
   return (
     <>
       <div className="section-t">
@@ -94,8 +94,11 @@ function ProofPanel({ proof, busy, onRun }) {
             <div>{proof.truncated ? (
               <><b>Inconclusive.</b> SendKit’s DNC list could not be read all the way to the end, so this is <b>not</b> a clean bill of health. Re-run it.</>
             ) : proof.clean ? (
-              <><b>Clean — {num(proof.rejected)} of {num(proof.rejected)} rejected addresses can never be emailed.</b> {num(proof.blocked)} are on SendKit’s DNC list;
-                the other {num(proof.neverSent)} never reached SendKit at all. Zero leaks.</>
+              <><b>Clean, both directions.</b> {num(proof.rejected)} rejected addresses can never be emailed ({num(proof.blocked)} blocked in SendKit,
+                {" "}{num(proof.neverSent)} never reached it) — and all {num(proof.emailable)} emailable addresses are BounceBan-verified.</>
+            ) : proof.unvouched && !proof.leaked ? (
+              <><b>{num(proof.unvouched)} emailable address{proof.unvouched === 1 ? "" : "es"} BounceBan never approved.</b> No rejected lead can be emailed
+                ({num(proof.blocked)} blocked, 0 leaks), but these got into a campaign from outside our pipeline.</>
             ) : (
               <><b>{num(proof.leaked)} LEAK{proof.leaked === 1 ? "" : "S"}.</b> These were rejected by BounceBan, reached SendKit, and are <b>not</b> blocked —
                 they can still be emailed: {proof.leakSample?.map((x) => x.email).join(", ")}</>
@@ -104,10 +107,23 @@ function ProofPanel({ proof, busy, onRun }) {
 
           <div className="grid g-hero">
             <Hero k="Rejected + blocked" v={proof.blocked} sub="on SendKit’s own DNC list" cls="good" />
-            <Hero k="Rejected, never sent" v={proof.neverSent} sub="never reached SendKit — nothing to block" />
             <Hero k="Leaks" v={proof.leaked} sub={proof.leaked ? "rejected but still emailable" : "none — the guarantee holds"} cls={proof.leaked ? "bad" : "good"} />
-            <Hero k="Push failures" v={proof.pushFailed} sub="confirmed but SendKit never took them" cls={proof.pushFailed ? "warn" : ""} />
+            <Hero k="Emailable" v={proof.emailable} sub="addresses SendKit can actually send to" />
+            <Hero k="Not BounceBan-approved" v={proof.unvouched}
+              sub={proof.unvouched ? "emailable without a BounceBan verdict" : "every emailable address is BounceBan-verified"}
+              cls={proof.unvouched ? "bad" : "good"} />
           </div>
+
+          {proof.unvouched ? (
+            <div className="toolbar" style={{ marginTop: "var(--s3)" }}>
+              <span className="resn">
+                <b>{num(proof.unvouched)}</b> emailable address{proof.unvouched === 1 ? "" : "es"} BounceBan never approved — strays from outside our pipeline
+                (old imports). {proof.unvouchedSample?.slice(0, 3).join(", ")}{proof.unvouched > 3 ? "…" : ""}
+              </span>
+              <div className="grow" />
+              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={onDnc}><Icon name="x" />Block all {num(proof.unvouched)}</button>
+            </div>
+          ) : null}
           <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
             SendKit’s DNC list: <b>{num(proof.dncListSize)}</b> addresses · <b>{num(proof.confirmedOnDnc)}</b> BounceBan-approved leads are blocked by SendKit for other reasons
             (competitors, complaints) and are deliberately not pushed · checked {ts(proof.checkedAt)}.
@@ -228,12 +244,27 @@ export default function TestTab() {
     pollRepair();
   }
 
+  async function dncUnvouched() {
+    if (!window.confirm(`Block ${num(proof?.unvouched ?? 0)} emailable addresses BounceBan never approved?
+
+They reached a campaign from outside our pipeline (old imports), so there is no lead of ours to fix — DNC is the only lever. They can never be emailed after this.`)) return;
+    setProofBusy(true);
+    try {
+      const r = await post("/api/bounceban/dnc-unvouched", {});
+      toast(r.skipped ? r.reason : `Blocked ${num(r.added || 0)} of ${num(r.unvouched || 0)}`, r.skipped || r.failed ? "bad" : "good");
+      await runProof();
+    } catch { toast("Blocking failed", "bad"); }
+    setProofBusy(false);
+  }
+
   async function runProof() {
     setProofBusy(true);
     try {
       const p = await j("/api/bounceban/proof");
       setProof(p);
-      toast(p.truncated ? "Proof inconclusive — could not read the whole DNC list" : p.clean ? `Clean · ${num(p.rejected)} rejected, 0 leaks` : `${num(p.leaked)} leaks found`,
+      toast(p.truncated ? "Proof inconclusive — could not read the whole DNC list"
+        : p.clean ? `Clean · 0 leaks · all ${num(p.emailable)} emailable are BounceBan-verified`
+        : p.leaked ? `${num(p.leaked)} leaks found` : `${num(p.unvouched)} emailable without a BounceBan verdict`,
         p.clean && !p.truncated ? "good" : "bad");
     } catch { toast("Proof check failed", "bad"); }
     setProofBusy(false);
@@ -313,7 +344,7 @@ export default function TestTab() {
       <ResultCards job={job} card={card} />
       <ProviderCards card={card} />
       <CampaignReport rep={rep} busy={repBusy} onRun={runReport} />
-      <ProofPanel proof={proof} busy={proofBusy} onRun={runProof} />
+      <ProofPanel proof={proof} busy={proofBusy} onRun={runProof} onDnc={dncUnvouched} />
 
       <div className="section-t"><Icon name="mail" />Every lead with an email</div>
       {L.loading && !rows.length ? (

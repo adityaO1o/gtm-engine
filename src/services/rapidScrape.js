@@ -40,8 +40,15 @@ export function resetRapidScrape() { outOfCredits = false; dynamicGap = config.s
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // activity id out of any post URL / urn
+// Pull the numeric post id out of any LinkedIn post URL.
+//
+// LinkedIn shifted the share-link slug from "...-activity-7430459358192369664-lwwr" to
+// "...-share-7430459358192369664-lwwr". Matching only "activity" meant every post copied from the
+// modern share button resolved to null — which silently cost us the ENTIRE comments phase
+// (pndCommentPage needs the urn; reactions take the raw URL, so scrapes looked like they worked)
+// and every post title. Both came back the moment this matched "share" too.
 export function activityUrn(postUrl = "") {
-  const m = String(postUrl).match(/activity[-:](\d{15,25})/);
+  const m = String(postUrl).match(/(?:activity|share|ugcPost)[-:](\d{15,25})/);
   return m ? m[1] : null;
 }
 

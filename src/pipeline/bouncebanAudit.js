@@ -251,6 +251,23 @@ export async function bouncebanProof() {
   const confirmedOnDnc = confirmed.filter((d) => has(d.email));
   const pushFailed = confirmed.filter((d) => d.bb_push_failed);
 
+  // The OTHER direction, and the one that actually gets asked: of everyone SendKit can email, who
+  // vouched for them? "No rejected lead can be emailed" does not imply "everyone emailable is
+  // BounceBan-verified" — the first run of this found 34 addresses that were emailable without a
+  // BounceBan verdict (32 from an old CSV import our pipeline never touched, 2 from the Enrich
+  // fallback that no longer exists). Strangers only get in from outside our pipeline, so this has
+  // to read SendKit's members rather than our leads.
+  const okEmails = new Set(confirmed.map((d) => String(d.email).trim().toLowerCase()));
+  const bbVerified = new Set(
+    (await leads().find({ verified_by: "bounceban", email: { $nin: [null, ""] } }, { projection: { email: 1 } }).toArray())
+      .map((d) => String(d.email).trim().toLowerCase())
+  );
+  const emailable = new Set();
+  for (const c of CAMPAIGNS) {
+    for (const m of await campaignMembers(c.sendkitId)) if (!has(m.email)) emailable.add(m.email);
+  }
+  const unvouched = [...emailable].filter((e) => !okEmails.has(e) && !bbVerified.has(e));
+
   return {
     checkedAt: new Date(),
     dncListSize: emails.size,
@@ -265,8 +282,31 @@ export async function bouncebanProof() {
     confirmedOnDnc: confirmedOnDnc.length,
     confirmedOnDncSample: confirmedOnDnc.slice(0, 10).map((d) => ({ email: d.email, status: d.status })),
     pushFailed: pushFailed.length,
-    clean: !truncated && leaked.length === 0,
+    emailable: emailable.size,
+    unvouched: unvouched.length,
+    unvouchedSample: unvouched.slice(0, 10),
+    clean: !truncated && leaked.length === 0 && unvouched.length === 0,
   };
+}
+
+// DNC every address SendKit can email that BounceBan never approved. These are strays from outside
+// our pipeline (old CSV imports), so there is no lead of ours to fix — the block is the only lever.
+export async function dncUnvouched() {
+  const p = await bouncebanProof();
+  if (p.truncated) return { skipped: true, reason: "DNC list read short — refusing to act on an incomplete picture" };
+  if (!p.unvouched) return { dnc: 0, unvouched: 0 };
+  const all = [];
+  const { emails, domains } = await fetchDncEmails();
+  const dnc = { emails, domains };
+  for (const c of CAMPAIGNS) {
+    for (const m of await campaignMembers(c.sendkitId)) if (!isBlockedBy(dnc, m.email)) all.push(m.email);
+  }
+  const okEmails = new Set((await leads().find({ $or: [{ bb_verdict: "confirmed" }, { verified_by: "bounceban" }] }, { projection: { email: 1 } }).toArray())
+    .map((d) => String(d.email).trim().toLowerCase()));
+  const targets = [...new Set(all.filter((e) => !okEmails.has(e)))];
+  const r = await addToDnc(targets);
+  log.info("dnc'd unvouched emailable addresses", { targeted: targets.length, added: r.added, failed: r.failed });
+  return { unvouched: targets.length, added: r.added, failed: r.failed, sample: targets.slice(0, 10) };
 }
 
 // Per-campaign before/after, built from SendKit's OWN member list rather than our belief about it.
