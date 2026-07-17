@@ -278,8 +278,22 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
   (async () => {
     try {
       const rec = (await scrapedPosts().findOne({ postUrl })) || {};
-      const rt = routeText("", postUrl);
+
+      // Read the post BEFORE deciding where its engagers go. This used to route on the URL SLUG —
+      // LinkedIn's first ~8 words — because the text was hardcoded empty here. Two consequences,
+      // both measured: any post whose keywords appear after the slug fell through to the default
+      // and landed in Cold Email (a post about 400 inboxes, Workspace/Azure tenants, warmup and
+      // SPF/DKIM — the core pitch — routed to Cold Email instead of Infrastructure); and the slug
+      // strips punctuation, so "Instantly.ai" became "instantlyai" and stopped matching
+      // /\binstantly\b/, sending an Instantly post to the Smartlead campaign.
+      //
+      // This is the same get-post call the title already made — it just ran fire-and-forget AFTER
+      // routing. Awaiting it here costs no extra credit and gives the router the real body.
+      const det = await pndPostInfo(postUrl).catch(() => null);
+      const rt = routeText(det?.text || rec.text || "", postUrl);
       const category = rec.category || classifyPost(rt);
+      // A post already under way keeps its campaign: re-routing a resume mid-way would split one
+      // post's engagers across two campaigns. Pass campaignKey to override deliberately.
       const forced = campaignKey ? campaignByKey(campaignKey) : (rec.campaign_key ? campaignByKey(rec.campaign_key) : null);
       const camp = forced || routeSourceEngager(rt, category);
 
@@ -294,12 +308,12 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
         running: true, paused: false, phase: "working", startedAt: rec.startedAt || new Date(),
       }, $unset: { backfilled: "", finishedAt: "" } }, { upsert: true });
 
-      // title/expected counts (once)
-      if (!rec.titleTried) pndPostInfo(postUrl).then((det) => {
-        const set = det
-          ? { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: det.text, expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted, titleTried: true }
-          : { titleTried: true };
-        scrapedPosts().updateOne({ postUrl }, { $set: set }).catch(() => {});
+      // Same fetch as above — store what it told us (title, poster, the real expected counts).
+      await scrapedPosts().updateOne({ postUrl }, { $set: det
+        ? { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: (det.text || "").slice(0, 300),
+            expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted,
+            activity_urn: det.urn || null, titleTried: new Date() }
+        : { titleTried: new Date() },
       }).catch(() => {});
 
       // INTERLEAVED: scrape a page -> enrich that page -> next page. Leads flow from the start.

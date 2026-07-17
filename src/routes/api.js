@@ -600,6 +600,11 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
       campaign: p.campaign || null, at: p.finishedAt || p.startedAt, running: !!p.running,
       engagers, verified, noEmail, unverified,
       scraped, skippedCompany,
+      // Resume state, so the dashboard can offer Resume and say honestly what it will re-read.
+      // An old fresh-era checkpoint has no reactionsDone and gets its paging restarted (the queue
+      // dedups, so no lead is re-enriched — but the scrape pages ARE re-read and re-charged).
+      cp: p.scrape_cp ? { page: p.scrape_cp.page ?? null, reactionsDone: !!p.scrape_cp.reactionsDone, commentsDone: !!p.scrape_cp.commentsDone, legacy: p.scrape_cp.reactionsDone === undefined } : null,
+      scrapeDone: !!p.scrape_done, paused: !!p.paused, phase: p.phase || null,
       expectedReactions: p.expected_reactions ?? null,
       expectedComments: p.expected_comments ?? null,          // LinkedIn's count — INCLUDES replies
       commentsAvailable: p.comments_available ?? null,        // top-level commenters the API returns

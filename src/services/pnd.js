@@ -161,7 +161,7 @@ export async function pndPostInfo(urlOrUrn) {
     title: [name, text].filter(Boolean).join(" — ").slice(0, 120) || null,
     posterName: name || null,
     posterUrl: a.url || (a.username ? `https://www.linkedin.com/in/${a.username}` : null),
-    text: text.slice(0, 300) || null,
+    text: text || null, // FULL body — the router classifies on this; callers slice for display
     numReactions: p.totalReactionCount ?? null,
     numComments: p.commentsCount ?? null,
     posted: p.postedDate || p.postedAt || null,
