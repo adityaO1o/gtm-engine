@@ -141,6 +141,9 @@ export async function pndSearchJobs({ keywords, datePosted = "pastWeek", salary 
     url: j.url || j.jobUrl || (j.id ? `https://www.linkedin.com/jobs/view/${j.id}/` : ""),
     company: j.company?.name || j.companyName || "",
     companyLogo: j.company?.logo || null,
+    companyUrl: j.company?.url || "",
+    companyUsername: companyUsernameFromUrl(j.company?.url || ""),
+    staffRange: j.company?.staffCountRange && Object.keys(j.company.staffCountRange).length ? j.company.staffCountRange : null,
     location: j.location || "",
     postAt: j.postAt || j.postedAt || null,
     postedTimestamp: j.postedTimestamp || j.postedDateTimestamp || null,
@@ -277,18 +280,42 @@ export async function pndProfile(urlOrUrn) {
 
 // companyUsername -> exact website domain. Bought ONCE per company, then free forever.
 export async function pndCompanyDomain(companyUsername) {
+  const c = await pndCompanyDetails(companyUsername);
+  return c?.domain || null;
+}
+
+// Full company card — domain AND size — from ONE get-company-details call, cached forever in
+// company_domains. staffCountRange ("51 - 200") and followerCount are how /internal judges whether a
+// startup is big/backed enough to actually pay well: a 1-10-person, 200-follower shop can't; a
+// 51-200 scale-up with 30k followers and a Crunchbase page can.
+export async function pndCompanyDetails(companyUsername) {
   if (!companyUsername) return null;
   const hit = await companyDomains().findOne({ _id: companyUsername }).catch(() => null);
-  if (hit) { stats.cacheHits++; meter.inc("pnd_cache_hits"); return hit.domain || null; }
-  if (paidBlocked()) return null;
+  if (hit && hit.staffRange !== undefined) { stats.cacheHits++; meter.inc("pnd_cache_hits"); return hit; }
+  if (paidBlocked()) return hit || null;
 
   const d = await call("get-company-details", { params: { username: companyUsername } });
-  if (!d?.data) return null;
+  if (!d?.data) return hit || null;
   stats.companyCalls++; meter.inc("pnd_company_calls");
-  const domain = String(d.data.website || "").replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").toLowerCase() || null;
-  await companyDomains().updateOne({ _id: companyUsername },
-    { $set: { _id: companyUsername, domain, name: d.data.name || null, at: new Date() } }, { upsert: true }).catch(() => {});
-  return domain;
+  const c = d.data;
+  const rec = {
+    _id: companyUsername,
+    domain: String(c.website || "").replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").toLowerCase() || null,
+    name: c.name || null,
+    staff: c.staffCount ?? null,
+    staffRange: c.staffCountRange || null,
+    followers: c.followerCount ?? null,
+    industry: Array.isArray(c.industries) ? c.industries[0] : (c.industry || null),
+    funded: !!c.crunchbaseUrl,
+    at: new Date(),
+  };
+  await companyDomains().updateOne({ _id: companyUsername }, { $set: rec }, { upsert: true }).catch(() => {});
+  return rec;
+}
+
+// Turn a LinkedIn company URL (…/company/finn-app-co/…) into its username.
+export function companyUsernameFromUrl(url = "") {
+  return String(url).match(/\/company\/([^/?#]+)/)?.[1] || null;
 }
 
 // The paid last-resort: person -> { company, domain, vanity }. Both hops cached, so calling this
