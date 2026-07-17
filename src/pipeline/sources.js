@@ -217,13 +217,11 @@ async function scrapeAndEnrich(postUrl, camp, category) {
     await saveCp(postUrl, { ...cp });
   }
 
-  // COMMENTS — token-paginated; commenters arrive WITH their real vanity URL (no resolve needed).
+  // COMMENTS — commenters arrive WITH their real vanity URL, so they never need a SERP resolve.
   //
-  // Reactions above took the raw URL, so they work on any post. Comments need the ACTIVITY urn, and
-  // a URL from LinkedIn's share button carries urn:li:share instead — a different id for the same
-  // post. Passing that through fetched nothing while the scrape still reported success, so every
-  // share-linked post silently lost its commenters. Resolve it properly, and if we can't, record
-  // that on the post instead of pretending the comments phase ran.
+  // Reactions above post the raw URL, so they work on any post and always did. Comments need the
+  // ACTIVITY urn, which a share-link doesn't carry (it has urn:li:share — a different id for the
+  // same post), so resolve it properly and record a skip rather than pretending the phase ran.
   if (!cp.commentsDone) {
     const urn = await resolveActivityUrn(postUrl);
     if (!urn) {
@@ -234,15 +232,16 @@ async function scrapeAndEnrich(postUrl, camp, category) {
       return "done";
     }
     await scrapedPosts().updateOne({ postUrl }, { $unset: { comments_skipped: "", comments_skip_reason: "" } });
-    let page = 1;
-    for (let i = 0; i < 400; i++) {
-      if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp }); return "paused"; }
-      const r = await pageWithBackoff(() => pndCommentPage(urn, { page, token: cp.token }));
-      if (r === "paused") { await saveCp(postUrl, { ...cp }); return "paused"; }
-      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp }); return "stopped"; }
-      await absorb(r.engagers, { token: r.token || "", commentsDone: !r.token || !r.count });
-      if (!r.token || !r.count) break;
-      page++;
+    // Page-based, like reactions: the endpoint reports total/totalPage and has no pagination token.
+    // The old loop broke as soon as the token came back empty — and it ALWAYS came back empty —
+    // so even once the parser is fixed, this had to change or we'd only ever read page one.
+    for (let page = cp.page || 1; page <= 400; page++) {
+      if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp, page }); return "paused"; }
+      const r = await pageWithBackoff(() => pndCommentPage(urn, { page }));
+      if (r === "paused") { await saveCp(postUrl, { ...cp, page }); return "paused"; }
+      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp, page }); return "stopped"; }
+      await absorb(r.engagers, { page: page + 1 });
+      if (!r.count || (r.totalPage && page >= r.totalPage)) break;
     }
     Object.assign(cp, { commentsDone: true });
     await saveCp(postUrl, { ...cp });

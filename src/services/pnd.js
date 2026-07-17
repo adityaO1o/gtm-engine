@@ -108,39 +108,63 @@ export async function pndReactionPage(postUrl, page) {
   return { engagers, count: items.length, total: typeof d?.data?.total === "number" ? d.data.total : null };
 }
 
-// Comments are token-paginated and hand back the commenter's REAL vanity URL (no resolve needed).
-export async function pndCommentPage(urn, { page = 1, token = "" } = {}) {
-  const params = { urn, sort: "mostRecent", page: String(page) };
-  if (token) params.paginationToken = token;
-  const d = await call("get-profile-posts-comments", { params });
+// Commenters, with their REAL vanity URL (no resolve needed).
+//
+// This parser was three guesses deep and every one was wrong, which is why not a single commenter
+// has EVER been scraped — including from posts whose activity urn was valid all along. Checked
+// against a real response:
+//   • data is an ARRAY of comments — not {comments:[…]} or {items:[…]}, so the old lookup
+//     silently produced [] on every page and the scrape reported success.
+//   • the author is {name, username, linkedinUrl, title} — there is no firstName/lastName, so
+//     even a correct array would have yielded nameless, unusable engagers.
+//   • pagination is page-based via total/totalPage — there is no paginationToken. The old loop
+//     stopped the moment the (never-present) token came back empty, i.e. after page one.
+export async function pndCommentPage(urn, { page = 1 } = {}) {
+  const d = await call("get-profile-posts-comments", { params: { urn, sort: "mostRecent", page: String(page) } });
   if (!d) return null;
   stats.scrapePages++; meter.inc("pnd_scrape_pages");
-  const items = d?.data?.comments || d?.data?.items || [];
+  const items = Array.isArray(d.data) ? d.data : [];
   const engagers = items.map((c) => {
     const a = c.author || {};
-    const name = [a.firstName, a.LastName || a.lastName].filter(Boolean).join(" ").trim();
-    return { name, headline: a.title || a.headline || "", linkedin_url: a.linkedinUrl || (a.urn ? `https://www.linkedin.com/in/${a.urn}` : ""), engagement_type: "comment", comment_text: c.text || "" };
+    return {
+      name: a.name || [a.firstName, a.lastName].filter(Boolean).join(" ").trim(),
+      headline: a.title || a.headline || "",
+      linkedin_url: a.linkedinUrl || a.url || (a.username ? `https://www.linkedin.com/in/${a.username}` : ""),
+      engagement_type: "comment",
+      comment_text: c.text || "",
+    };
   }).filter((e) => e.name || e.linkedin_url);
-  return { engagers, count: items.length, token: d?.data?.paginationToken || d?.paginationToken || "" };
+  return { engagers, count: items.length, total: d.total ?? null, totalPage: d.totalPage ?? null };
 }
 
-// Takes a post URL or a bare activity urn. get-post only accepts an activity urn — it rejects both
-// a share id and a raw share URL — so a share-link is resolved (free, via proxy) before we ask.
+// Takes a post URL or a bare activity urn.
+//
+// Also written against guesses, also all wrong — which is why no post ever got a title:
+//   • get-post wants a `url` ("Url is required" if you send a urn) — but not ANY url: a share-link
+//     gets "Wrong post url provided". Only the canonical feed/update form works, so resolve to the
+//     activity urn (free, via proxy) and build it.
+//   • the shape is {author:{firstName,lastName,headline}, totalReactionCount, commentsCount},
+//     not {poster:{first,last}, num_reactions, num_comments}.
 export async function pndPostInfo(urlOrUrn) {
   const s = String(urlOrUrn || "");
   if (!s) return null;
-  const known = /^\d{15,25}$/.test(s) ? s : await resolveActivityUrn(s);
-  if (!known) return null; // unresolvable — say nothing rather than guess an id
-  const d = await call("get-post", { params: { urn: known } });
+  const urn = /^\d{15,25}$/.test(s) ? s : await resolveActivityUrn(s);
+  if (!urn) return null; // unresolvable — say nothing rather than guess an id
+  const d = await call("get-post", { params: { url: `https://www.linkedin.com/feed/update/urn:li:activity:${urn}/` } });
   const p = d?.data;
   if (!p) return null;
-  const poster = p.poster || {};
+  const a = p.author || {};
+  const name = [a.firstName, a.lastName].filter(Boolean).join(" ").trim();
   const text = String(p.text || "").replace(/\s+/g, " ").trim();
   return {
-    urn: known,
-    title: [[poster.first, poster.last].filter(Boolean).join(" "), text].filter(Boolean).join(" — ").slice(0, 120) || null,
-    posterName: [poster.first, poster.last].filter(Boolean).join(" ") || null, posterUrl: poster.linkedin_url || null,
-    text: text.slice(0, 300) || null, numReactions: p.num_reactions ?? null, numComments: p.num_comments ?? null, posted: p.posted || null,
+    urn,
+    title: [name, text].filter(Boolean).join(" — ").slice(0, 120) || null,
+    posterName: name || null,
+    posterUrl: a.url || (a.username ? `https://www.linkedin.com/in/${a.username}` : null),
+    text: text.slice(0, 300) || null,
+    numReactions: p.totalReactionCount ?? null,
+    numComments: p.commentsCount ?? null,
+    posted: p.postedDate || p.postedAt || null,
   };
 }
 

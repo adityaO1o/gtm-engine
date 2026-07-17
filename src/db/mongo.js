@@ -78,6 +78,21 @@ export async function connect() {
   // paused so the dashboard offers Resume (its queue + checkpoint are intact, so it continues cleanly).
   await db.collection("scraped_posts").updateMany({ running: true }, { $set: { running: false, paused: true, phase: "paused" } });
 
+  // Every comments phase that has ever run did so against a parser that couldn't read the response
+  // (it expected {comments:[…]}; the API returns a bare array), so `commentsDone: true` on an old
+  // checkpoint means "we asked and threw the answer away", not "we have the commenters" — and a
+  // resume would skip the phase forever. Reset it on any post that has no commenter in its queue,
+  // so those posts actually fetch them. Self-limiting: once commenters land, the post stops
+  // matching. scrape_done has to go too, or scrapeOne returns early before reaching the phase.
+  try {
+    const withComments = await db.collection("scrape_engagers").distinct("postUrl", { engagement_type: "comment" });
+    const r = await db.collection("scraped_posts").updateMany(
+      { "scrape_cp.commentsDone": true, postUrl: { $nin: withComments } },
+      { $set: { "scrape_cp.commentsDone": false, "scrape_cp.page": 1 }, $unset: { scrape_done: "" } }
+    );
+    if (r.modifiedCount) log.info("reset the comments phase on posts whose commenters were never parsed", { posts: r.modifiedCount });
+  } catch (e) { log.warn("comments-phase reconcile failed", { err: e.message }); }
+
   // Drop any SEEDED (hand-entered) RapidAPI balances. A RapidAPI plan's remaining is only knowable
   // from a real response header, and we no longer call the drained fresh/web-scrape hosts — so a
   // seeded number just sits there forever showing a stale, wrong figure. Only balances captured
