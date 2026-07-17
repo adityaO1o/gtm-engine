@@ -626,8 +626,16 @@ apiRouter.get("/debug/pnd", async (req, res) => {
   if (!path) return res.status(400).json({ error: "path required" });
   const params = { ...req.query };
   delete params.path;
-  const d = await pndRaw(path, { params });
-  res.json({ path, params, response: d });
+  const method = (params.method || "GET").toUpperCase();
+  delete params.method;
+  // reactions is a POST that takes {url, page}; everything else is a GET with query params.
+  const d = method === "POST"
+    ? await pndRaw(path, { method: "POST", body: { url: params.url, page: Number(params.page) || 1 } })
+    : await pndRaw(path, { params });
+  const summary = Array.isArray(d?.data)
+    ? { isArray: true, count: d.data.length, total: d.total ?? d.data?.total, totalPage: d.totalPage }
+    : { isArray: false, items: d?.data?.items?.length ?? null, total: d?.data?.total ?? d?.total ?? null };
+  res.json({ path, method, params, summary, response: d });
 });
 
 // POST /api/reset — wipe all leads + engagements (guarded by the ingest token). For clearing test data.
