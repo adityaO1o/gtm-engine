@@ -24,9 +24,14 @@ function extract(html) {
 async function fetchHtml(hubUrl, useProxy) {
   const cfg = { timeout: 25000, validateStatus: () => true, headers: { "User-Agent": UA } };
   if (useProxy) {
-    const agent = await nextWorkingAgent();
-    if (!agent) return "";
-    cfg.httpsAgent = agent; cfg.proxy = false;
+    // nextWorkingAgent returns {agent, proxyUrl} and THROWS when the pool is dry — it never returns
+    // null, so the old `const agent = ...; if (!agent)` handed axios the WRAPPER as its httpsAgent
+    // and every proxied fetch here failed. That is why hub post-URL extraction always looked "thin
+    // against LinkedIn's bot HTML": it was never reaching LinkedIn at all.
+    try {
+      const { agent } = await nextWorkingAgent();
+      cfg.httpsAgent = agent; cfg.proxy = false;
+    } catch (e) { log.warn("hubScrape: no working proxy", { err: e.message }); return ""; }
   }
   try {
     const r = await axios.get(hubUrl, cfg);
