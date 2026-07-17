@@ -2,7 +2,7 @@
 
 import { Router } from "express";
 import { ObjectId } from "mongodb";
-import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, bouncebanRuns } from "../db/mongo.js";
+import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, scrapeEngagers, bouncebanRuns } from "../db/mongo.js";
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
 import { rapidScrapeStats, activityUrn } from "../services/rapidScrape.js";
 import { pndStats, pndPostInfo, pndRaw, pndOutOfCredits } from "../services/pnd.js";
@@ -581,11 +581,17 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
   }
   const out = await Promise.all(posts.map(async (p) => {
     const base = { posts_seen: p.postUrl };
-    const [engagers, verified, noEmail, unverified] = await Promise.all([
+    // `scraped` (the queue) and `engagers` (leads) are NOT the same number and never were: a
+    // company page that reacts to a post is queued, then deliberately dropped ("company pages are
+    // not people"). Reporting only one of them made the live box and this row disagree with no
+    // explanation. Both are returned so the gap can be shown for what it is.
+    const [engagers, verified, noEmail, unverified, scraped, skippedCompany] = await Promise.all([
       leads().countDocuments(base),
       leads().countDocuments({ ...base, email_status: "verified" }),
       leads().countDocuments({ ...base, email_status: "no-email" }),
       leads().countDocuments({ ...base, email_status: "unverified" }),
+      scrapeEngagers().countDocuments({ postUrl: p.postUrl }),
+      scrapeEngagers().countDocuments({ postUrl: p.postUrl, outcome: "skipped_company" }),
     ]);
     return {
       postUrl: p.postUrl,
@@ -593,7 +599,10 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
       title: p.title || null, posterName: p.poster_name || null,
       campaign: p.campaign || null, at: p.finishedAt || p.startedAt, running: !!p.running,
       engagers, verified, noEmail, unverified,
-      expectedReactions: p.expected_reactions ?? null, expectedComments: p.expected_comments ?? null,
+      scraped, skippedCompany,
+      expectedReactions: p.expected_reactions ?? null,
+      expectedComments: p.expected_comments ?? null,          // LinkedIn's count — INCLUDES replies
+      commentsAvailable: p.comments_available ?? null,        // top-level commenters the API returns
       commentsSkipped: !!p.comments_skipped, commentsSkipReason: p.comments_skip_reason || null,
     };
   }));

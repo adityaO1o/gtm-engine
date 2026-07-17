@@ -240,6 +240,11 @@ async function scrapeAndEnrich(postUrl, camp, category) {
       const r = await pageWithBackoff(() => pndCommentPage(urn, { page }));
       if (r === "paused") { await saveCp(postUrl, { ...cp, page }); return "paused"; }
       if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp, page }); return "stopped"; }
+      // How many commenters are actually REACHABLE. LinkedIn's own comment count includes replies
+      // to comments, which this endpoint doesn't return — a post showing "6 comments" hands back 3
+      // top-level commenters. Using LinkedIn's number as the target made a COMPLETE scrape read as
+      // "14 of 17", i.e. a permanent phantom shortfall.
+      if (page === 1 && r.total != null) await scrapedPosts().updateOne({ postUrl }, { $set: { comments_available: r.total } });
       await absorb(r.engagers, { page: page + 1 });
       if (!r.count || (r.totalPage && page >= r.totalPage)) break;
     }

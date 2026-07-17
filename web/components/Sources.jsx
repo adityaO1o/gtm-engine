@@ -57,7 +57,12 @@ function ScrapedPosts({ posts }) {
           <tbody>{posts.map((p) => {
             const hit = p.engagers ? Math.round((p.verified / p.engagers) * 100) : 0;
             const label = p.title || labelFromUrl(p.postUrl) || p.posterName || ("activity:" + (p.activityId || "—"));
-            const expected = (p.expectedReactions || 0) + (p.expectedComments || 0);
+            // The target is what's REACHABLE, not what LinkedIn's counter says. LinkedIn counts
+            // replies-to-comments in its comment total but the API only returns top-level
+            // commenters, so a post reading "11 reactions, 6 comments" has 14 people to scrape, not
+            // 17 — and using 17 made a complete scrape look like it lost 3.
+            const reachable = (p.expectedReactions || 0) + (p.commentsAvailable ?? p.expectedComments ?? 0);
+            const inflated = p.commentsAvailable != null && p.expectedComments != null && p.expectedComments > p.commentsAvailable;
             return (
               <tr key={p.postUrl}>
                 <td>
@@ -65,7 +70,17 @@ function ScrapedPosts({ posts }) {
                   {p.commentsSkipped ? <span className="tag-man" title={p.commentsSkipReason || "Commenters were not scraped for this post"}>likers only</span> : null}
                 </td>
                 <td>{p.campaign ? <b>{p.campaign}</b> : <span className="muted">—</span>}</td>
-                <td className="num-c">{num(p.engagers)}{expected ? <span className="muted" style={{ fontSize: 11 }}> of ~{num(expected)}</span> : null}</td>
+                <td className="num-c">
+                  {num(p.engagers)}
+                  {reachable ? (
+                    <span className="muted" style={{ fontSize: 11 }} title={
+                      `${p.expectedReactions ?? "?"} likers + ${p.commentsAvailable ?? p.expectedComments ?? "?"} commenters = ${reachable} people to scrape`
+                      + (inflated ? `\nLinkedIn says ${p.expectedComments} comments, but ${p.expectedComments - p.commentsAvailable} of those are replies to comments — the API only returns top-level commenters.` : "")
+                      + (p.skippedCompany ? `\n${p.skippedCompany} scraped engager${p.skippedCompany === 1 ? " was a" : "s were"} company page${p.skippedCompany === 1 ? "" : "s"}, not people — queued then dropped, which is why this is ${p.engagers} and not ${p.scraped}.` : "")
+                    }> of {num(reachable)}</span>
+                  ) : null}
+                  {p.skippedCompany ? <span className="tag-man" title={`${p.skippedCompany} company page${p.skippedCompany === 1 ? "" : "s"} skipped — not people`}>−{p.skippedCompany}</span> : null}
+                </td>
                 <td className="num-c" style={{ color: "var(--good)", fontWeight: 600 }}>{num(p.verified)}</td>
                 <td className="num-c muted">{num(p.noEmail)}</td>
                 <td className="num-c muted">{num(p.unverified)}</td>
