@@ -318,6 +318,47 @@ export async function pndCompanyDetails(companyUsername) {
   return rec;
 }
 
+// Find a named human at a company by job title — used to reach a company's RECRUITER when a job
+// listing exposes no hiring team (which is most of them). Verified live: company=Razorpay,
+// keywordTitle="talent acquisition" returns "Sumit Premi — Head-Talent Acquisition at Razorpay".
+// Note the endpoint drops non-public profiles, so a tiny company can report total>0 with items:null
+// — which is fine, those are the companies least able to pay anyway.
+export async function pndSearchPeople({ company, keywordTitle = "", keywords = "" } = {}) {
+  if (!company) return [];
+  const d = await call("search-people", { params: { company, keywordTitle, keywords, geo: "" } });
+  if (!d?.data) return [];
+  meter.inc("pnd_profile_calls");
+  const items = Array.isArray(d.data.items) ? d.data.items : [];
+  return items.map((p) => ({
+    name: p.fullName || p.name || "",
+    headline: p.headline || p.title || "",
+    linkedin: p.profileURL || p.profileUrl || p.url || (p.username ? `https://www.linkedin.com/in/${p.username}` : ""),
+    username: p.username || null,
+    location: p.location || "",
+  })).filter((p) => p.name && p.linkedin);
+}
+
+// The company's best reachable recruiter, cached FOREVER on the company doc. Several job listings
+// usually share one company, so this is looked up once and reused — and a later run pays nothing.
+const HR_TITLES = ["talent acquisition", "recruiter", "hr"];
+export async function pndCompanyHr(companyName, companyUsername) {
+  if (!companyName) return null;
+  const key = companyUsername || `name:${companyName.toLowerCase()}`;
+  const hit = await companyDomains().findOne({ _id: key }).catch(() => null);
+  if (hit && hit.hr !== undefined) { stats.cacheHits++; meter.inc("pnd_cache_hits"); return hit.hr; }
+  if (paidBlocked()) return null;
+
+  let found = null;
+  for (const title of HR_TITLES) {
+    const people = await pndSearchPeople({ company: companyName, keywordTitle: title });
+    if (people.length) { found = { ...people[0], via: title }; break; }
+  }
+  // Cache the miss too (as null) so a company with no public recruiter isn't re-searched every run.
+  await companyDomains().updateOne({ _id: key },
+    { $set: { _id: key, hr: found, hr_at: new Date() } }, { upsert: true }).catch(() => {});
+  return found;
+}
+
 // Turn a LinkedIn company URL (…/company/finn-app-co/…) into its username.
 export function companyUsernameFromUrl(url = "") {
   return String(url).match(/\/company\/([^/?#]+)/)?.[1] || null;
