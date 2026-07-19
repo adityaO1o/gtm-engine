@@ -179,7 +179,12 @@ export async function pndSearchPosts({ keyword, datePosted = "past-week", sortBy
     return {
       postUrl: p.url || p.postUrl || "",
       urn: String(p.urn || p.activityUrn || "").match(/(\d{15,25})/)?.[1] || null,
-      text: String(p.text || p.commentary || "").replace(/\s+/g, " ").trim(),
+      // Keep the post's LINE STRUCTURE. Collapsing all whitespace turned a formatted job post
+      // ("Role:… Requirements:… Send your CV to x@y.com") into one unreadable blob and destroyed
+      // the first line, which is the natural title. Verified this endpoint already returns the
+      // COMPLETE body — get-post for the same urn returns byte-identical text — so there is
+      // nothing further to fetch and no reason to throw any of it away.
+      text: String(p.text || p.commentary || "").replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(),
       author: {
         name: a.fullName || a.name || [a.firstName, a.lastName].filter(Boolean).join(" "),
         linkedin: a.profileUrl || a.url || a.linkedinUrl || (a.username ? `https://www.linkedin.com/in/${a.username}` : ""),
