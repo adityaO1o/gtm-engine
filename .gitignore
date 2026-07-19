@@ -10,3 +10,4 @@ smoke.mjs
 dokploy_env_final.txt
 logs/
 rej.txt
+hs.json
