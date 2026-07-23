@@ -54,6 +54,8 @@ export async function connect() {
   await db.collection("internal_jobs").createIndex({ created_at: -1 });
   await db.collection("internal_jobs").createIndex({ status: 1 });
   await db.collection("internal_searches").createIndex({ query: 1 }, { unique: true });
+  // Per-campaign switches (currently just paused). Small and rarely written.
+  await db.collection("campaign_state").createIndex({ key: 1 }, { unique: true });
   // Durable engager queue for the resumable "Scrape via post" job — scraped engagers are parked
   // here, then drained by the enrichment phase, so a restart/pause resumes instead of losing work.
   await db.collection("scrape_engagers").createIndex({ postUrl: 1, ekey: 1 }, { unique: true });
@@ -126,6 +128,7 @@ export const scrapedPosts = () => db.collection("scraped_posts");
 export const scrapeEngagers = () => db.collection("scrape_engagers");
 export const internalJobs = () => db.collection("internal_jobs");
 export const internalSearches = () => db.collection("internal_searches");
+export const campaignState = () => db.collection("campaign_state");
 // ── PND credit savers (permanent caches). A company's domain is looked up ONCE and then every
 // future lead at that company is free, forever, across every post. Likewise a profile lookup is
 // never paid for twice — retries reuse it.

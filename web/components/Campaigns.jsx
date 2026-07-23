@@ -36,7 +36,7 @@ function CampaignList({ campaigns, onOpen }) {
 }
 
 function CampaignDetail({ campaign, label, onBack }) {
-  const { openLead, openReverify, jobs, pollJobs } = useDash();
+  const { openLead, openReverify, jobs, pollJobs, campaigns, refreshTop } = useDash();
   const toast = useToast();
   const [s, setS] = useState({});
   const [cardMetrics, setCardMetrics] = useState(["total", "verified", "hot", "noEmail"]);
@@ -54,7 +54,21 @@ function CampaignDetail({ campaign, label, onBack }) {
   const exportFiltered = () => { const p = L.query(); p.delete("limit"); p.delete("skip"); window.location = "/api/export?" + p.toString(); };
   const exportSelected = () => { if (!L.selected.size) return; window.location = "/api/export?urls=" + [...L.selected].map(encodeURIComponent).join(","); };
 
-  async function pause() { const r = await post(`/api/campaigns/${encodeURIComponent(campaign)}/pause`, { paused: true }); setMsg(r.ok ? "✓ Campaign paused." : "Pause failed: " + (r.error || "")); toast(r.ok ? "Campaign paused" : "Pause failed", r.ok ? "good" : "bad"); }
+  // Pause/resume lead GENERATION for this campaign — the keyword sweep skips it while paused.
+  // It does not stop SendKit sending to people already in the campaign; that lives in SendKit.
+  const isPaused = !!campaigns.find((c) => c.campaign === campaign)?.paused;
+  async function togglePause() {
+    const next = !isPaused;
+    const r = await post(`/api/campaigns/${encodeURIComponent(campaign)}/pause`, { paused: next });
+    if (r.ok) {
+      setMsg(next ? "✓ Paused — the keyword sweep will skip this campaign. SendKit sending is unchanged." : "✓ Resumed — the keyword sweep will search for it again.");
+      toast(next ? "Campaign paused" : "Campaign resumed", "good");
+      refreshTop();
+    } else {
+      setMsg("Failed: " + (r.error || ""));
+      toast("Failed", "bad");
+    }
+  }
   async function sync() { await post("/api/sync", { campaign }); toast("SendKit sync started", "info"); pollJobs(); }
 
   return (
@@ -63,7 +77,9 @@ function CampaignDetail({ campaign, label, onBack }) {
         <button className="btn btn-ghost btn-sm" onClick={onBack}><Icon name="back" />All campaigns</button>
         <div className="grow" />
         <button className="btn btn-ghost btn-sm" onClick={sync}><Icon name="sync" />Sync SendKit</button>
-        <button className="btn btn-ghost btn-sm" onClick={pause}><Icon name="pause" />Pause</button>
+        <button className="btn btn-ghost btn-sm" onClick={togglePause}
+          title={isPaused ? "Resume finding new leads for this campaign" : "Stop the keyword sweep finding new leads for this campaign (SendKit sending is unaffected)"}>
+          <Icon name={isPaused ? "bolt" : "pause"} />{isPaused ? "Resume" : "Pause"}</button>
       </div>
       <div className="muted" style={{ fontSize: 12, margin: "-4px 0 0" }}>{msg}</div>
       <div style={{ margin: "0 0 var(--s3)" }}><JobBox kind="sync" s={jobs.sync} /></div>

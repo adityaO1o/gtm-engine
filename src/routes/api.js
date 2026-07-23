@@ -2,7 +2,7 @@
 
 import { Router } from "express";
 import { ObjectId } from "mongodb";
-import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, scrapeEngagers, bouncebanRuns } from "../db/mongo.js";
+import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, scrapeEngagers, bouncebanRuns, campaignState } from "../db/mongo.js";
 import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
 import { rapidScrapeStats, activityUrn } from "../services/rapidScrape.js";
 import { pndStats, pndPostInfo, pndRaw, pndOutOfCredits } from "../services/pnd.js";
@@ -10,7 +10,7 @@ import { bouncebanStats, bouncebanBalance } from "../services/bounceban.js";
 import { linkedinProfileStats } from "../services/linkedinProfile.js";
 import { meterCumulative, readBalances } from "../services/apiMeter.js";
 import { rerouteSourceLeads, rerouteStatus } from "../pipeline/reroute.js";
-import { trigifyBalance, setWorkflowEnabled } from "../services/trigify.js";
+import { trigifyBalance } from "../services/trigify.js";
 import { prospeoBalance, verifyEmail } from "../services/prospeo.js";
 import { jinaBalance } from "../services/jina.js";
 import { resolveStats } from "../services/resolve.js";
@@ -115,7 +115,7 @@ apiRouter.get("/stats", ttlCache(8), async (req, res) => {
 const cnt = (field, val) => ({ $sum: { $cond: [{ $eq: ["$" + field, val] }, 1, 0] } });
 const cntTruthy = (field) => ({ $sum: { $cond: [{ $ifNull: ["$" + field, false] }, 1, 0] } });
 apiRouter.get("/campaigns", ttlCache(10), async (_req, res) => {
-  const [agg, uRows, prospeo, jina] = await Promise.all([
+  const [agg, uRows, prospeo, jina, pausedRows] = await Promise.all([
     leads().aggregate([
       { $match: { campaigns: { $exists: true, $ne: [] } } },
       { $unwind: "$campaigns" },
@@ -132,7 +132,9 @@ apiRouter.get("/campaigns", ttlCache(10), async (_req, res) => {
     ]).toArray(),
     usage().find({}).toArray(),
     prospeoBalance(), jinaBalance(),
+    campaignState().find({ paused: true }, { projection: { key: 1 } }).toArray().catch(() => []),
   ]);
+  const pausedSet = new Set(pausedRows.map((r) => r.key));
   const uMap = Object.fromEntries(uRows.map((u) => [u.campaign, u]));
   const out = agg.map((g) => {
     const u = uMap[g._id] || {};
@@ -142,6 +144,7 @@ apiRouter.get("/campaigns", ttlCache(10), async (_req, res) => {
       verified: g.verified, verifiedEmails: g.verified,
       noEmail: g.noEmail, unverified: g.unverified, review: g.review, competitor: g.competitor, discarded: g.discarded,
       recovered: g.recovered, dnc: g.dnc,
+      paused: pausedSet.has(g._id),
       credits: { trigify: u.trigify_scraped || 0, prospeo: u.prospeo_finds || 0, sendkit: g.verified },
     };
   }).sort((a, b) => b.total - a.total);
@@ -253,11 +256,20 @@ apiRouter.post("/sync", (req, res) => {
 apiRouter.get("/sync/status", (_req, res) => res.json(syncStatus()));
 
 // POST /api/campaigns/:key/pause {paused} — disable/enable the campaign's Trigify workflow
+// POST /api/campaigns/:key/pause { paused } — stop (or resume) generating leads for a campaign.
+//
+// This used to toggle a Trigify WORKFLOW by name. Trigify no longer runs our keyword searches — the
+// engine's own sweep does — so the lookup always failed and the button reported "workflow not
+// found". Pausing now means the keyword sweep skips this campaign's keywords entirely.
+//
+// It does NOT stop SendKit from emailing people already in the campaign: that is controlled in
+// SendKit itself. This only stops NEW leads being found for it.
 apiRouter.post("/campaigns/:key/pause", async (req, res) => {
   const key = decodeURIComponent(req.params.key);
-  const label = campaignByKey(key)?.label || campaignLabel(key);
-  const r = await setWorkflowEnabled(label, !req.body?.paused);
-  res.json(r);
+  if (!campaignByKey(key)) return res.json({ ok: false, error: `unknown campaign: ${key}` });
+  const paused = req.body?.paused !== false;
+  await campaignState().updateOne({ key }, { $set: { key, paused, updated_at: new Date() } }, { upsert: true });
+  res.json({ ok: true, key, paused, scope: "keyword sweep only — SendKit sending is controlled in SendKit" });
 });
 
 // POST /api/leads/decision { urls:[], action:"approve"|"discard" }

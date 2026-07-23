@@ -14,7 +14,7 @@
 // spending anything. Re-scraping a grown post never re-enriches the people already done — the
 // queue dedups on ekey and enrichment only touches enriched:false — so only the new engagers cost.
 
-import { scrapedPosts, scrapeEngagers } from "../db/mongo.js";
+import { scrapedPosts, scrapeEngagers, campaignState } from "../db/mongo.js";
 import { pndSearchPosts, pndOutOfCredits } from "../services/pnd.js";
 import { CAMPAIGNS } from "../services/campaigns.js";
 import { scrapeOneInner, pauseScrapePost } from "./sources.js";
@@ -45,9 +45,18 @@ export function pauseKeywordSweep() {
 // Every campaign's keywords, paired with the campaign its engagers belong to. Keyword-search
 // engagers have a FIXED campaign (unlike source posts, which are routed by topic) — that's how the
 // Trigify workflows were set up and what the campaign copy is written for.
-function keywordPlan() {
+//
+// A PAUSED campaign contributes no keywords, so the sweep neither searches nor scrapes for it. That
+// is what the dashboard's Pause button now means: before, it tried to disable a Trigify workflow,
+// which no longer exists — the button just failed with "workflow not found".
+export async function keywordPlan() {
+  const paused = new Set(
+    (await campaignState().find({ paused: true }, { projection: { key: 1 } }).toArray().catch(() => []))
+      .map((r) => r.key)
+  );
   const plan = [];
   for (const c of CAMPAIGNS) {
+    if (paused.has(c.key)) continue;
     for (const kw of c.keywords || []) plan.push({ keyword: kw, campaignKey: c.key, label: c.label });
   }
   return plan;
@@ -59,9 +68,8 @@ export async function runKeywordSweep({ keywords = [] } = {}) {
   ctl = { paused: false };
 
   const { pndStats } = await import("../services/pnd.js");
-  const plan = keywords.length
-    ? keywordPlan().filter((p) => keywords.includes(p.keyword))
-    : keywordPlan();
+  const all = await keywordPlan();
+  const plan = keywords.length ? all.filter((p) => keywords.includes(p.keyword)) : all;
 
   status = {
     running: true, phase: "searching", keyword: "", campaign: "",
