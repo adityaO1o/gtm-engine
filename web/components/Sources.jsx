@@ -136,6 +136,16 @@ export default function Sources() {
     else { refreshTop(); load(); }
   }, [refreshTop, load]);
 
+  // Declared BEFORE the effect that lists it as a dependency: a `const` referenced above its own
+  // declaration throws "Cannot access 'pollSweep' before initialization" while the dependency array
+  // is being evaluated, which crashed the whole Sources tab on render.
+  const pollSweep = useCallback(async function p() {
+    const s = await j("/api/keywords/sweep/status").catch(() => null);
+    setSweep(s);
+    if (s?.running) setTimeout(p, 4000);
+    else { refreshTop(); load(); }
+  }, [refreshTop, load]);
+
   useEffect(() => { load(); pollScrape(); pollSweep(); return () => clearTimeout(scrapeTimer.current); }, [load, pollScrape, pollSweep]);
   useEffect(() => {
     if (list) j(`/api/sources/list/${encodeURIComponent(list)}?skip=${listPage * 100}&limit=100`).then((d) => setListRows({ rows: d.rows || [], count: d.count || 0 }));
@@ -151,12 +161,6 @@ export default function Sources() {
     toast("Removed", "good");
   };
   const runNow = async () => { await post("/api/sources/run", {}); toast("Sources sweep started", "info"); pollJobs(); };
-  const pollSweep = useCallback(async function p() {
-    const s = await j("/api/keywords/sweep/status").catch(() => null);
-    setSweep(s);
-    if (s?.running) setTimeout(p, 4000);
-    else { refreshTop(); load(); }
-  }, [refreshTop, load]);
   const runSweep = async () => {
     if (!window.confirm("Search this week's posts for every campaign keyword and scrape their engagers?\n\nPosts already scraped are skipped unless they've grown — that check is free. Small posts are skipped too.")) return;
     await post("/api/keywords/sweep", {});
