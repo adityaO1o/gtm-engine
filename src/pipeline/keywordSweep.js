@@ -23,7 +23,7 @@ import { log } from "../lib/logger.js";
 
 // A post with a handful of reactions isn't worth a scrape — the engagers cost real money to enrich
 // and a 2-reaction post yields nothing. Tunable from the dashboard later if it proves wrong.
-const MIN_ENGAGERS = 5;
+const MIN_ENGAGERS = 15;
 
 let running = false;
 let ctl = { paused: false };

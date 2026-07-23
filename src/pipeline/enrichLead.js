@@ -24,6 +24,10 @@ import { bumpUsage } from "../services/usage.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
+// How long a failed email lookup stands before the live path will spend on that person again.
+// Matches the retry pipeline's own backoff so the two agree on what "recently tried" means.
+const NO_EMAIL_BACKOFF_MS = 6 * 3600 * 1000;
+
 // crude company extraction from a headline ("Founder @ Acme | ex-Google" -> "Acme")
 export function companyFromHeadline(headline = "") {
   const m = headline.match(/(?:@|at)\s+([A-Z0-9][\w&.\- ]{1,40})/);
@@ -231,7 +235,41 @@ export async function enrichLead(input) {
     return { outcome: "repeat", email: known.email, isRepeat: true, ...scored, name };
   }
 
-  const w = await findEmailWaterfall({ name, headline, linkedin_url });
+  // ── SECOND FAST PATH: we already tried this person and came up empty, recently.
+  //
+  // The path above only spares people whose email is SETTLED. Anyone we failed on fell straight
+  // through and re-ran the entire waterfall — and 77% of no-email leads get met more than once
+  // (they engage with several posts), so the same hopeless lookup was paid for again and again.
+  // PND itself is cached, so this isn't a PND saving; it's Enrich, Prospeo and BounceBan, which
+  // have no such cache and were being charged on every repeat.
+  //
+  // The engagement is still recorded — score, categories, campaigns and posts_seen all update, so
+  // nothing about the lead goes stale. Only the provider calls are skipped, and only inside the
+  // same backoff the retry pipeline already uses, so a stale lead still gets fresh attempts later.
+  // The Hand-off retry (and its "deep" mode) is untouched and remains the deliberate way to try again.
+  if (known && known.email_status === "no-email" && known.last_email_attempt_at
+      && Date.now() - new Date(known.last_email_attempt_at).getTime() < NO_EMAIL_BACKOFF_MS) {
+    const key = known.linkedin_url;
+    const scored = await recordEngagement(key, { name, headline, category, engagement_type, campaign, post_url, comment_text, now });
+    const add = { campaigns: campaign, posts_seen: post_url };
+    if (campaign_id) add.campaign_ids = campaign_id;
+    if (linkedin_url && isUrn(linkedin_url) && linkedin_url !== key) add.urns = linkedin_url;
+    await leads().updateOne({ linkedin_url: key }, {
+      $set: {
+        status: scored.status, score: scored.score, categories: scored.categories, times_seen: scored.timesSeen,
+        last_comment: comment_text || null, last_engagement_at: now, updated_at: now,
+      },
+      $addToSet: add,
+    });
+    await bumpUsage(campaign, { trigify_scraped: 1 }); // scraped only — zero email-provider spend
+    log.info("repeat engager (already tried, still no email)", { name, seen: scored.timesSeen });
+    return { outcome: "repeat_no_email", isRepeat: true, ...scored, name };
+  }
+
+  // skipPaid: don't buy a paid profile lookup for someone a previous attempt already bought one
+  // for. reprocess.js has always done this; the LIVE path never did — it didn't even record that
+  // it had paid, so every fresh scrape of a repeat engager bought the same lookup again.
+  const w = await findEmailWaterfall({ name, headline, linkedin_url, skipPaid: !!known?.paid_profile_tried });
   const { em, emailSource, emailMethod, preVerified, company, domainSource, guardRejected } = w;
   let prospeoCalls = w.prospeoCalls;
   const key = w.key;
@@ -257,6 +295,11 @@ export async function enrichLead(input) {
     source: source || null,
     ...(source_list ? { source_list } : {}),
     last_comment: comment_text || null, last_engagement_at: now, updated_at: now,
+    // Remember that we DID run the finder for this person, and whether it cost a paid profile
+    // lookup. Only the retry pipeline used to record this, so the live path kept re-buying the
+    // same lookup every time a repeat engager turned up on another post.
+    last_email_attempt_at: now,
+    ...(w.paidTried ? { paid_profile_tried: true } : {}),
   };
 
   // If this person ALREADY landed in a SendKit campaign and a guard is only blocking them now,
