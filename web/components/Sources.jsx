@@ -105,7 +105,7 @@ function ScrapedPosts({ posts, onResume, busy }) {
 }
 
 export default function Sources() {
-  const { refreshTop, jobs, pollJobs } = useDash();
+  const { refreshTop, jobs, pollJobs, campaigns } = useDash();
   const toast = useToast();
   const [data, setData] = useState({ sources: [], lists: [], status: {} });
   const [posts, setPosts] = useState([]);
@@ -114,6 +114,8 @@ export default function Sources() {
   const [listPage, setListPage] = useState(0);
   const [listRows, setListRows] = useState({ rows: [], count: 0 });
   const [inPost, setInPost] = useState("");
+  const [inCamp, setInCamp] = useState(""); // "" = auto-route by the post's topic
+  const [sweep, setSweep] = useState(null);
   const [inInfl, setInInfl] = useState("");
   const [inHub, setInHub] = useState("");
   const [listMsg, setListMsg] = useState("");
@@ -134,7 +136,7 @@ export default function Sources() {
     else { refreshTop(); load(); }
   }, [refreshTop, load]);
 
-  useEffect(() => { load(); pollScrape(); return () => clearTimeout(scrapeTimer.current); }, [load, pollScrape]);
+  useEffect(() => { load(); pollScrape(); pollSweep(); return () => clearTimeout(scrapeTimer.current); }, [load, pollScrape, pollSweep]);
   useEffect(() => {
     if (list) j(`/api/sources/list/${encodeURIComponent(list)}?skip=${listPage * 100}&limit=100`).then((d) => setListRows({ rows: d.rows || [], count: d.count || 0 }));
   }, [list, listPage]);
@@ -149,7 +151,26 @@ export default function Sources() {
     toast("Removed", "good");
   };
   const runNow = async () => { await post("/api/sources/run", {}); toast("Sources sweep started", "info"); pollJobs(); };
-  const scrapePost = async () => { if (!inPost.trim()) return; await post("/api/sources/scrape-post", { postUrl: inPost.trim() }); toast("Scrape started — leads will flow in as it runs", "info"); pollScrape(); };
+  const pollSweep = useCallback(async function p() {
+    const s = await j("/api/keywords/sweep/status").catch(() => null);
+    setSweep(s);
+    if (s?.running) setTimeout(p, 4000);
+    else { refreshTop(); load(); }
+  }, [refreshTop, load]);
+  const runSweep = async () => {
+    if (!window.confirm("Search this week's posts for every campaign keyword and scrape their engagers?\n\nPosts already scraped are skipped unless they've grown — that check is free. Small posts are skipped too.")) return;
+    await post("/api/keywords/sweep", {});
+    toast("Keyword sweep started", "info");
+    pollSweep();
+  };
+  const pauseSweep = async () => { await post("/api/keywords/sweep/pause", {}); toast("Pausing after the current post…", "info"); pollSweep(); };
+
+  const scrapePost = async () => {
+    if (!inPost.trim()) return;
+    await post("/api/sources/scrape-post", { postUrl: inPost.trim(), campaign: inCamp });
+    toast(inCamp ? `Scrape started → ${inCamp}` : "Scrape started — routing by the post's topic", "info");
+    pollScrape();
+  };
   const pauseScrape = async () => { await post("/api/sources/scrape-post/pause", {}); toast("Scrape paused — resume anytime", "info"); pollScrape(); };
   const resumeScrape = async (url) => { await post("/api/sources/scrape-post", { postUrl: url }); toast("Scrape resumed", "info"); pollScrape(); };
   const setListActive = async (l, on) => { setListMsg(on ? "Enabling…" : "Pausing…"); const r = await post(`/api/sources/list/${encodeURIComponent(l)}/active`, { active: on }); setListMsg(`✓ ${on ? "Enabled" : "Paused"} “${l}” · ${num(r.matched)} influencers${on ? " — will scrape on the next run" : ""}`); load(); };
@@ -207,10 +228,43 @@ export default function Sources() {
       </div>
 
       <div className="chartbox" style={{ marginBottom: "var(--s3)", borderTop: "2px solid var(--primary)" }}>
+        <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><h4 style={{ margin: 0 }}><Icon name="search" />Keyword sweep <span className="tag-harv">new</span></h4><div className="grow" />
+          <span className="muted" style={{ fontSize: 12 }}>replaces the Trigify workflows</span></div>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+          Finds this week&rsquo;s posts for every campaign keyword and scrapes their engagers into that campaign.
+          Posts already done are skipped unless they&rsquo;ve <b>grown</b> — and that check costs nothing, because the search
+          returns each post&rsquo;s engagement counts. Only the new engagers get enriched.
+        </div>
+        <div className="toolbar">
+          {sweep?.running
+            ? <button className="btn btn-ghost btn-sm" onClick={pauseSweep}><Icon name="pause" />Pause sweep</button>
+            : <button className="btn btn-sm" onClick={runSweep}><Icon name="bolt" />Run keyword sweep</button>}
+          {sweep?.running ? <span className="muted" style={{ fontSize: 12 }}>{sweep.phase === "scraping" ? "scraping" : "searching"} &middot; <b>{sweep.keyword}</b> &rarr; {sweep.campaign}</span> : null}
+        </div>
+        {(sweep?.running || sweep?.finishedAt) ? (
+          <div className={`jobbox${sweep.running ? " on" : ""}`} style={{ marginTop: 10 }}>
+            <div className="jobh"><Icon name={sweep.running ? "refresh" : "check"} />
+              <span><b>{sweep.running ? "Sweeping" : sweep.phase === "paused" ? "Paused" : "Done"}</b> &middot; {num(sweep.keywordsDone)}/{num(sweep.totalKeywords)} keywords &middot;{" "}
+                <b>{num(sweep.postsScraped)}</b> posts scraped &middot; <b className="ok">{num(sweep.newEngagers)}</b> new engagers
+                {sweep.skippedUnchanged ? <span className="muted"> &middot; {num(sweep.skippedUnchanged)} unchanged</span> : null}
+                {sweep.skippedSmall ? <span className="muted"> &middot; {num(sweep.skippedSmall)} too small</span> : null}
+                {sweep.creditsUsed != null ? <> &middot; <b>{num(sweep.creditsUsed)}</b> credits</> : null}</span>
+            </div>
+            <div className={`prog${sweep.running ? " on" : ""}`}><i style={{ width: `${sweep.totalKeywords ? Math.round((sweep.keywordsDone / sweep.totalKeywords) * 100) : 3}%` }} /></div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="chartbox" style={{ marginBottom: "var(--s3)" }}>
         <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><h4 style={{ margin: 0 }}><Icon name="radio" />Scrape via post <span className="tag-harv">new</span></h4><div className="grow" />
           <span className="muted" style={{ fontSize: 12 }}>{scrape?.rapid ? `Fresh scraper: ${num((scrape.rapid.reactionPages || 0) + (scrape.rapid.commentPages || 0))} pages used${scrape.rapid.outOfCredits ? " · out of credits" : ""}` : ""}</span></div>
         <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>Paste a LinkedIn post URL — we scrape ALL its reactors + commenters (interleaved: leads flow as it runs) and route them by topic. Pausable + resumable.</div>
         <div className="toolbar"><input className="search" placeholder="https://www.linkedin.com/feed/update/urn:li:activity:..." style={{ flex: 1, minWidth: 0 }} value={inPost} onChange={(e) => setInPost(e.target.value)} />
+          <select value={inCamp} onChange={(e) => setInCamp(e.target.value)}
+            title="Where these engagers should go. Auto reads the post and picks the matching campaign; choose one to override — e.g. send an Instantly post's engagers to Cold Email.">
+            <option value="">Auto — route by topic</option>
+            {campaigns.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+          </select>
           <button className="btn btn-sm" onClick={scrapePost}><Icon name="bolt" />Scrape post</button></div>
         <div style={{ marginTop: 10 }}><ScrapeBox s={scrape} onPause={pauseScrape} onResume={resumeScrape} /></div>
       </div>

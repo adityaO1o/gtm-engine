@@ -2,7 +2,7 @@ import Icon from "@/components/Icon";
 import { num, ts } from "@/lib/format";
 import { StatusBadge, EmailPill, MethodLabel, VerifiedCell, SourceCell } from "@/lib/cells";
 
-export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClick, onReverify, loading, sort, onSort }) {
+export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClick, onReverify, loading, sort, onSort, selectingAll, count }) {
   if (loading && !rows.length) {
     return <div className="tablewrap"><div className="loading"><span className="spin" />Loading leads…</div></div>;
   }
@@ -19,7 +19,7 @@ export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClic
       <table>
         <thead>
           <tr>
-            <th className="chkcol"><input type="checkbox" className="chk" checked={allChecked} onChange={(e) => toggleAll(e.target.checked)} /></th>
+            <th className="chkcol" title={count ? `Selects all ${count.toLocaleString()} matching this filter, not just this page` : ""}><input type="checkbox" className="chk" disabled={selectingAll} checked={allChecked} onChange={(e) => toggleAll(e.target.checked)} /></th>
             <th>Person</th><th>Company</th><th>Status</th>
             <th className={onSort ? "sortable" : ""} onClick={() => onSort && onSort("score")}>Score{sort === "score" && <span className="sortarrow">▼</span>}</th>
             <th>Email</th><th>Found by</th><th>Verified</th><th>Source</th><th>Categories</th><th>Seen</th>

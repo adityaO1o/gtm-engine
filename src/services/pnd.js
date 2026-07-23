@@ -192,9 +192,26 @@ export async function pndSearchPosts({ keyword, datePosted = "past-week", sortBy
       },
       postedAt: p.postedAt || p.postedDate || null,
       postedTimestamp: p.postedDateTimestamp || p.postedTimestamp || null,
+      // Engagement counts come back WITH the search — free, no extra call. They drive three things:
+      // whether a post is worth scraping at all, whether an already-scraped post has GROWN, and
+      // which reaction types actually have anyone in them (so we don't burn a credit paging PRAISE
+      // on a post with zero praises).
+      counts: socialCounts(p.socialActivityCountsInsight),
     };
   }).filter((p) => p.postUrl || p.text);
   return { posts, total: d.data?.total ?? posts.length };
+}
+
+// LinkedIn's per-emoji counter -> our REACTION_TYPES vocabulary. "maybeCount" has no matching
+// reactionType (the API rejects "MAYBE"), so it's deliberately not mapped.
+export function socialCounts(s = {}) {
+  const n = (v) => (typeof v === "number" ? v : 0);
+  return {
+    LIKE: n(s.likeCount), PRAISE: n(s.praiseCount), EMPATHY: n(s.empathyCount),
+    INTEREST: n(s.InterestCount ?? s.interestCount), APPRECIATION: n(s.appreciationCount),
+    ENTERTAINMENT: n(s.funnyCount),
+    totalReactions: n(s.totalReactionCount), comments: n(s.numComments),
+  };
 }
 
 // Commenters, with their REAL vanity URL (no resolve needed).

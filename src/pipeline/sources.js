@@ -216,8 +216,14 @@ async function scrapeAndEnrich(postUrl, camp, category) {
   // reaction of every smaller type. typeIdx walks REACTION_TYPES so a pause/resume continues from
   // the exact (type, page) it stopped at.
   if (!cp.reactionsDone) {
+    // search-posts hands us each post's per-emoji counts for free, so we can skip the types nobody
+    // used. Paging all six on a likes-only post wasted five credits per post; now only the types
+    // with a non-zero count are paged. Unknown counts (post came from a URL, not a search) fall
+    // back to paging everything.
+    const known = rec.type_counts || null;
     for (let ti = cp.typeIdx || 0; ti < REACTION_TYPES.length; ti++) {
       const rt = REACTION_TYPES[ti];
+      if (known && !known[rt]) continue; // nobody reacted with this emoji — don't spend a credit
       let collected = 0, total = Infinity;
       const startPage = ti === (cp.typeIdx || 0) ? (cp.page || 1) : 1; // resume mid-type only for the saved type
       for (let page = startPage; page <= 38; page++) { // PND hard-caps at 38; no point paging past it
@@ -286,14 +292,21 @@ async function finalizeScrape(postUrl, phase) {
 }
 
 // Start a NEW scrape, or RESUME a paused/interrupted one for the same postUrl.
+// Fire-and-forget wrapper for the dashboard button.
 export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
-  const { routeSourceEngager, campaignByKey } = await import("../services/campaigns.js");
   if (!postUrl) return { ok: false, error: "postUrl required" };
   if (scrapeOneRunning) return { ok: false, error: "already running", ...scrapeOneStatus };
+  scrapeOneInner({ postUrl, campaignKey }).catch((e) => log.error("scrapeOnePost error", { err: e.message }));
+  return { ok: true, started: true };
+}
+
+// The same job, but AWAITABLE — the keyword sweep runs posts one after another and needs to know
+// when each finishes. Callers must not run two at once (scrapeOneRunning guards the button path).
+export async function scrapeOneInner({ postUrl, campaignKey = "" }) {
+  const { routeSourceEngager, campaignByKey } = await import("../services/campaigns.js");
   scrapeOneRunning = true;
   scrapeCtl = { postUrl, paused: false };
-
-  (async () => {
+  {
     try {
       const rec = (await scrapedPosts().findOne({ postUrl })) || {};
 
@@ -340,11 +353,10 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
       if (res === "done") await scrapedPosts().updateOne({ postUrl }, { $set: { scrape_done: true, engager_total: await scrapeEngagers().countDocuments({ postUrl }) } });
       return await finalizeScrape(postUrl, res === "paused" ? "paused" : res === "stopped" ? "stopped" : "done");
     } catch (e) {
-      log.error("scrapeOnePost error", { err: e.message });
+      log.error("scrapeOne error", { err: e.message });
       return await finalizeScrape(postUrl, "error");
     }
-  })();
-  return { ok: true, started: true };
+  }
 }
 
 export async function runSources({ force = false } = {}) {

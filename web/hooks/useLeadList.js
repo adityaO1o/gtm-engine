@@ -41,11 +41,27 @@ export function useLeadList(fixed = {}) {
 
   const setFilter = (k, v) => { setFilters((f) => ({ ...f, [k]: v })); setPage(0); };
   const toggle = (url) => setSelected((s) => { const n = new Set(s); n.has(url) ? n.delete(url) : n.add(url); return n; });
-  const toggleAll = (checked) => setSelected(() => (checked ? new Set(data.rows.map((r) => r.linkedin_url)) : new Set()));
+  // The header checkbox used to select only the rows on screen, which quietly meant "select 100"
+  // when the filter matched 800 — and every bulk action then applied to the wrong set. It now asks
+  // the server for every id matching the CURRENT filter.
+  const [selectingAll, setSelectingAll] = useState(false);
+  const toggleAll = async (checked) => {
+    if (!checked) return setSelected(new Set());
+    setSelectingAll(true);
+    try {
+      const p = query();
+      p.delete("limit"); p.delete("skip");
+      const d = await j("/api/leads/ids?" + p.toString());
+      setSelected(new Set(d.ids || []));
+    } catch {
+      setSelected(new Set(data.rows.map((r) => r.linkedin_url))); // fall back to the page
+    }
+    setSelectingAll(false);
+  };
   const selectPage = () => setSelected(new Set(data.rows.map((r) => r.linkedin_url)));
   const clearSel = () => setSelected(new Set());
   // Optimistic: drop rows immediately (e.g. after approve/discard) before the server confirms.
   const removeRows = (urls) => setData((d) => ({ rows: d.rows.filter((r) => !urls.includes(r.linkedin_url)), count: Math.max(0, d.count - urls.length) }));
 
-  return { filters, setFilter, page, setPage, size, setSize, data, loading, refresh, selected, toggle, toggleAll, selectPage, clearSel, removeRows, query };
+  return { filters, setFilter, page, setPage, size, setSize, data, loading, refresh, selected, toggle, toggleAll, selectPage, clearSel, removeRows, query, selectingAll };
 }

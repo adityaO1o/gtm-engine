@@ -18,6 +18,7 @@ import { validateEmail } from "../services/enrich.js";
 import { findEmailWaterfall } from "../pipeline/enrichLead.js";
 import { reprocessNoEmail, reprocessStatus, noEmailQuery, MISS_REASONS } from "../pipeline/reprocess.js";
 import { runBouncebanAudit, bouncebanAuditStatus, bouncebanScorecard, bouncebanProof, runBouncebanRepair, bouncebanRepairStatus, bouncebanCampaignReport, dncUnvouched, auditQuery } from "../pipeline/bouncebanAudit.js";
+import { runKeywordSweep, keywordSweepStatus, pauseKeywordSweep } from "../pipeline/keywordSweep.js";
 import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { campaignByKey, campaignLabel, sendkitIdsFor } from "../services/campaigns.js";
@@ -145,6 +146,15 @@ apiRouter.get("/campaigns", ttlCache(10), async (_req, res) => {
     };
   }).sort((a, b) => b.total - a.total);
   res.json({ campaigns: out, prospeo, jina });
+});
+
+// GET /api/leads/ids — every linkedin_url matching the CURRENT filter, so "select all" can mean
+// all 800 results rather than the 100 on screen. Ids only (no documents), so even a large result
+// set is a small response.
+apiRouter.get("/leads/ids", async (req, res) => {
+  const filter = buildLeadFilter(req.query);
+  const rows = await leads().find(filter, { projection: { linkedin_url: 1, _id: 0 } }).limit(20000).toArray();
+  res.json({ ids: rows.map((r) => r.linkedin_url), count: rows.length });
 });
 
 // GET /api/leads?status=&email_status=&category=&campaign=&q=&sort=&limit=&skip=
@@ -613,6 +623,18 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
   }));
   res.json({ posts: out });
 });
+
+// Keyword sweep — finds this week's posts for every campaign keyword and scrapes their engagers.
+// This is what the Trigify workflows used to do; the engine does it itself now.
+apiRouter.post("/keywords/sweep", (req, res) => {
+  const st = keywordSweepStatus();
+  if (st.running) return res.json({ alreadyRunning: true, ...st });
+  const keywords = Array.isArray(req.body?.keywords) ? req.body.keywords : [];
+  runKeywordSweep({ keywords }).catch((e) => console.error("keyword sweep error", e.message));
+  res.json({ started: true });
+});
+apiRouter.get("/keywords/sweep/status", (_req, res) => res.json(keywordSweepStatus()));
+apiRouter.post("/keywords/sweep/pause", (_req, res) => res.json(pauseKeywordSweep()));
 
 // POST /api/sources/pause { paused } — master switch for the auto influencer/hub sweep
 apiRouter.post("/sources/pause", (req, res) => res.json({ paused: setAutoScrape(!!req.body?.paused) }));
