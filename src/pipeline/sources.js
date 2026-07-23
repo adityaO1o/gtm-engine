@@ -110,8 +110,12 @@ async function queueUpsert(postUrl, engagers) {
       engagement_type: e.engagement_type || "like", comment_text: e.comment_text || "", enriched: false, at: new Date(),
     } }, upsert: true } });
   }
-  if (ops.length) await scrapeEngagers().bulkWrite(ops, { ordered: false }).catch((e) => log.warn("scrape queue upsert failed", { err: e.message }));
-  return ekeys;
+  let newCount = 0;
+  if (ops.length) {
+    const r = await scrapeEngagers().bulkWrite(ops, { ordered: false }).catch((e) => { log.warn("scrape queue upsert failed", { err: e.message }); return null; });
+    newCount = r?.upsertedCount ?? 0;
+  }
+  return { ekeys, newCount };
 }
 const saveCp = (postUrl, cp) => scrapedPosts().updateOne({ postUrl }, { $set: { scrape_cp: cp } }).catch(() => {});
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -202,12 +206,15 @@ async function scrapeAndEnrich(postUrl, camp, category) {
   if (rec.scrape_done && !reactionsReset) return "done";
 
   // Absorb one scraped page: queue it, then enrich it immediately (interleaved), then checkpoint.
+  // Returns how many of that page's engagers were NEW — which is how a re-scrape knows whether the
+  // fresh reactions sit at the front of the list or the back.
   const absorb = async (engagers, nextCp) => {
-    const ekeys = await queueUpsert(postUrl, engagers);
+    const { ekeys, newCount } = await queueUpsert(postUrl, engagers);
     scrapeOneStatus.total = await scrapeEngagers().countDocuments({ postUrl });
     await enrichPage(postUrl, ekeys, camp, category);
     Object.assign(cp, nextCp);
     await saveCp(postUrl, { ...cp });
+    return newCount;
   };
 
   // REACTIONS — page each TYPE separately. PND caps every request at page 38 (1,900 reactions), but
@@ -221,21 +228,61 @@ async function scrapeAndEnrich(postUrl, camp, category) {
     // with a non-zero count are paged. Unknown counts (post came from a URL, not a search) fall
     // back to paging everything.
     const known = rec.type_counts || null;
+    // Per-type memory of what we already pulled: { LIKE: {count, pages} }. This is what makes a
+    // re-scrape cheap rather than a full re-read:
+    //   • a type whose count hasn't moved is skipped ENTIRELY — zero credits, no assumptions
+    //   • a type that grew is resumed, not restarted
+    cp.types = cp.types || {};
     for (let ti = cp.typeIdx || 0; ti < REACTION_TYPES.length; ti++) {
       const rt = REACTION_TYPES[ti];
       if (known && !known[rt]) continue; // nobody reacted with this emoji — don't spend a credit
-      let collected = 0, total = Infinity;
-      const startPage = ti === (cp.typeIdx || 0) ? (cp.page || 1) : 1; // resume mid-type only for the saved type
+      const seen = cp.types[rt] || null;
+      const want = known ? known[rt] : null;
+      // Nothing new in this emoji since last time — skip it without spending anything.
+      if (seen?.done && want != null && seen.count >= want) continue;
+
+      let collected = 0, total = Infinity, emptyRun = 0;
+      // Resuming mid-type after a pause takes priority; otherwise start at page 1 and let the first
+      // page tell us where the new reactions live (see the jump below).
+      let startPage = ti === (cp.typeIdx || 0) && cp.page > 1 ? cp.page : 1;
+      let probed = !seen?.pages; // a first-ever scrape has nothing to probe against
+
       for (let page = startPage; page <= 38; page++) { // PND hard-caps at 38; no point paging past it
         if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp, typeIdx: ti, page }); return "paused"; }
         const r = await pageWithBackoff(() => pndReactionPage(postUrl, page, rt));
         if (r === "paused") { await saveCp(postUrl, { ...cp, typeIdx: ti, page }); return "paused"; }
         if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp, typeIdx: ti, page }); return "stopped"; }
-        await absorb(r.engagers, { typeIdx: ti, page: page + 1 });
+        const newCount = await absorb(r.engagers, { typeIdx: ti, page: page + 1 });
+
+        // ── where are the NEW reactions? Decided once, from real data, on the first page of a
+        // re-scrape — because LinkedIn could be appending them at the end or putting them first,
+        // and guessing wrong either wastes credits or silently misses people.
+        //   page 1 all already-seen  -> new ones are at the BACK  -> jump to where we stopped
+        //   page 1 has new people    -> new ones are at the FRONT -> keep going, stop when it dries
+        if (!probed) {
+          probed = true;
+          if (newCount === 0 && seen.pages > page) {
+            page = seen.pages - 1;            // -1 because the loop increments
+            collected = 0;                     // the jumped-over pages are already in the queue
+            continue;
+          }
+        }
+        // Front-loaded case: once two pages in a row bring nobody new, the rest is all old.
+        if (seen?.pages) {
+          emptyRun = newCount === 0 ? emptyRun + 1 : 0;
+          if (emptyRun >= 2) break;
+        }
+
         collected += r.count;
         if (typeof r.total === "number") total = r.total;
+        cp.types[rt] = { count: typeof r.total === "number" ? r.total : (want ?? 0), pages: page, done: false };
         if (!r.count || collected >= total) break;
       }
+      // This emoji is fully pulled at its current count — a later run skips it for free unless the
+      // count moves. Marked only after the pages loop completes normally (a pause/stop returns
+      // early above, so an interrupted type is never recorded as done).
+      if (cp.types[rt]) cp.types[rt].done = true;
+      await saveCp(postUrl, { ...cp });
     }
     Object.assign(cp, { reactionsDone: true, typeIdx: 0, page: 1, token: "" });
     await saveCp(postUrl, { ...cp });
@@ -343,7 +390,7 @@ export async function scrapeOneInner({ postUrl, campaignKey = "" }) {
       await scrapedPosts().updateOne({ postUrl }, { $set: det
         ? { title: det.title, poster_name: det.posterName, poster_url: det.posterUrl, text: (det.text || "").slice(0, 300),
             expected_reactions: det.numReactions, expected_comments: det.numComments, posted: det.posted,
-            activity_urn: det.urn || null, titleTried: new Date() }
+            type_counts: det.counts || null, activity_urn: det.urn || null, titleTried: new Date() }
         : { titleTried: new Date() },
       }).catch(() => {});
 

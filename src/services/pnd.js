@@ -268,6 +268,9 @@ export async function pndPostInfo(urlOrUrn) {
     posterName: name || null,
     posterUrl: a.url || (a.username ? `https://www.linkedin.com/in/${a.username}` : null),
     text: text || null, // FULL body — the router classifies on this; callers slice for display
+    // get-post carries the same per-emoji breakdown search-posts does, so a MANUALLY pasted post
+    // gets the empty-reaction-type skip too — not just posts found by the keyword sweep.
+    counts: socialCounts(p),
     numReactions: p.totalReactionCount ?? null,
     numComments: p.commentsCount ?? null,
     posted: p.postedDate || p.postedAt || null,

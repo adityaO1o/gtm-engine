@@ -110,14 +110,18 @@ export async function runKeywordSweep({ keywords = [] } = {}) {
           $setOnInsert: { startedAt: new Date() },
         }, { upsert: true }).catch(() => {});
 
-        // A post that grew needs its reaction pages re-read (the queue dedups, so nobody already
-        // enriched is charged for again). Clearing scrape_done is what lets it run a second time.
+        // A post that grew is re-opened — but its PER-TYPE progress (scrape_cp.types) is deliberately
+        // kept. That memory is what makes the second pass cheap: emojis whose count didn't move are
+        // skipped outright, and the ones that did grow resume from the page they reached instead of
+        // re-reading from page 1. Only reactionsDone/commentsDone are cleared, so the phases run
+        // again and consult that memory. typeIdx/page are reset because they're a mid-run pause
+        // pointer, not cross-run state.
         if (rec?.scrape_done && seenBefore !== null && engagers > seenBefore) {
           await scrapedPosts().updateOne({ postUrl: p.postUrl }, {
             $unset: { scrape_done: "" },
             $set: { "scrape_cp.reactionsDone": false, "scrape_cp.commentsDone": false, "scrape_cp.typeIdx": 0, "scrape_cp.page": 1 },
           }).catch(() => {});
-          log.info("keyword post grew — re-scraping the delta", { postUrl: p.postUrl, was: seenBefore, now: engagers });
+          log.info("keyword post grew — re-scraping only the delta", { postUrl: p.postUrl, was: seenBefore, now: engagers });
         }
 
         status.phase = "scraping";
