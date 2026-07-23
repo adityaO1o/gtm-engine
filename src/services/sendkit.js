@@ -64,9 +64,11 @@ async function withRetry(fn, tries = 5) {
   return r;
 }
 
-// Do-Not-Contact. SendKit has NO "remove lead from campaign" endpoint, so once a lead has been
-// pushed, DNC is the only way to guarantee it is never emailed. Campaigns run skipDNC:true, so
-// a DNC'd address is skipped at send time. `reason` is an enum: manual|bounce|complaint|unsubscribe_link.
+// Do-Not-Contact — the workspace-wide send-time suppression list. Campaigns run skipDNC:true, so
+// a DNC'd address is skipped at send time regardless of which campaigns it sits in. Use this to
+// block an address everywhere; use removeFromCampaign to pull it out of a SPECIFIC campaign (that
+// endpoint exists — the older "SendKit has no remove endpoint" assumption was wrong). `reason` is
+// an enum: manual|bounce|complaint|unsubscribe_link.
 export async function addToDnc(emails = []) {
   const list = [...new Set(emails.filter(Boolean).map((e) => e.trim().toLowerCase()))];
   if (!list.length) return { added: 0, failed: 0 };
@@ -116,8 +118,9 @@ export async function fetchDncEmails() {
 }
 
 // How many leads SendKit itself says are in a campaign. NOTE this number does not fall when we
-// DNC someone: SendKit has no remove-from-campaign endpoint, so a blocked lead stays a member and
-// is skipped at send time. Membership and deliverability are different questions.
+// DNC someone: DNC blocks at send time but leaves the membership in place — a DNC'd lead stays a
+// member and is skipped when sending. To actually drop the membership, use removeFromCampaign.
+// Membership and deliverability are different questions.
 export async function campaignLeadCount(campaignId) {
   if (!campaignId) return null;
   try {
@@ -144,7 +147,8 @@ export async function campaignMembers(campaignId) {
     if (r.status >= 300) { log.warn("sendkit campaign members failed", { campaignId, status: r.status, got: out.length }); break; }
     for (const m of (r.data?.data || [])) {
       const email = String(m.leadId?.email || "").trim().toLowerCase();
-      if (email) out.push({ email, status: m.status, addedAt: m.addedAt });
+      // m._id is the CAMPAIGN-LEAD record id (not the lead id) — the identifier removeFromCampaign needs.
+      if (email) out.push({ email, campaignLeadId: m._id, status: m.status, addedAt: m.addedAt });
     }
     cursor = r.data?.pagination?.nextCursor || "";
     if (!cursor) break;
@@ -205,6 +209,37 @@ export async function addLeadsToCampaign(campaignId, emails = []) {
     }
   }
   return { added, skipped, failed };
+}
+
+// Remove leads from a campaign. `leadIds` are CAMPAIGN-LEAD record ids (the top-level `_id` from
+// GET /campaigns/:id/leads — i.e. campaignMembers().campaignLeadId), NOT emails or lead ids.
+// SendKit hard-deletes a lead that has had no email sent, and soft-deletes (status -> "removed",
+// sending stops) one with send history. Batched by 100. Used by the campaign-dedup cleanup to
+// pull a lead out of every campaign except the first one they were seen in.
+export async function removeFromCampaign(campaignId, leadIds = []) {
+  const ids = [...new Set((leadIds || []).filter(Boolean).map(String))];
+  if (!campaignId || !ids.length) return { removed: 0, failed: 0 };
+  let removed = 0, failed = 0;
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    try {
+      const r = await withRetry(() => axios.post(
+        `${base}/v1/campaigns/${campaignId}/leads/action`,
+        { action: "remove", leadIds: chunk },
+        { headers: h(), timeout: 40000, validateStatus: () => true }
+      ));
+      if (r.status >= 300) {
+        failed += chunk.length;
+        log.warn("sendkit removeFromCampaign failed", { campaignId, n: chunk.length, status: r.status, body: JSON.stringify(r.data || {}).slice(0, 200) });
+        continue;
+      }
+      removed += r.data?.data?.modifiedCount ?? chunk.length;
+    } catch (e) {
+      failed += chunk.length;
+      log.warn("sendkit removeFromCampaign threw", { campaignId, err: e.message });
+    }
+  }
+  return { removed, failed };
 }
 
 // Single-lead add (used by the live /enrich path). A 2xx means the lead is in the campaign —

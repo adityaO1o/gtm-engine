@@ -75,12 +75,23 @@ export const CAMPAIGN_ID = Object.fromEntries(
   [...CAMPAIGNS.map((c) => [c.key, c.sendkitId]), ...Object.entries(ALIAS).map(([a, k]) => [a, byKey[k].sendkitId])]
 );
 
-// short display label from any campaign name
-// Every SendKit campaign id a lead belongs to. A person who engages with a Smartlead post AND
-// a Cold Email post sits in BOTH campaigns — our per-campaign "verified" counts reflect that,
-// so the push must too. Only ever pushing campaigns[0] is what left SendKit short.
-export const sendkitIdsFor = (campaigns = []) =>
-  [...new Set((campaigns || []).map((c) => CAMPAIGN_ID[resolveKey(c)]).filter(Boolean))];
+// A lead is enrolled in exactly ONE active SendKit campaign: the FIRST one they were seen in,
+// and they are NEVER moved off it. `campaigns[]` is built with $addToSet, which preserves
+// insertion order, so [0] is first-seen; we take the first entry that maps to a real campaign
+// (skipping any legacy/unmapped name at the front).
+//
+// This used to return EVERY campaign the lead had ever engaged across, and every push site loops
+// over the result — so one person who engaged with a Smartlead post, an Instantly post, a Cold
+// Email post and an Infrastructure post was enrolled in all 4 SendKit sequences at once and got
+// emailed 4 times in parallel. Returning a single id (still as a 1-element array so every
+// `for (const cid of sendkitIdsFor(...))` caller keeps working) is the fix, funnelled here so no
+// call site can reintroduce the duplication. NOTE: SendKit has no remove-from-campaign endpoint,
+// so this stops NEW duplicates only — leads already in multiple campaigns must be cleaned via DNC.
+export const sendkitIdsFor = (campaigns = []) => {
+  const first = (campaigns || []).find((c) => CAMPAIGN_ID[resolveKey(c)]);
+  const id = first ? CAMPAIGN_ID[resolveKey(first)] : null;
+  return id ? [id] : [];
+};
 
 export const campaignLabel = (name) =>
   (campaignByKey(name)?.label) || (name || "").replace(/\s*(Keyword )?Engagers - InboxKit$/, "").replace(/ - InboxKit$/, "").trim();
