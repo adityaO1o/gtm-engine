@@ -111,9 +111,13 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
   // entirely, and it returns the EXACT company website (no Clearbit guessing). Both hops are cached,
   // so repeat leads at the same company — and any later retry of this lead — cost nothing.
   if (!em.found && !domain && !skipPaid && (vanity || linkedin_url)) {
-    paidTried = true;
+    // paidTried means "a lookup was actually BOUGHT", not "we reached this branch". It used to be
+    // set here, before the call — so when PND was out of credits (pndProfile returns null without
+    // issuing a request) every lead still got stamped as already-paid, and skipPaid then suppressed
+    // the paid tier for them FOREVER, even after a top-up. Set it only on a real result.
     const ex = await pndExactDomain(vanity || linkedin_url);
     if (ex) {
+      paidTried = true;
       if (ex.vanity) vanity = ex.vanity;
       if (ex.company && !company) company = ex.company;
       if (ex.domain) { domain = ex.domain; domainSource = "pnd"; }
@@ -123,6 +127,7 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
     if (!em.found && !domain && paidOn) {
       const pc = await profileCompany(!isUrn(vanity) ? vanity : linkedin_url);
       if (pc) {
+        paidTried = true; // this host is paid too — a real answer here also counts as "bought"
         if (pc.vanity) vanity = pc.vanity;
         if (pc.company && !company) company = pc.company;
         if (pc.domain) { domain = pc.domain; domainSource = "webscrape"; }
@@ -247,8 +252,15 @@ export async function enrichLead(input) {
   // nothing about the lead goes stale. Only the provider calls are skipped, and only inside the
   // same backoff the retry pipeline already uses, so a stale lead still gets fresh attempts later.
   // The Hand-off retry (and its "deep" mode) is untouched and remains the deliberate way to try again.
-  if (known && known.email_status === "no-email" && known.last_email_attempt_at
-      && Date.now() - new Date(known.last_email_attempt_at).getTime() < NO_EMAIL_BACKOFF_MS) {
+  // Both timestamps are consulted: the live path stamps last_email_attempt_at and the retry
+  // pipeline stamps last_retry_at. Reading only our own field meant the two pipelines were blind to
+  // each other — a lead the retry had just failed on would be re-bought in full by the next scrape.
+  const lastTried = Math.max(
+    known?.last_email_attempt_at ? new Date(known.last_email_attempt_at).getTime() : 0,
+    known?.last_retry_at ? new Date(known.last_retry_at).getTime() : 0,
+  );
+  if (known && known.email_status === "no-email" && lastTried
+      && Date.now() - lastTried < NO_EMAIL_BACKOFF_MS) {
     const key = known.linkedin_url;
     const scored = await recordEngagement(key, { name, headline, category, engagement_type, campaign, post_url, comment_text, now });
     const add = { campaigns: campaign, posts_seen: post_url };
@@ -272,7 +284,12 @@ export async function enrichLead(input) {
   const w = await findEmailWaterfall({ name, headline, linkedin_url, skipPaid: !!known?.paid_profile_tried });
   const { em, emailSource, emailMethod, preVerified, company, domainSource, guardRejected } = w;
   let prospeoCalls = w.prospeoCalls;
-  const key = w.key;
+  // If we already matched an existing lead (possibly via their remembered `urns`), that document's
+  // linkedin_url IS the canonical key — use it. w.key falls back to the raw URN whenever the vanity
+  // couldn't be resolved, and skipPaid now makes that far more likely because the paid lookup (which
+  // used to resolve the URN as a side effect) is skipped. Keying on the URN would upsert a SECOND
+  // document for someone already stored under their vanity URL, restarting times_seen at 1.
+  const key = known?.linkedin_url || w.key;
 
   // record the engagement now that we know the identity key
   const scored = await recordEngagement(key, { name, headline, category, engagement_type, campaign, post_url, comment_text, now });

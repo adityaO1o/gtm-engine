@@ -58,7 +58,11 @@ function noEmailRetryQuery(campaigns, deep) {
   if (campaigns.length) q.campaigns = { $in: campaigns };
   if (!deep) {
     q.$and = [
+      // Both timestamps: the live scrape stamps last_email_attempt_at, this pipeline stamps
+      // last_retry_at. Checking only our own field meant a lead the live path had just tried was
+      // immediately retried here, re-buying the same providers.
       { $or: [{ last_retry_at: { $exists: false } }, { last_retry_at: { $lt: new Date(Date.now() - BACKOFF_MS) } }] },
+      { $or: [{ last_email_attempt_at: { $exists: false } }, { last_email_attempt_at: { $lt: new Date(Date.now() - BACKOFF_MS) } }] },
       { $or: [{ last_miss_reason: { $exists: false } }, { last_miss_reason: { $nin: TERMINAL } }] },
       { $or: [{ retry_count: { $exists: false } }, { retry_count: { $lt: MAX_ATTEMPTS } }] },
     ];
@@ -71,7 +75,11 @@ function unverifiedRetryQuery(campaigns, deep) {
   if (campaigns.length) q.campaigns = { $in: campaigns };
   if (!deep) {
     q.$and = [
+      // Both timestamps: the live scrape stamps last_email_attempt_at, this pipeline stamps
+      // last_retry_at. Checking only our own field meant a lead the live path had just tried was
+      // immediately retried here, re-buying the same providers.
       { $or: [{ last_retry_at: { $exists: false } }, { last_retry_at: { $lt: new Date(Date.now() - BACKOFF_MS) } }] },
+      { $or: [{ last_email_attempt_at: { $exists: false } }, { last_email_attempt_at: { $lt: new Date(Date.now() - BACKOFF_MS) } }] },
       { $or: [{ retry_count: { $exists: false } }, { retry_count: { $lt: MAX_ATTEMPTS } }] },
     ];
   }

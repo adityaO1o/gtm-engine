@@ -21,8 +21,9 @@ import { scrapeOneInner, pauseScrapePost } from "./sources.js";
 import { meterFlush } from "../services/apiMeter.js";
 import { log } from "../lib/logger.js";
 
-// A post with a handful of reactions isn't worth a scrape — the engagers cost real money to enrich
-// and a 2-reaction post yields nothing. Tunable from the dashboard later if it proves wrong.
+// Below this, a post isn't worth opening: its engagers cost real enrichment money and a thin post
+// rarely yields a usable lead. This only gates posts we've never touched — see the check below,
+// which never abandons a post whose engagers are already queued.
 const MIN_ENGAGERS = 15;
 
 let running = false;
@@ -87,11 +88,16 @@ export async function runKeywordSweep({ keywords = [] } = {}) {
 
         const counts = p.counts || {};
         const engagers = (counts.totalReactions || 0) + (counts.comments || 0);
-        if (engagers < MIN_ENGAGERS) { status.skippedSmall++; continue; }
 
         // Has this post already been scraped, and has it GROWN since? Both answered for free from
         // the search result — no call needed to find out there's nothing new.
         const rec = await scrapedPosts().findOne({ postUrl: p.postUrl });
+
+        // Too thin to be worth opening — but only if we've never touched it. Raising this threshold
+        // would otherwise strand posts queued under the old one: their engagers are already scraped
+        // and paid for, and skipping here means scrapeOneInner (and with it enrichPending, which
+        // drains enriched:false) never runs, so those people never become leads.
+        if (engagers < MIN_ENGAGERS && !rec) { status.skippedSmall++; continue; }
         const seenBefore = rec?.last_total_engagers ?? null;
         if (rec?.scrape_done && seenBefore !== null && engagers <= seenBefore) {
           status.skippedUnchanged++;

@@ -217,49 +217,6 @@ async function scrapeAndEnrich(postUrl, camp, category) {
     return newCount;
   };
 
-  // COMMENTERS FIRST — they arrive WITH their real vanity URL, so they cost less to enrich (no
-  // SERP resolve) and they're the higher-intent half of a post's audience: they wrote something,
-  // they didn't just tap like. Running them first means a scrape that is paused, runs out of
-  // credits or dies partway has already banked the better half.
-  //
-  // Reactions above post the raw URL, so they work on any post and always did. Comments need the
-  // ACTIVITY urn, which a share-link doesn't carry (it has urn:li:share — a different id for the
-  // same post), so resolve it properly and record a skip rather than pretending the phase ran.
-  if (!cp.commentsDone) {
-    const urn = await resolveActivityUrn(postUrl);
-    if (!urn) {
-      log.warn("no activity urn for post — commenters NOT scraped", { postUrl });
-      await scrapedPosts().updateOne({ postUrl }, { $set: { comments_skipped: true, comments_skip_reason: "could not resolve the post URL to an activity urn" } });
-      Object.assign(cp, { commentsDone: true });
-      await saveCp(postUrl, { ...cp });
-      // Deliberately NOT a return: reactions post the raw URL and work on any post, so an
-      // unresolvable urn must cost this post its commenters only — not its reactors as well.
-    } else {
-    await scrapedPosts().updateOne({ postUrl }, { $unset: { comments_skipped: "", comments_skip_reason: "" } });
-    // Page-based, like reactions: the endpoint reports total/totalPage and has no pagination token.
-    // The old loop broke as soon as the token came back empty — and it ALWAYS came back empty —
-    // so even once the parser is fixed, this had to change or we'd only ever read page one.
-    for (let page = cp.page || 1; page <= 400; page++) {
-      if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp, page }); return "paused"; }
-      const r = await pageWithBackoff(() => pndCommentPage(urn, { page }));
-      if (r === "paused") { await saveCp(postUrl, { ...cp, page }); return "paused"; }
-      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp, page }); return "stopped"; }
-      // How many commenters are actually REACHABLE. LinkedIn's own comment count includes replies
-      // to comments, which this endpoint doesn't return — a post showing "6 comments" hands back 3
-      // top-level commenters. Using LinkedIn's number as the target made a COMPLETE scrape read as
-      // "14 of 17", i.e. a permanent phantom shortfall.
-      if (page === 1 && r.total != null) await scrapedPosts().updateOne({ postUrl }, { $set: { comments_available: r.total } });
-      await absorb(r.engagers, { page: page + 1 });
-      if (!r.count || (r.totalPage && page >= r.totalPage)) break;
-    }
-    // Reset the page pointer: cp.page is shared with the reactions phase, which now runs AFTER
-    // this one. Leaving it at the last comment page would make LIKE start mid-way and silently
-    // skip its first pages.
-    Object.assign(cp, { commentsDone: true, page: 1, typeIdx: 0 });
-    await saveCp(postUrl, { ...cp });
-    }
-  }
-
   // REACTIONS — page each TYPE separately. PND caps every request at page 38 (1,900 reactions), but
   // that cap is PER reactionType, so LIKE/PRAISE/EMPATHY/… each get their own budget. type=ALL
   // topped out at 1,900 for the whole post; this reaches 1,900 of the dominant type PLUS every
@@ -331,6 +288,40 @@ async function scrapeAndEnrich(postUrl, camp, category) {
     await saveCp(postUrl, { ...cp });
   }
 
+  // COMMENTS — commenters arrive WITH their real vanity URL, so they never need a SERP resolve.
+  //
+  // Reactions above post the raw URL, so they work on any post and always did. Comments need the
+  // ACTIVITY urn, which a share-link doesn't carry (it has urn:li:share — a different id for the
+  // same post), so resolve it properly and record a skip rather than pretending the phase ran.
+  if (!cp.commentsDone) {
+    const urn = await resolveActivityUrn(postUrl);
+    if (!urn) {
+      log.warn("no activity urn for post — commenters NOT scraped", { postUrl });
+      await scrapedPosts().updateOne({ postUrl }, { $set: { comments_skipped: true, comments_skip_reason: "could not resolve the post URL to an activity urn" } });
+      Object.assign(cp, { commentsDone: true });
+      await saveCp(postUrl, { ...cp });
+      return "done";
+    }
+    await scrapedPosts().updateOne({ postUrl }, { $unset: { comments_skipped: "", comments_skip_reason: "" } });
+    // Page-based, like reactions: the endpoint reports total/totalPage and has no pagination token.
+    // The old loop broke as soon as the token came back empty — and it ALWAYS came back empty —
+    // so even once the parser is fixed, this had to change or we'd only ever read page one.
+    for (let page = cp.page || 1; page <= 400; page++) {
+      if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp, page }); return "paused"; }
+      const r = await pageWithBackoff(() => pndCommentPage(urn, { page }));
+      if (r === "paused") { await saveCp(postUrl, { ...cp, page }); return "paused"; }
+      if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp, page }); return "stopped"; }
+      // How many commenters are actually REACHABLE. LinkedIn's own comment count includes replies
+      // to comments, which this endpoint doesn't return — a post showing "6 comments" hands back 3
+      // top-level commenters. Using LinkedIn's number as the target made a COMPLETE scrape read as
+      // "14 of 17", i.e. a permanent phantom shortfall.
+      if (page === 1 && r.total != null) await scrapedPosts().updateOne({ postUrl }, { $set: { comments_available: r.total } });
+      await absorb(r.engagers, { page: page + 1 });
+      if (!r.count || (r.totalPage && page >= r.totalPage)) break;
+    }
+    Object.assign(cp, { commentsDone: true });
+    await saveCp(postUrl, { ...cp });
+  }
   return "done";
 }
 
