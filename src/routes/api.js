@@ -18,10 +18,10 @@ import { validateEmail } from "../services/enrich.js";
 import { findEmailWaterfall } from "../pipeline/enrichLead.js";
 import { reprocessNoEmail, reprocessStatus, noEmailQuery, MISS_REASONS } from "../pipeline/reprocess.js";
 import { runBouncebanAudit, bouncebanAuditStatus, bouncebanScorecard, bouncebanProof, runBouncebanRepair, bouncebanRepairStatus, bouncebanCampaignReport, dncUnvouched, auditQuery } from "../pipeline/bouncebanAudit.js";
-import { runKeywordSweep, keywordSweepStatus, pauseKeywordSweep } from "../pipeline/keywordSweep.js";
+import { runKeywordSweep, keywordSweepStatus, pauseKeywordSweep, runManualKeyword, keywordManualStatus, pauseKeywordManual, keywordRunnerBusy } from "../pipeline/keywordSweep.js";
 import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
-import { campaignByKey, campaignLabel, sendkitIdsFor } from "../services/campaigns.js";
+import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor } from "../services/campaigns.js";
 import { upsertLeads, addLeadsToCampaign, addToDnc } from "../services/sendkit.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
@@ -150,6 +150,13 @@ apiRouter.get("/campaigns", ttlCache(10), async (_req, res) => {
   }).sort((a, b) => b.total - a.total);
   res.json({ campaigns: out, prospeo, jina });
 });
+
+// GET /api/campaigns/list — every campaign that EXISTS, straight from campaigns.js.
+// Deliberately not /api/campaigns: that one aggregates from the leads collection, so a campaign
+// with no leads yet is missing from it entirely — which made it impossible to route a manual
+// scrape INTO an empty campaign. This is the list the routing dropdowns use.
+apiRouter.get("/campaigns/list", (_req, res) =>
+  res.json({ campaigns: CAMPAIGNS.map((c) => ({ key: c.key, label: c.label, category: c.category })) }));
 
 // GET /api/leads/ids — every linkedin_url matching the CURRENT filter, so "select all" can mean
 // all 800 results rather than the 100 on screen. Ids only (no documents), so even a large result
@@ -469,6 +476,18 @@ apiRouter.delete("/sources/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/sources/:id/active { active } — pause/resume ONE influencer. The list-level switch
+// flips every profile in a CSV at once; this is the per-person one, so a single noisy profile can
+// be silenced without pausing the whole imported list it came from.
+apiRouter.post("/sources/:id/active", async (req, res) => {
+  const active = !!req.body?.active;
+  try {
+    const r = await sources().updateOne({ _id: new ObjectId(req.params.id) }, { $set: { active } });
+    if (!r.matchedCount) return res.status(404).json({ error: "not found" });
+  } catch { return res.status(400).json({ error: "bad id" }); }
+  res.json({ ok: true, active });
+});
+
 // POST /api/sources/import { list, items:[{url,label,title}] } — bulk import a CSV of influencers.
 // Imported profiles start PAUSED (active:false): scraping ~4.7k profiles' posts would blow the
 // Trigify budget many times over, so nothing is scraped until you enable a list. Grouped by
@@ -550,6 +569,12 @@ apiRouter.get("/sources/reroute/status", (_req, res) => res.json(rerouteStatus()
 apiRouter.post("/sources/scrape-post", async (req, res) => {
   const postUrl = S(req.body?.postUrl).trim();
   const campaign = S(req.body?.campaign).trim();
+  // scrapeOnePost's own `scrapeOneRunning` guard only covers a post that is being scraped RIGHT
+  // NOW — and a keyword run resets that flag between its posts, leaving a window where this route
+  // would start a second scrape that then fights the keyword run over the shared scrapeCtl.
+  if (keywordRunnerBusy() === "keyword") {
+    return res.json({ ok: false, error: "a keyword run is in progress — pause it first" });
+  }
   const r = await scrapeOnePost({ postUrl, campaignKey: campaign });
   res.json(r);
 });
@@ -639,14 +664,38 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
 // Keyword sweep — finds this week's posts for every campaign keyword and scrapes their engagers.
 // This is what the Trigify workflows used to do; the engine does it itself now.
 apiRouter.post("/keywords/sweep", (req, res) => {
-  const st = keywordSweepStatus();
-  if (st.running) return res.json({ alreadyRunning: true, ...st });
+  // keywordRunnerBusy() — NOT keywordSweepStatus().running. The sweep and the manual keyword run
+  // share one lock but keep separate status objects, so checking only this route's own status let a
+  // sweep start during a manual run, get rejected by the lock inside the runner, and have that
+  // rejection thrown away by the fire-and-forget .catch() — the UI toasted success for a no-op.
+  const busy = keywordRunnerBusy();
+  if (busy) return res.json({ alreadyRunning: true, busyWith: busy, ...keywordSweepStatus() });
   const keywords = Array.isArray(req.body?.keywords) ? req.body.keywords : [];
   runKeywordSweep({ keywords }).catch((e) => console.error("keyword sweep error", e.message));
   res.json({ started: true });
 });
 apiRouter.get("/keywords/sweep/status", (_req, res) => res.json(keywordSweepStatus()));
 apiRouter.post("/keywords/sweep/pause", (_req, res) => res.json(pauseKeywordSweep()));
+
+// Manual keyword scrape — search ONE keyword you type and route its engagers into the campaign you
+// pick (the keyword needn't belong to that campaign). The keyword equivalent of "Scrape via post".
+// Shares the single-runner lock with the sweep, so one answers `alreadyRunning` while the other runs.
+apiRouter.post("/keywords/manual", (req, res) => {
+  const keyword = S(req.body?.keyword).trim();
+  const campaign = S(req.body?.campaign).trim();
+  if (!keyword) return res.status(400).json({ error: "keyword required" });
+  // Resolve the campaign HERE, before responding. runManualKeyword validates it too, but its
+  // {error} return is swallowed by the fire-and-forget .catch() below — so a key that no longer
+  // exists (a tab left open across a redeploy that renamed a campaign) answered {started:true} and
+  // then quietly did nothing at all.
+  if (!campaignByKey(campaign)) return res.status(400).json({ error: `unknown campaign: ${campaign || "(none picked)"}` });
+  const busy = keywordRunnerBusy();
+  if (busy) return res.json({ alreadyRunning: true, busyWith: busy, ...keywordManualStatus() });
+  runManualKeyword({ keyword, campaignKey: campaign }).catch((e) => console.error("manual keyword error", e.message));
+  res.json({ started: true, keyword, campaign });
+});
+apiRouter.get("/keywords/manual/status", (_req, res) => res.json(keywordManualStatus()));
+apiRouter.post("/keywords/manual/pause", (_req, res) => res.json(pauseKeywordManual()));
 
 // POST /api/sources/pause { paused } — master switch for the auto influencer/hub sweep
 apiRouter.post("/sources/pause", (req, res) => res.json({ paused: setAutoScrape(!!req.body?.paused) }));

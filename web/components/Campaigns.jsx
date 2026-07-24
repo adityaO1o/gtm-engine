@@ -6,12 +6,56 @@ import { j, post } from "@/lib/api";
 import { useDash } from "@/lib/ctx";
 import { useToast } from "@/lib/toast";
 import { useLeadList } from "@/hooks/useLeadList";
+import { useKeywordRun, KeywordRunBox } from "./KeywordRun";
 import LeadToolbar from "./LeadToolbar";
 import LeadTable from "./LeadTable";
 import Pager from "./Pager";
 import JobBox from "./JobBox";
 
 const METRICS = { total: "Leads", verified: "Verified", hot: "Hot", warm: "Warm", cold: "Cold", noEmail: "No-email", recovered: "Recovered", review: "Review", competitor: "Competitors", unverified: "Unverified", verifyRate: "Verify rate %" };
+
+// Keyword sweep — lives on the Campaigns tab because it is a CAMPAIGN-wide job: it walks every
+// (unpaused) campaign's keywords and feeds each campaign from its own keywords. Pausing a campaign
+// below removes it from this sweep, so the two controls sit together.
+// (A one-off run of a single keyword you type — with routing you choose — is the "Manual keyword
+// scrape" box on the Sources tab.)
+function KeywordSweep() {
+  const toast = useToast();
+  const { status: sweep, start, pause: doPause } = useKeywordRun("/api/keywords/sweep");
+
+  const run = async () => {
+    if (!window.confirm("Search this week's posts for every campaign keyword and scrape their engagers?\n\nPosts already scraped are skipped unless they've grown — that check is free. Small posts are skipped too.")) return;
+    const r = await start({});
+    // The server now reports a rejected start honestly (shared lock with the manual run, or a
+    // single-post scrape in progress) instead of it looking like success.
+    if (r?.alreadyRunning) {
+      toast(r.busyWith === "scrape-post" ? "A post scrape is running — pause it first" : "A keyword run is already going", "bad");
+      return;
+    }
+    if (r?.error) return toast(r.error, "bad");
+    toast("Keyword sweep started", "info");
+  };
+  const pause = async () => { await doPause(); toast("Pausing after the current post…", "info"); };
+
+  return (
+    <div className="chartbox" style={{ marginBottom: "var(--s3)", borderTop: "2px solid var(--primary)" }}>
+      <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><h4 style={{ margin: 0 }}><Icon name="search" />Keyword sweep</h4><div className="grow" />
+        <span className="muted" style={{ fontSize: 12 }}>replaces the Trigify workflows</span></div>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+        Finds this week&rsquo;s posts for every campaign keyword and scrapes their engagers into that campaign.
+        Posts already done are skipped unless they&rsquo;ve <b>grown</b> — and that check costs nothing, because the search
+        returns each post&rsquo;s engagement counts. Only the new engagers get enriched. Paused campaigns are skipped.
+      </div>
+      <div className="toolbar">
+        {sweep?.running
+          ? <button className="btn btn-ghost btn-sm" onClick={pause}><Icon name="pause" />Pause sweep</button>
+          : <button className="btn btn-sm" onClick={run}><Icon name="bolt" />Run keyword sweep</button>}
+        {sweep?.running ? <span className="muted" style={{ fontSize: 12 }}>{sweep.phase === "scraping" ? "scraping" : "searching"} &middot; <b>{sweep.keyword}</b> &rarr; {sweep.campaign}</span> : null}
+      </div>
+      <KeywordRunBox s={sweep} done={sweep?.keywordsDone} total={sweep?.totalKeywords} runningLabel="Sweeping" />
+    </div>
+  );
+}
 
 function CampaignList({ campaigns, onOpen }) {
   if (!campaigns.length) return <div className="tablewrap"><div className="empty"><Icon name="mega" /><b>No campaigns yet</b>Leads will appear here as posts flow in.</div></div>;
@@ -107,5 +151,10 @@ export default function Campaigns() {
     const c = campaigns.find((x) => x.campaign === active);
     return <CampaignDetail campaign={active} label={c?.label || active} onBack={() => setActive(null)} />;
   }
-  return <CampaignList campaigns={campaigns} onOpen={setActive} />;
+  return (
+    <>
+      <KeywordSweep />
+      <CampaignList campaigns={campaigns} onOpen={setActive} />
+    </>
+  );
 }
