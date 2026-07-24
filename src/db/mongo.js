@@ -27,6 +27,11 @@ export async function connect() {
   }
   db = client.db(config.mongoDb);
   await db.collection("leads").createIndex({ linkedin_url: 1 }, { unique: true });
+  // Every enrichLead() call opens with `$or: [{linkedin_url}, {urns}]` to recognise a repeat
+  // engager. Mongo only uses indexes for an $or when EVERY branch is indexed — linkedin_url was,
+  // urns was not, so that $or fell back to a COLLSCAN of the whole leads collection, once per
+  // engager, on every scrape. This is the other half of the pair.
+  await db.collection("leads").createIndex({ urns: 1 });
   await db.collection("leads").createIndex({ email: 1 });
   await db.collection("leads").createIndex({ status: 1 });
   await db.collection("leads").createIndex({ score: -1 });

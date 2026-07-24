@@ -69,9 +69,12 @@ async function recordEngagement(key, { name, headline, category, engagement_type
 //               hopeless leads don't get re-charged every run (deep retry overrides it).
 // `domainSource` returned: clearbit | webscrape | prospeo — how we got the winning domain.
 // `guardRejected` returned: Clearbit returned a DIFFERENT company and the guard blocked it.
-export async function findEmailWaterfall({ name = "", headline = "", linkedin_url = "", skipPaid = false }) {
+// `knownVanity`: the resolved vanity URL we ALREADY hold for this person (from their lead document).
+// Passing it lets the waterfall skip re-resolving a URL we've already bought, without losing the
+// company-recovery half of that same call — see the resolve branch below.
+export async function findEmailWaterfall({ name = "", headline = "", linkedin_url = "", knownVanity = "", skipPaid = false }) {
   let prospeoCalls = 0, emailSource = null, emailMethod = null, preVerified = false;
-  let vanity = linkedin_url;
+  let vanity = knownVanity || linkedin_url;
   let company = companyFromHeadline(headline);
   const [firstName, ...restName] = name.split(" ");
   const lastName = restName.join(" ");
@@ -100,9 +103,23 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
 
   // resolve liker URN -> vanity (FREE tiers first: SEO API/Serper/proxy). The SERP tiers also hand
   // back the person's COMPANY from the result snippet — if the headline had none, recover it here.
-  if (!em.found && isUrn(vanity)) {
+  //
+  // TWO reasons to run this, and only skipping when BOTH are already satisfied is what makes the
+  // "reuse the stored vanity" optimisation safe:
+  //   1. we need the URL   -> vanity is still an obfuscated URN
+  //   2. we need a COMPANY -> the headline had no "at <Company>", and the SERP snippet is the only
+  //                           FREE source for it. Skipping this for a repeat engager whose vanity we
+  //                           already knew pushed those leads straight onto the PAID PND tier — or,
+  //                           when skipPaid was set, left them permanently no-email.
+  // So a known-vanity lead that ALSO already has a company skips the call (the real saving); a
+  // known-vanity lead with no company still pays one SERP call, exactly as it did before.
+  // `knownVanity &&` keeps this scoped to the case the optimisation touched. Without it, a BRAND-NEW
+  // lead that arrives with a real vanity URL and no company (most commenters) would start paying for
+  // a SERP call it never used to make.
+  if (!em.found && (isUrn(vanity) || (knownVanity && !company))) {
     const resolved = await resolveVanity({ name, company });
-    if (resolved?.url) vanity = resolved.url;
+    // Never downgrade a vanity we already trust: only adopt the SERP's URL when ours is still a URN.
+    if (resolved?.url && isUrn(vanity)) vanity = resolved.url;
     if (!company && resolved?.company) { company = resolved.company; await clearbitDomain(company); await tryNameDomain("enrich:name+domain"); }
   }
 
@@ -281,7 +298,16 @@ export async function enrichLead(input) {
   // skipPaid: don't buy a paid profile lookup for someone a previous attempt already bought one
   // for. reprocess.js has always done this; the LIVE path never did — it didn't even record that
   // it had paid, so every fresh scrape of a repeat engager bought the same lookup again.
-  const w = await findEmailWaterfall({ name, headline, linkedin_url, skipPaid: !!known?.paid_profile_tried });
+  //
+  // Feed the waterfall the vanity URL we ALREADY resolved for this person, not the obfuscated URN
+  // this particular post happened to hand us. Both identify the same human — `known` was matched on
+  // `urns` precisely because we'd seen that URN before — but only the URN makes the waterfall call
+  // resolveVanity() again, re-buying a SERP/proxy lookup whose answer is sitting in the document we
+  // just read. Only leads WITHOUT a settled email get this far, so this is exactly the population
+  // that kept paying to rediscover its own URL. reprocess.js already passes the stored key (its
+  // `d.linkedin_url`); this makes the live path agree with it.
+  const resolvedKnown = known?.linkedin_url && !isUrn(known.linkedin_url) ? known.linkedin_url : "";
+  const w = await findEmailWaterfall({ name, headline, linkedin_url, knownVanity: resolvedKnown, skipPaid: !!known?.paid_profile_tried });
   const { em, emailSource, emailMethod, preVerified, company, domainSource, guardRejected } = w;
   let prospeoCalls = w.prospeoCalls;
   // If we already matched an existing lead (possibly via their remembered `urns`), that document's
