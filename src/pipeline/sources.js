@@ -205,6 +205,24 @@ async function scrapeAndEnrich(postUrl, camp, category) {
   // per-type reactions; otherwise "done" means done.
   if (rec.scrape_done && !reactionsReset) return "done";
 
+  // ── Canonical URL for reactions. get-post-reactions is posted the post URL directly, and it
+  // UNDER-RETURNS on a raw share link (".../-share-<id>-": that id is a urn:li:share, not the
+  // activity id PND indexes on) — the cause of a 983-liker post scraping only ~442. Resolve to the
+  // activity urn once and hit reactions on the canonical activity URL so every reactor pages. For an
+  // activity URL this is a no-op; for a share link we can't resolve, we fall back to the raw URL but
+  // flag the post PARTIAL so a half-scrape never reads as a clean, complete "done".
+  // (Comments already resolve the urn themselves; resolving here caches it for that phase too.)
+  let reactUrl = postUrl;
+  const actUrn = await resolveActivityUrn(postUrl).catch(() => null);
+  if (actUrn) reactUrl = `https://www.linkedin.com/feed/update/urn:li:activity:${actUrn}/`;
+  const partial = !actUrn && !activityUrn(postUrl); // an unresolved share/ugcPost link
+  if (partial) {
+    await scrapedPosts().updateOne({ postUrl }, { $set: { partial: true, partial_reason: "could not resolve the share URL to an activity id — reactions/comments may be incomplete. Re-scrape using the post's /feed/update/urn:li:activity:… URL (click the post's timestamp on LinkedIn to get it)." } }).catch(() => {});
+    log.warn("share-link scrape is PARTIAL — engager counts will be incomplete", { postUrl });
+  } else {
+    await scrapedPosts().updateOne({ postUrl }, { $unset: { partial: "", partial_reason: "" } }).catch(() => {});
+  }
+
   // Absorb one scraped page: queue it, then enrich it immediately (interleaved), then checkpoint.
   // Returns how many of that page's engagers were NEW — which is how a re-scrape knows whether the
   // fresh reactions sit at the front of the list or the back.
@@ -249,7 +267,7 @@ async function scrapeAndEnrich(postUrl, camp, category) {
 
       for (let page = startPage; page <= 38; page++) { // PND hard-caps at 38; no point paging past it
         if (scrapeCtl.paused) { await saveCp(postUrl, { ...cp, typeIdx: ti, page }); return "paused"; }
-        const r = await pageWithBackoff(() => pndReactionPage(postUrl, page, rt));
+        const r = await pageWithBackoff(() => pndReactionPage(reactUrl, page, rt));
         if (r === "paused") { await saveCp(postUrl, { ...cp, typeIdx: ti, page }); return "paused"; }
         if (r === "credits" || r === "giveup") { await saveCp(postUrl, { ...cp, typeIdx: ti, page }); return "stopped"; }
         const newCount = await absorb(r.engagers, { typeIdx: ti, page: page + 1 });

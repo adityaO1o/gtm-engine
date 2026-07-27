@@ -656,6 +656,7 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
       expectedComments: p.expected_comments ?? null,          // LinkedIn's count — INCLUDES replies
       commentsAvailable: p.comments_available ?? null,        // top-level commenters the API returns
       commentsSkipped: !!p.comments_skipped, commentsSkipReason: p.comments_skip_reason || null,
+      partial: !!p.partial, partialReason: p.partial_reason || null,   // share link we couldn't resolve → incomplete
     };
   }));
   res.json({ posts: out });

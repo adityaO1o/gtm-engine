@@ -68,6 +68,7 @@ function ScrapedPosts({ posts, onResume, busy }) {
               <tr key={p.postUrl}>
                 <td>
                   <a href={p.postUrl} target="_blank" rel="noopener" className="postlink" title={p.postUrl}>{label}<Icon name="external" /></a>
+                  {p.partial ? <span className="tag-man" style={{ color: "var(--hot)" }} title={p.partialReason || "This scrape is incomplete — re-scrape with the post's /feed/update/urn:li:activity:… URL"}>partial</span> : null}
                   {p.commentsSkipped ? <span className="tag-man" title={p.commentsSkipReason || "Commenters were not scraped for this post"}>likers only</span> : null}
                 </td>
                 <td>{p.campaign ? <b>{p.campaign}</b> : <span className="muted">—</span>}</td>
