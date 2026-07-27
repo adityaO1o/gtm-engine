@@ -54,7 +54,7 @@ function ScrapedPosts({ posts, onResume, busy }) {
     <div className="chartbox" style={{ marginBottom: "var(--s3)" }}>
       <h4><Icon name="check" />Scraped posts <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>· live counts</span></h4>
       <div className="tablewrap" style={{ border: "none" }}>
-        <table><thead><tr><th>Post</th><th>Campaign</th><th>Engagers</th><th>Verified</th><th>No-email</th><th>Unverified</th><th title="verified ÷ engagers">Hit</th><th>When</th><th></th></tr></thead>
+        <table><thead><tr><th>Post</th><th>Campaign</th><th>Engagers</th><th>Verified</th><th>No-email</th><th>Unverified</th><th title="verified ÷ engagers">Hit</th><th title="PND credits this post cost: scrape pages + paid profile/company lookups">PND cr</th><th>When</th><th></th></tr></thead>
           <tbody>{posts.map((p) => {
             const hit = p.engagers ? Math.round((p.verified / p.engagers) * 100) : 0;
             const label = p.title || labelFromUrl(p.postUrl) || p.posterName || ("activity:" + (p.activityId || "—"));
@@ -87,6 +87,11 @@ function ScrapedPosts({ posts, onResume, busy }) {
                 <td className="num-c muted">{num(p.noEmail)}</td>
                 <td className="num-c muted">{num(p.unverified)}</td>
                 <td className="num-c">{hit}%</td>
+                <td className="num-c" title={p.pndCredits
+                  ? `${p.pndCredits.scrape} scrape + ${p.pndCredits.profile} profile + ${p.pndCredits.company} company = ${p.pndCredits.total} credits\n${p.pndCredits.paidLeads} leads needed the paid tier · ${p.pndCredits.cacheSaved} lookups served free from cache`
+                  : "No PND ledger for this post yet (scraped before per-post accounting, or no PND calls)"}>
+                  {p.pndCredits ? <b>{num(p.pndCredits.total)}</b> : <span className="muted">—</span>}
+                </td>
                 <td className="tstamp">{p.running ? <span style={{ color: "var(--primary)" }}>scraping…</span> : ts(p.at)}</td>
                 <td>
                   {!p.running && !p.scrapeDone ? (

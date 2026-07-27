@@ -10,7 +10,7 @@ import { activityUrn } from "../services/rapidScrape.js";
 import { pndReactionPage, pndCommentPage, pndPostInfo, pndOutOfCredits, REACTION_TYPES } from "../services/pnd.js";
 import { resolveActivityUrn } from "../services/postUrn.js";
 import { enrichLead } from "./enrichLead.js";
-import { meterFlush } from "../services/apiMeter.js";
+import { meterFlush, meterSinceBoot } from "../services/apiMeter.js";
 import { log } from "../lib/logger.js";
 
 // Master switch for AUTO scraping (the daily influencer/hub sweep). Paused by default while we
@@ -343,14 +343,34 @@ async function scrapeAndEnrich(postUrl, camp, category) {
   return "done";
 }
 
-async function finalizeScrape(postUrl, phase) {
+async function finalizeScrape(postUrl, phase, creditBase = null) {
   await meterFlush();
   const paused = phase === "paused";
   scrapeOneStatus = { ...scrapeOneStatus, running: false, phase, paused, finishedAt: new Date() };
-  await scrapedPosts().updateOne({ postUrl }, { $set: {
+  const upd = { $set: {
     running: false, phase, paused, enriched_count: scrapeOneStatus.enriched, sent: scrapeOneStatus.sent,
     out_of_credits: pndOutOfCredits(), finishedAt: new Date(),
-  } }).catch(() => {});
+  } };
+  // Per-post PND credit ledger: diff the process-lifetime counters against the snapshot taken when
+  // this run started, and $inc the post's tally so a paused+resumed post sums across runs. Attributes
+  // scrape pages (get-post + reactions + comments) and the paid enrichment (profile/company) that ran
+  // while scraping this post. Caveat: the scrape single-run lock keeps other SCRAPES out, but a
+  // concurrent Trigify /enrich (idle in practice) would leak into this window — it's best-effort
+  // attribution, not a billing-grade audit.
+  if (creditBase) {
+    const now = meterSinceBoot();
+    const d = (k) => Math.max(0, (now[k] || 0) - (creditBase[k] || 0));
+    const scrape = d("pnd_scrape_pages"), profile = d("pnd_profile_calls"), company = d("pnd_company_calls");
+    const cacheSaved = d("pnd_cache_hits"), paidLeads = d("domain_paid");
+    if (scrape || profile || company || cacheSaved || paidLeads) {
+      upd.$inc = {
+        "pnd_credits.scrape": scrape, "pnd_credits.profile": profile, "pnd_credits.company": company,
+        "pnd_credits.total": scrape + profile + company,
+        "pnd_credits.cache_saved": cacheSaved, "pnd_credits.paid_leads": paidLeads,
+      };
+    }
+  }
+  await scrapedPosts().updateOne({ postUrl }, upd).catch(() => {});
   scrapeOneRunning = false;
   scrapeCtl.paused = false;
   log.info("scrapeOnePost " + phase, { postUrl, enriched: scrapeOneStatus.enriched, sent: scrapeOneStatus.sent });
@@ -371,6 +391,8 @@ export async function scrapeOneInner({ postUrl, campaignKey = "" }) {
   const { routeSourceEngager, campaignByKey } = await import("../services/campaigns.js");
   scrapeOneRunning = true;
   scrapeCtl = { postUrl, paused: false };
+  // Snapshot PND counters now; finalizeScrape diffs against this to record what THIS run cost.
+  const creditBase = meterSinceBoot();
   {
     try {
       const rec = (await scrapedPosts().findOne({ postUrl })) || {};
@@ -416,10 +438,10 @@ export async function scrapeOneInner({ postUrl, campaignKey = "" }) {
       const res = await scrapeAndEnrich(postUrl, camp, category);
       scrapeOneStatus.outOfCredits = pndOutOfCredits();
       if (res === "done") await scrapedPosts().updateOne({ postUrl }, { $set: { scrape_done: true, engager_total: await scrapeEngagers().countDocuments({ postUrl }) } });
-      return await finalizeScrape(postUrl, res === "paused" ? "paused" : res === "stopped" ? "stopped" : "done");
+      return await finalizeScrape(postUrl, res === "paused" ? "paused" : res === "stopped" ? "stopped" : "done", creditBase);
     } catch (e) {
       log.error("scrapeOne error", { err: e.message });
-      return await finalizeScrape(postUrl, "error");
+      return await finalizeScrape(postUrl, "error", creditBase);
     }
   }
 }

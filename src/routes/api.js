@@ -657,6 +657,11 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
       commentsAvailable: p.comments_available ?? null,        // top-level commenters the API returns
       commentsSkipped: !!p.comments_skipped, commentsSkipReason: p.comments_skip_reason || null,
       partial: !!p.partial, partialReason: p.partial_reason || null,   // share link we couldn't resolve → incomplete
+      // Per-post PND credit ledger (scrape pages + paid profile/company), accumulated across runs.
+      pndCredits: p.pnd_credits ? {
+        scrape: p.pnd_credits.scrape || 0, profile: p.pnd_credits.profile || 0, company: p.pnd_credits.company || 0,
+        total: p.pnd_credits.total || 0, cacheSaved: p.pnd_credits.cache_saved || 0, paidLeads: p.pnd_credits.paid_leads || 0,
+      } : null,
     };
   }));
   res.json({ posts: out });
