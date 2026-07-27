@@ -3,7 +3,40 @@
 
 import axios from "axios";
 import { config } from "../config.js";
+import { emailCampaign } from "../db/mongo.js";
 import { log } from "../lib/logger.js";
+
+// GLOBAL email → campaign uniqueness. Returns the ONE campaign id this email is allowed to live in.
+// First-writer-wins and atomic ($setOnInsert + returnDocument:after): the first push to ever touch
+// an email locks its campaign; every later push for that email — INCLUDING from a different LinkedIn
+// profile that happens to share it — gets the same campaign back, so the email can never land in a
+// second one. Every push site routes its desired campaign through this before calling addToCampaign.
+// Falls back to the desired id if the DB is momentarily unavailable (fail-open, never blocks a push).
+export async function assignEmailCampaign(email, desiredCampaignId) {
+  const key = String(email || "").trim().toLowerCase();
+  if (!key || !desiredCampaignId) return desiredCampaignId || null;
+  try {
+    const r = await emailCampaign().findOneAndUpdate(
+      { _id: key },
+      { $setOnInsert: { campaignId: desiredCampaignId, at: new Date() } },
+      { upsert: true, returnDocument: "after" },
+    );
+    // driver v6 returns the doc directly; older returns { value }
+    return (r && (r.campaignId ?? r.value?.campaignId)) || desiredCampaignId;
+  } catch (e) {
+    log.warn("assignEmailCampaign failed — using desired campaign", { err: e.message });
+    return desiredCampaignId;
+  }
+}
+
+// Deliberate MOVE — overwrite the assignment. Used only by the reroute repair tool, which
+// intentionally relocates a lead to a better campaign; first-writer-wins would wrongly pin it to
+// where it already (wrongly) sits. Ordinary pushes must use assignEmailCampaign, never this.
+export async function reassignEmailCampaign(email, campaignId) {
+  const key = String(email || "").trim().toLowerCase();
+  if (!key || !campaignId) return;
+  await emailCampaign().updateOne({ _id: key }, { $set: { campaignId, at: new Date() } }, { upsert: true }).catch(() => {});
+}
 
 const h = () => ({ "X-Api-Key": config.sendkit.key, "Content-Type": "application/json" });
 const base = config.sendkit.base;

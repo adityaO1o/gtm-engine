@@ -7,7 +7,7 @@
 
 import { leads } from "../db/mongo.js";
 import { routeSourceEngager, campaignByKey } from "../services/campaigns.js";
-import { upsertLeads, addLeadsToCampaign } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, reassignEmailCampaign } from "../services/sendkit.js";
 import { log } from "../lib/logger.js";
 
 // same weights as score.js — pick the strongest interest a lead has shown
@@ -57,6 +57,7 @@ export async function rerouteSourceLeads() {
       await upsertLeads(upserts);
       const r = await addLeadsToCampaign(cid, [...g.emails]);
       status.moved += r.added;
+      for (const e of g.emails) await reassignEmailCampaign(e, cid); // this move overrides the uniqueness lock
       for (const d of g.leads) {
         await leads().updateOne({ linkedin_url: d.linkedin_url }, {
           $addToSet: { campaigns: g.key, campaign_ids: cid, sendkit_campaigns: cid },

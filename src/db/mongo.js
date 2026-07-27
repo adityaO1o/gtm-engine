@@ -39,6 +39,10 @@ export async function connect() {
   await db.collection("engagements").createIndex({ created_at: -1 });
   await db.collection("usage").createIndex({ campaign: 1 }, { unique: true });
   await db.collection("sources").createIndex({ url: 1 }, { unique: true });
+  // Auto engine's daily rotation picks members per list, oldest-picked first, skipping done ones —
+  // and the list aggregation groups on `lists`. Without these both are collection scans over ~5k rows.
+  await db.collection("sources").createIndex({ type: 1, active: 1, scrape_done: 1, last_picked_at: 1 });
+  await db.collection("sources").createIndex({ lists: 1 });
   await db.collection("processed_posts").createIndex({ postUrl: 1 }, { unique: true });
   await db.collection("reprocess_runs").createIndex({ finishedAt: -1 });
   await db.collection("leads").createIndex({ recovered: 1 });
@@ -123,6 +127,25 @@ export async function connect() {
     await db.collection("api_usage").updateOne({ _id: "global", "balance_webscrape.seeded": true }, { $unset: { balance_webscrape: "" } });
   } catch (e) { log.warn("clearing seeded api balances failed", { err: e.message }); }
 
+  // Seed the email->campaign uniqueness map ONCE from current state. After the SendKit cleanup each
+  // verified email already sits in a single campaign (mostly Cold Email); recording that here means
+  // assignEmailCampaign won't reassign an existing email to whatever a future scrape routes it to.
+  // Guarded by a marker doc so it runs exactly once; idempotent regardless via $setOnInsert.
+  try {
+    const marker = await db.collection("engine_state").findOne({ _id: "email_campaign_seeded" }).catch(() => null);
+    if (!marker) {
+      const rows = await db.collection("leads").aggregate([
+        { $match: { email: { $ne: null }, email_status: "verified", sendkit_campaigns: { $exists: true, $ne: [] } } },
+        { $group: { _id: { $toLower: "$email" }, campaignId: { $first: { $arrayElemAt: ["$sendkit_campaigns", 0] } } } },
+      ]).toArray();
+      const ops = rows.filter((r) => r._id && r.campaignId)
+        .map((r) => ({ updateOne: { filter: { _id: r._id }, update: { $setOnInsert: { campaignId: r.campaignId, at: new Date(), seeded: true } }, upsert: true } }));
+      for (let i = 0; i < ops.length; i += 1000) await db.collection("email_campaign").bulkWrite(ops.slice(i, i + 1000), { ordered: false }).catch(() => {});
+      await db.collection("engine_state").updateOne({ _id: "email_campaign_seeded" }, { $set: { done: true, at: new Date(), count: ops.length } }, { upsert: true });
+      log.info("seeded email->campaign uniqueness map", { emails: ops.length });
+    }
+  } catch (e) { log.warn("email_campaign seed failed", { err: e.message }); }
+
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
@@ -143,6 +166,17 @@ export const scrapeEngagers = () => db.collection("scrape_engagers");
 export const internalJobs = () => db.collection("internal_jobs");
 export const internalSearches = () => db.collection("internal_searches");
 export const campaignState = () => db.collection("campaign_state");
+// Auto engine's persisted switch + schedule stamps ({_id:"auto", enabled, sweepLastAt,
+// rotationLastDay}). Persisted so a deploy can't silently pause automation — the exact failure
+// mode the old in-memory autoPaused flag had.
+export const engineState = () => db.collection("engine_state");
+// email -> the ONE campaign it may live in, globally. Keyed by lowercased email (_id), so the
+// unique index is implicit. First-writer-wins via assignEmailCampaign(): a second profile that
+// shares an email can never land it in a second campaign. Seeded once from current state (below).
+export const emailCampaign = () => db.collection("email_campaign");
+// Per-day PND spend log, so credit usage is visible per surface. {_id:"YYYY-MM-DD",
+// scrape/profile/company/total, kinds:{keyword,manual,post,hub,influencer}} — $inc'd in finalizeScrape.
+export const pndDaily = () => db.collection("pnd_daily");
 // ── PND credit savers (permanent caches). A company's domain is looked up ONCE and then every
 // future lead at that company is free, forever, across every post. Likewise a profile lookup is
 // never paid for twice — retries reuse it.

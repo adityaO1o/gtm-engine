@@ -87,4 +87,14 @@ export const config = {
   // Tunables
   proxyTimeoutMs: parseInt(process.env.PROXY_TIMEOUT_MS || "20000", 10),
   scrapeRetries: parseInt(process.env.SCRAPE_RETRIES || "4", 10),
+
+  // ── Auto engine (scheduled keyword sweep + hub pass + daily influencer/list rotation) ────────
+  autoSweepHours: parseInt(process.env.AUTO_SWEEP_HOURS || "12", 10),          // sweep cadence
+  autoRotateUtcHour: parseInt(process.env.AUTO_ROTATE_UTC_HOUR || "3", 10),    // 03:00 UTC ≈ 08:30 IST
+  autoPerList: parseInt(process.env.AUTO_PER_LIST || "5", 10),                 // members per list per day
+  autoMaxPostsPerDay: parseInt(process.env.AUTO_MAX_POSTS_PER_DAY || "40", 10),// runaway brake on scrapes/day
+  // Below this many PND credits, the whole auto engine idles (manual scrapes unaffected).
+  // Distinct from PND_CREDIT_FLOOR, which only switches off the paid ENRICHMENT tier.
+  autoMinCredits: parseInt(process.env.AUTO_MIN_CREDITS || "100", 10),
+  autoPostMaxAgeDays: parseInt(process.env.AUTO_POST_MAX_AGE_DAYS || "90", 10),// the "last 3 months" window
 };

@@ -24,7 +24,7 @@ import { log } from "../lib/logger.js";
 // Below this, a post isn't worth opening: its engagers cost real enrichment money and a thin post
 // rarely yields a usable lead. This only gates posts we've never touched — see the check below,
 // which never abandons a post whose engagers are already queued.
-const MIN_ENGAGERS = 15;
+export const MIN_ENGAGERS = 15;
 
 // ONE runner at a time. The sweep and a manual keyword run both spend the same PND credits and
 // both drive scrapeOneInner, which has its own single-post state — letting them overlap would make
@@ -90,6 +90,30 @@ export async function keywordPlan() {
   return plan;
 }
 
+// ── Growth-delta gate, shared by the sweep and the auto engine's hub pass. ────────────────────
+// Given a post's scraped_posts record and its CURRENT engager total (from a free source: the
+// search result's counts, or a get-post), decide what to do:
+//   "unchanged" — fully scraped and hasn't grown → skip, zero credits
+//   "reopened"  — scraped but GREW → scrape_done cleared so the delta machinery re-runs. The
+//                 PER-TYPE progress (scrape_cp.types) is deliberately KEPT: emojis whose count
+//                 didn't move are skipped outright and grown ones resume from their page, which
+//                 is what makes the second pass cheap. typeIdx/page are reset because they're a
+//                 mid-run pause pointer, not cross-run state.
+//   "new"       — never fully scraped (no record, or an interrupted scrape) → just scrape it
+export async function reopenIfGrown(postUrl, rec, engagers) {
+  const seenBefore = rec?.last_total_engagers ?? null;
+  if (rec?.scrape_done && seenBefore !== null && engagers <= seenBefore) return "unchanged";
+  if (rec?.scrape_done && seenBefore !== null && engagers > seenBefore) {
+    await scrapedPosts().updateOne({ postUrl }, {
+      $unset: { scrape_done: "" },
+      $set: { "scrape_cp.reactionsDone": false, "scrape_cp.commentsDone": false, "scrape_cp.typeIdx": 0, "scrape_cp.page": 1 },
+    }).catch(() => {});
+    log.info("post grew — re-scraping only the delta", { postUrl, was: seenBefore, now: engagers });
+    return "reopened";
+  }
+  return "new";
+}
+
 // Search one keyword and scrape every post worth scraping into `item.campaignKey`.
 // Shared by the automatic sweep and a manual one-off keyword run — the ONLY difference between
 // them is how the plan is built (campaign keywords vs. whatever you typed) and which status object
@@ -124,11 +148,11 @@ async function processKeyword(item, st, c) {
     // and paid for, and skipping here means scrapeOneInner (and with it enrichPending, which
     // drains enriched:false) never runs, so those people never become leads.
     if (engagers < MIN_ENGAGERS && !rec) { st.skippedSmall++; continue; }
-    const seenBefore = rec?.last_total_engagers ?? null;
-    if (rec?.scrape_done && seenBefore !== null && engagers <= seenBefore) {
-      st.skippedUnchanged++;
-      continue;
-    }
+    // Growth-delta gate (shared with the auto engine): unchanged → free skip; grown → reopened
+    // with per-type memory kept so only the delta is paid for. Checked BEFORE the record write
+    // below, which refreshes last_total_engagers to the new baseline.
+    const verdict = await reopenIfGrown(p.postUrl, rec, engagers);
+    if (verdict === "unchanged") { st.skippedUnchanged++; continue; }
 
     // Store what we learned for free BEFORE scraping: the per-type counts let the scraper skip
     // reaction types nobody used, and last_total_engagers is next run's growth baseline.
@@ -142,23 +166,9 @@ async function processKeyword(item, st, c) {
       $setOnInsert: { startedAt: new Date() },
     }, { upsert: true }).catch(() => {});
 
-    // A post that grew is re-opened — but its PER-TYPE progress (scrape_cp.types) is deliberately
-    // kept. That memory is what makes the second pass cheap: emojis whose count didn't move are
-    // skipped outright, and the ones that did grow resume from the page they reached instead of
-    // re-reading from page 1. Only reactionsDone/commentsDone are cleared, so the phases run
-    // again and consult that memory. typeIdx/page are reset because they're a mid-run pause
-    // pointer, not cross-run state.
-    if (rec?.scrape_done && seenBefore !== null && engagers > seenBefore) {
-      await scrapedPosts().updateOne({ postUrl: p.postUrl }, {
-        $unset: { scrape_done: "" },
-        $set: { "scrape_cp.reactionsDone": false, "scrape_cp.commentsDone": false, "scrape_cp.typeIdx": 0, "scrape_cp.page": 1 },
-      }).catch(() => {});
-      log.info("keyword post grew — re-scraping only the delta", { postUrl: p.postUrl, was: seenBefore, now: engagers });
-    }
-
     st.phase = "scraping";
     const before = await scrapeEngagers().countDocuments({ postUrl: p.postUrl });
-    await scrapeOneInner({ postUrl: p.postUrl, campaignKey: item.campaignKey }).catch((e) =>
+    await scrapeOneInner({ postUrl: p.postUrl, campaignKey: item.campaignKey, kind: item.manual ? "manual" : "keyword" }).catch((e) =>
       log.warn("keyword post scrape failed", { postUrl: p.postUrl, err: e.message }));
     const after = await scrapeEngagers().countDocuments({ postUrl: p.postUrl });
     st.newEngagers += Math.max(0, after - before);

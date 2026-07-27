@@ -11,7 +11,7 @@ import { apiRouter } from "./routes/api.js";
 import { internalRouter } from "./routes/internal.js";
 import { basicAuth, internalAuth } from "./lib/auth.js";
 import { poolSize } from "./lib/proxies.js";
-import { runSources } from "./pipeline/sources.js";
+import { startAutoLoop } from "./pipeline/autoScrape.js";
 import { meterFlush } from "./services/apiMeter.js";
 import { log } from "./lib/logger.js";
 
@@ -110,19 +110,12 @@ async function main() {
   app.listen(config.port, () =>
     log.info("gtm-engine up", { port: config.port, proxies: poolSize(), dashLocked: !!(config.dashUser && config.dashPass), ipAllowlist: config.allowIps.length })
   );
-  // Self-chaining source scraper. Each run processes a bounded batch (durable — progress is
-  // persisted via processed_posts + per-influencer lastRun). If a run filled its batch there's
-  // more backlog, so we come back in a minute and keep grinding through the ~5k influencers;
-  // when it drains (small run) we idle to a 3-hour check for fresh posts. This is how "unlimited"
-  // scraping stays alive across container restarts without a single giant run that dies midway.
-  async function sourcesLoop() {
-    let processed = 0;
-    try { const r = await runSources(); processed = r?.postsProcessed || 0; }
-    catch (e) { log.warn("scheduled sources failed", { err: e.message }); }
-    const busy = processed >= 1000;                       // near the per-run cap => backlog remains
-    setTimeout(sourcesLoop, busy ? 60_000 : 3 * 60 * 60 * 1000);
-  }
-  setTimeout(sourcesLoop, 60_000); // first sweep shortly after boot
+  // The AUTO ENGINE — the single scheduled loop (autoScrape.js): keyword sweep every N hours, hub
+  // pass, and a daily influencer/imported-list rotation, all through the incremental PND scraper.
+  // Replaces the old sourcesLoop, which drove the dead Trigify path (paused-by-default + no credits)
+  // while the working sweep had no schedule. `runSources`/`processPost` remain in sources.js but are
+  // no longer scheduled — kept for manual/legacy use until Trigify credits return.
+  startAutoLoop();
 
   // Persist API-consumption counters every 30s (so the dashboard totals survive deploys even
   // between run-end flushes), and once more on shutdown so nothing is lost.

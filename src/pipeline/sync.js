@@ -6,7 +6,7 @@
 
 import { leads } from "../db/mongo.js";
 import { findEmailWaterfall } from "./enrichLead.js";
-import { upsertLeads, addLeadsToCampaign, addToDnc } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc, assignEmailCampaign } from "../services/sendkit.js";
 import { reconcileDnc } from "./dncSync.js";
 import { resolveKey, campaignByKey, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
 import { nameMatchesEmail, emailDomain } from "../services/quality.js";
@@ -104,10 +104,12 @@ export async function syncVerified({ campaign = "" } = {}) {
   for (const d of keep) {
     if (!d.email) continue;
     const e = d.email.trim().toLowerCase();
-    for (const cid of sendkitIdsFor(d.campaigns)) {
-      if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
-      perCampaign.get(cid).add(e);
-    }
+    const desired = sendkitIdsFor(d.campaigns)[0];
+    if (!desired) continue;
+    // Route through the global email→campaign lock so bulk sync can't scatter an email either.
+    const cid = await assignEmailCampaign(e, desired);
+    if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
+    perCampaign.get(cid).add(e);
   }
   for (const [cid, set] of perCampaign) {
     const r = await addLeadsToCampaign(cid, [...set]);

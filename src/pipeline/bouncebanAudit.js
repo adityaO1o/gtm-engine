@@ -13,7 +13,7 @@
 
 import { leads, bouncebanRuns } from "../db/mongo.js";
 import { bouncebanVerify } from "../services/bounceban.js";
-import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails, isBlockedBy, campaignMembers } from "../services/sendkit.js";
+import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails, isBlockedBy, campaignMembers, assignEmailCampaign } from "../services/sendkit.js";
 import { reconcileDnc } from "./dncSync.js";
 import { sendkitIdsFor, CAMPAIGNS } from "../services/campaigns.js";
 import { log } from "../lib/logger.js";
@@ -73,7 +73,8 @@ async function auditOne(d, dnc) {
           await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { bb_push_failed: true } });
         } else {
           const landed = [];
-          for (const cid of sendkitIdsFor(d.campaigns)) if (await addToCampaign(cid, d.email)) landed.push(cid);
+          const desired = sendkitIdsFor(d.campaigns)[0];
+          if (desired) { const cid = await assignEmailCampaign(d.email, desired); if (await addToCampaign(cid, d.email)) landed.push(cid); }
           if (landed.length) await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { sendkit_campaigns: landed } });
           await leads().updateOne({ linkedin_url: d.linkedin_url }, { $unset: { bb_push_failed: "" } });
           status.pushed++;
@@ -199,10 +200,11 @@ export async function runBouncebanRepair() {
     for (const d of docs) {
       const e = String(d.email).trim().toLowerCase();
       if (isBlocked(e)) continue;
-      for (const cid of sendkitIdsFor(d.campaigns)) {
-        if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
-        perCampaign.get(cid).add(e);
-      }
+      const desired = sendkitIdsFor(d.campaigns)[0];
+      if (!desired) continue;
+      const cid = await assignEmailCampaign(e, desired); // global email→campaign lock
+      if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
+      perCampaign.get(cid).add(e);
     }
     for (const [cid, set] of perCampaign) {
       const r = await addLeadsToCampaign(cid, [...set]);

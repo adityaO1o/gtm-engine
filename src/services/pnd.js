@@ -214,6 +214,48 @@ export function socialCounts(s = {}) {
   };
 }
 
+// A profile's own POSTS, newest first — what the auto engine's daily rotation walks to find an
+// influencer's last-3-months posts. 1 credit per page of 50.
+//
+// Parser written against a REAL probed response (via /api/debug/pnd — the file's history shows
+// what guessing shapes costs). Verified 2026-07-27 on username=prakhar-keshari:
+//   • top level: { success, message, data:[50], paginationToken }
+//   • item: { text, totalReactionCount, likeCount, praiseCount, empathyCount, appreciationCount,
+//             commentsCount, postUrl, shareUrl, postedAt("2d"), postedDate, postedDateTimestamp
+//             (epoch ms), urn (ACTIVITY id!), shareUrn, author{username,...}, contentType, ... }
+//   • postUrl is ALREADY the canonical /feed/update/urn:li:activity:<id>/ form — exactly what
+//     scrapeOneInner wants, so no share-link resolution is ever needed on this path.
+//   • data is newest-first — callers can stop paging at the first post older than their window.
+// Pagination is CURSOR-based: pass the previous response's paginationToken to get the next page
+// (this RapidAPI family uses a token, not an offset — sending `start` too risks double-advancing).
+export async function pndProfilePosts(usernameOrUrl, { paginationToken = "" } = {}) {
+  const username = String(usernameOrUrl || "")
+    .replace(/^https?:\/\/(www\.)?linkedin\.com\/in\//i, "").replace(/[/?#].*$/, "").trim();
+  if (!username) return null;
+  const params = { username };
+  if (paginationToken) params.paginationToken = paginationToken;
+  const d = await call("get-profile-posts", { params });
+  if (!d || d.success === false || !Array.isArray(d.data)) return null;
+  stats.scrapePages++; meter.inc("pnd_scrape_pages");
+  const n = (v) => (typeof v === "number" ? v : 0);
+  const posts = d.data.map((p) => ({
+    postUrl: p.postUrl || "",
+    urn: p.urn || null,                                  // the activity id
+    text: String(p.text || ""),
+    postedTimestamp: n(p.postedDateTimestamp) || null,   // epoch ms
+    posted: p.postedDate || p.postedAt || null,
+    // Same key vocabulary the keyword sweep stores as type_counts, so the per-emoji
+    // skip-empty-types machinery works unchanged on rotation-scraped posts.
+    counts: {
+      LIKE: n(p.likeCount), PRAISE: n(p.praiseCount), EMPATHY: n(p.empathyCount),
+      INTEREST: n(p.InterestCount ?? p.interestCount), APPRECIATION: n(p.appreciationCount),
+      ENTERTAINMENT: n(p.funnyCount ?? p.entertainmentCount),
+      totalReactions: n(p.totalReactionCount), comments: n(p.commentsCount),
+    },
+  })).filter((p) => p.postUrl);
+  return { posts, paginationToken: d.paginationToken || "" };
+}
+
 // Commenters, with their REAL vanity URL (no resolve needed).
 //
 // This parser was three guesses deep and every one was wrong, which is why not a single commenter

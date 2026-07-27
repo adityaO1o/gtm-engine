@@ -2,8 +2,8 @@
 
 import { Router } from "express";
 import { ObjectId } from "mongodb";
-import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, scrapeEngagers, bouncebanRuns, campaignState } from "../db/mongo.js";
-import { runSources, sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost, setAutoScrape, isAutoScrapePaused } from "../pipeline/sources.js";
+import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, scrapeEngagers, bouncebanRuns, campaignState, pndDaily } from "../db/mongo.js";
+import { sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost } from "../pipeline/sources.js";
 import { rapidScrapeStats, activityUrn } from "../services/rapidScrape.js";
 import { pndStats, pndPostInfo, pndRaw, pndOutOfCredits } from "../services/pnd.js";
 import { bouncebanStats, bouncebanBalance } from "../services/bounceban.js";
@@ -19,10 +19,11 @@ import { findEmailWaterfall } from "../pipeline/enrichLead.js";
 import { reprocessNoEmail, reprocessStatus, noEmailQuery, MISS_REASONS } from "../pipeline/reprocess.js";
 import { runBouncebanAudit, bouncebanAuditStatus, bouncebanScorecard, bouncebanProof, runBouncebanRepair, bouncebanRepairStatus, bouncebanCampaignReport, dncUnvouched, auditQuery } from "../pipeline/bouncebanAudit.js";
 import { runKeywordSweep, keywordSweepStatus, pauseKeywordSweep, runManualKeyword, keywordManualStatus, pauseKeywordManual, keywordRunnerBusy } from "../pipeline/keywordSweep.js";
+import { autoStatus, setAutoEnabled, rotateNow } from "../pipeline/autoScrape.js";
 import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor } from "../services/campaigns.js";
-import { upsertLeads, addLeadsToCampaign, addToDnc } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc, assignEmailCampaign } from "../services/sendkit.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -115,7 +116,7 @@ apiRouter.get("/stats", ttlCache(8), async (req, res) => {
 const cnt = (field, val) => ({ $sum: { $cond: [{ $eq: ["$" + field, val] }, 1, 0] } });
 const cntTruthy = (field) => ({ $sum: { $cond: [{ $ifNull: ["$" + field, false] }, 1, 0] } });
 apiRouter.get("/campaigns", ttlCache(10), async (_req, res) => {
-  const [agg, uRows, prospeo, jina, pausedRows] = await Promise.all([
+  const [agg, uRows, prospeo, jina, pausedRows, credRows] = await Promise.all([
     leads().aggregate([
       { $match: { campaigns: { $exists: true, $ne: [] } } },
       { $unwind: "$campaigns" },
@@ -133,11 +134,18 @@ apiRouter.get("/campaigns", ttlCache(10), async (_req, res) => {
     usage().find({}).toArray(),
     prospeoBalance(), jinaBalance(),
     campaignState().find({ paused: true }, { projection: { key: 1 } }).toArray().catch(() => []),
+    // PND credits spent scraping into each campaign, summed from the per-post ledger (keyed by campaign_key).
+    scrapedPosts().aggregate([
+      { $match: { campaign_key: { $ne: null }, "pnd_credits.total": { $gt: 0 } } },
+      { $group: { _id: "$campaign_key", pnd: { $sum: "$pnd_credits.total" }, posts: { $sum: 1 } } },
+    ]).toArray().catch(() => []),
   ]);
   const pausedSet = new Set(pausedRows.map((r) => r.key));
   const uMap = Object.fromEntries(uRows.map((u) => [u.campaign, u]));
+  const credMap = Object.fromEntries(credRows.map((c) => [c._id, c]));
   const out = agg.map((g) => {
     const u = uMap[g._id] || {};
+    const c = credMap[g._id] || {};
     return {
       campaign: g._id, label: campaignLabel(g._id),
       total: g.total, hot: g.hot, warm: g.warm, cold: g.cold,
@@ -145,10 +153,18 @@ apiRouter.get("/campaigns", ttlCache(10), async (_req, res) => {
       noEmail: g.noEmail, unverified: g.unverified, review: g.review, competitor: g.competitor, discarded: g.discarded,
       recovered: g.recovered, dnc: g.dnc,
       paused: pausedSet.has(g._id),
+      pndCredits: c.pnd || 0, pndPosts: c.posts || 0,
       credits: { trigify: u.trigify_scraped || 0, prospeo: u.prospeo_finds || 0, sendkit: g.verified },
     };
   }).sort((a, b) => b.total - a.total);
   res.json({ campaigns: out, prospeo, jina });
+});
+
+// GET /api/pnd/daily?days=7 — per-day PND spend, broken down by surface. The credit "days logs".
+apiRouter.get("/pnd/daily", async (req, res) => {
+  const days = Math.min(60, Math.max(1, parseInt(req.query.days || "7", 10)));
+  const rows = await pndDaily().find({}).sort({ _id: -1 }).limit(days).toArray().catch(() => []);
+  res.json({ days: rows.map((r) => ({ day: r._id, scrape: r.scrape || 0, profile: r.profile || 0, company: r.company || 0, total: r.total || 0, cacheSaved: r.cache_saved || 0, kinds: r.kinds || {} })) });
 });
 
 // GET /api/campaigns/list — every campaign that EXISTS, straight from campaigns.js.
@@ -326,10 +342,12 @@ apiRouter.post("/leads/decision", async (req, res) => {
 
   const perCampaign = new Map();
   for (const d of keep) {
-    for (const cid of sendkitIdsFor(d.campaigns)) {
-      if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
-      perCampaign.get(cid).add(d.email.trim().toLowerCase());
-    }
+    const desired = sendkitIdsFor(d.campaigns)[0];
+    if (!desired) continue;
+    const e = d.email.trim().toLowerCase();
+    const cid = await assignEmailCampaign(e, desired); // global email→campaign lock
+    if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
+    perCampaign.get(cid).add(e);
   }
   let pushed = 0;
   for (const [cid, set] of perCampaign) {
@@ -442,10 +460,10 @@ apiRouter.get("/sources", async (_req, res) => {
   const agg = await sources().aggregate([
     { $match: { lists: { $nin: [null, []] } } },
     { $unwind: "$lists" },
-    { $group: { _id: "$lists", count: { $sum: 1 }, active: { $sum: { $cond: [{ $eq: ["$active", true] }, 1, 0] } }, ran: { $sum: { $cond: [{ $ifNull: ["$lastRun", false] }, 1, 0] } } } },
+    { $group: { _id: "$lists", count: { $sum: 1 }, active: { $sum: { $cond: [{ $eq: ["$active", true] }, 1, 0] } }, ran: { $sum: { $cond: [{ $ifNull: ["$lastRun", false] }, 1, 0] } }, done: { $sum: { $cond: [{ $eq: ["$scrape_done", true] }, 1, 0] } }, pndCredits: { $sum: { $ifNull: ["$pnd_credits", 0] } } } },
     { $sort: { count: -1 } },
   ]).toArray();
-  const lists = agg.map((a) => ({ list: a._id, count: a.count, active: a.active, ran: a.ran }));
+  const lists = agg.map((a) => ({ list: a._id, count: a.count, active: a.active, ran: a.ran, done: a.done, pndCredits: a.pndCredits || 0 }));
   res.json({ sources: rows, lists, status: sourcesStatus() });
 });
 
@@ -548,13 +566,15 @@ apiRouter.delete("/sources/list/:list", async (req, res) => {
   const r = await sources().deleteMany({ lists: { $in: [null, []] }, imported: true });
   res.json({ ok: true, list, removed: r.deletedCount });
 });
-apiRouter.post("/sources/run", (_req, res) => {
-  const st = sourcesStatus();
-  if (st.running) return res.json({ started: false, ...st });
-  runSources().catch((e) => console.error("sources run error", e.message));
-  res.json({ started: true });
-});
+// "Run now" is now the auto engine's manual rotation kick (the old Trigify runSources is retired
+// from the scheduler; this button used to fire it and did nothing while paused/out-of-credits).
+apiRouter.post("/sources/run", async (_req, res) => res.json(await rotateNow()));
 apiRouter.get("/sources/status", (_req, res) => res.json(sourcesStatus()));
+
+// ── Auto engine (scheduled keyword sweep + hub pass + daily rotation) ────────────────────────
+apiRouter.get("/auto/status", async (_req, res) => res.json(await autoStatus()));
+apiRouter.post("/auto/toggle", async (req, res) => res.json(await setAutoEnabled(!!req.body?.enabled)));
+apiRouter.post("/auto/rotate-now", async (_req, res) => res.json(await rotateNow()));
 
 // POST /api/sources/reroute — fix source leads that landed in the empty Influencer/Hub campaigns
 apiRouter.post("/sources/reroute", (_req, res) => {
@@ -703,9 +723,16 @@ apiRouter.post("/keywords/manual", (req, res) => {
 apiRouter.get("/keywords/manual/status", (_req, res) => res.json(keywordManualStatus()));
 apiRouter.post("/keywords/manual/pause", (_req, res) => res.json(pauseKeywordManual()));
 
-// POST /api/sources/pause { paused } — master switch for the auto influencer/hub sweep
-apiRouter.post("/sources/pause", (req, res) => res.json({ paused: setAutoScrape(!!req.body?.paused) }));
-apiRouter.get("/sources/pause", (_req, res) => res.json({ paused: isAutoScrapePaused(), rapid: rapidScrapeStats() }));
+// POST /api/sources/pause { paused } — master switch for the AUTO ENGINE, now persisted in Mongo
+// (the old in-memory autoPaused reset to paused on every deploy). paused:true => enabled:false.
+apiRouter.post("/sources/pause", async (req, res) => {
+  const r = await setAutoEnabled(!req.body?.paused);
+  res.json({ paused: !r.enabled });
+});
+apiRouter.get("/sources/pause", async (_req, res) => {
+  const s = await autoStatus();
+  res.json({ paused: !s.enabled, rapid: rapidScrapeStats() });
+});
 
 // GET /api/debug/pnd?path=&urn=... — raw PND response, so a parser can be written against what the
 // API actually returns rather than what we assume it returns. Ingest-token guarded; read-only.

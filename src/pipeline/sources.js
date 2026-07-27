@@ -1,7 +1,7 @@
 // Sources orchestrator: scrape influencer posts + hub pages, classify each post by topic,
 // route its engagers into the Influencer/Hub SendKit campaigns with the classified category.
 
-import { sources, processedPosts, scrapedPosts, scrapeEngagers } from "../db/mongo.js";
+import { sources, processedPosts, scrapedPosts, scrapeEngagers, pndDaily } from "../db/mongo.js";
 import { getProfilePosts, getPostEngagements, getPostComments, trigifyOutOfCredits } from "../services/trigifyScrape.js";
 import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
@@ -36,7 +36,7 @@ let seenEngagers = new Set();
 
 // The text we classify + route on: the post body, or the URL slug when the body is thin
 // (hub posts arrive as just a URL; LinkedIn slugs carry the keywords).
-function routeText(text, postUrl) {
+export function routeText(text, postUrl) {
   const slug = decodeURIComponent(postUrl || "").replace(/^.*\/posts\//, "").replace(/[-/_]+/g, " ");
   return text && text.length > 20 ? text : slug;
 }
@@ -321,6 +321,14 @@ async function scrapeAndEnrich(postUrl, camp, category) {
       return "done";
     }
     await scrapedPosts().updateOne({ postUrl }, { $unset: { comments_skipped: "", comments_skip_reason: "" } });
+    // On a RE-scrape of a grown post the reactions phase pays only for new pages, but comments
+    // used to restart from page 1 and re-read every page. Comments sort mostRecent — new ones are
+    // at the FRONT — so the reactions trick applies directly: once two consecutive pages hand back
+    // nobody new, everything deeper is already in the queue. Gated on "this post already has
+    // queued commenters" so a FIRST scrape (where a legitimately empty page just means the end)
+    // never stops early on it.
+    const priorCommenters = await scrapeEngagers().countDocuments({ postUrl, engagement_type: "comment" });
+    let cEmptyRun = 0;
     // Page-based, like reactions: the endpoint reports total/totalPage and has no pagination token.
     // The old loop broke as soon as the token came back empty — and it ALWAYS came back empty —
     // so even once the parser is fixed, this had to change or we'd only ever read page one.
@@ -334,7 +342,11 @@ async function scrapeAndEnrich(postUrl, camp, category) {
       // top-level commenters. Using LinkedIn's number as the target made a COMPLETE scrape read as
       // "14 of 17", i.e. a permanent phantom shortfall.
       if (page === 1 && r.total != null) await scrapedPosts().updateOne({ postUrl }, { $set: { comments_available: r.total } });
-      await absorb(r.engagers, { page: page + 1 });
+      const newCount = await absorb(r.engagers, { page: page + 1 });
+      if (priorCommenters > 0) {
+        cEmptyRun = newCount === 0 ? cEmptyRun + 1 : 0;
+        if (cEmptyRun >= 2) break; // delta exhausted — the rest of the pages are all old commenters
+      }
       if (!r.count || (r.totalPage && page >= r.totalPage)) break;
     }
     Object.assign(cp, { commentsDone: true });
@@ -343,7 +355,7 @@ async function scrapeAndEnrich(postUrl, camp, category) {
   return "done";
 }
 
-async function finalizeScrape(postUrl, phase, creditBase = null) {
+async function finalizeScrape(postUrl, phase, creditBase = null, kind = "post") {
   await meterFlush();
   const paused = phase === "paused";
   scrapeOneStatus = { ...scrapeOneStatus, running: false, phase, paused, finishedAt: new Date() };
@@ -362,12 +374,22 @@ async function finalizeScrape(postUrl, phase, creditBase = null) {
     const d = (k) => Math.max(0, (now[k] || 0) - (creditBase[k] || 0));
     const scrape = d("pnd_scrape_pages"), profile = d("pnd_profile_calls"), company = d("pnd_company_calls");
     const cacheSaved = d("pnd_cache_hits"), paidLeads = d("domain_paid");
+    const total = scrape + profile + company;
     if (scrape || profile || company || cacheSaved || paidLeads) {
       upd.$inc = {
         "pnd_credits.scrape": scrape, "pnd_credits.profile": profile, "pnd_credits.company": company,
-        "pnd_credits.total": scrape + profile + company,
+        "pnd_credits.total": total,
         "pnd_credits.cache_saved": cacheSaved, "pnd_credits.paid_leads": paidLeads,
       };
+    }
+    // Per-DAY spend log, broken down by surface (keyword / manual / hub / influencer / post), so
+    // credit usage is visible everywhere it happens — the sweep's day logs, the Overview, etc.
+    if (total || cacheSaved) {
+      const day = new Date().toISOString().slice(0, 10);
+      await pndDaily().updateOne({ _id: day }, { $inc: {
+        scrape, profile, company, total, cache_saved: cacheSaved,
+        [`kinds.${kind}`]: total,
+      }, $setOnInsert: { at: new Date() } }, { upsert: true }).catch(() => {});
     }
   }
   await scrapedPosts().updateOne({ postUrl }, upd).catch(() => {});
@@ -387,12 +409,31 @@ export async function scrapeOnePost({ postUrl, campaignKey = "" }) {
 
 // The same job, but AWAITABLE — the keyword sweep runs posts one after another and needs to know
 // when each finishes. Callers must not run two at once (scrapeOneRunning guards the button path).
-export async function scrapeOneInner({ postUrl, campaignKey = "" }) {
-  const { routeSourceEngager, campaignByKey } = await import("../services/campaigns.js");
+// Tolerant parse for PND's date strings ("2026-07-24 20:14:12.022 +0000 UTC" — the trailing
+// " UTC" breaks Date.parse). Returns epoch ms or null; callers must treat null as "unknown age".
+function parsePndDate(s) {
+  if (!s) return null;
+  const t = Date.parse(String(s).replace(/\s*UTC\s*$/i, ""));
+  return Number.isFinite(t) ? t : null;
+}
+
+// `maxAgeDays`: the auto engine's guard for posts whose age is unknown until the get-post peek
+// (hub posts arrive as bare URLs). If the post turns out older, we stop after that single peek
+// credit instead of scraping a months-dead audience. 0/absent = no age limit (manual scrapes).
+// An UNPARSEABLE date does not trigger the guard — unknown age is not proof of old age.
+export async function scrapeOneInner({ postUrl, campaignKey = "", maxAgeDays = 0, kind = "post" }) {
+  // Re-entrancy guard — CLAIM THE LANE SYNCHRONOUSLY, before any await, so two callers can't both
+  // slip past. scrapeOnePost guards too, but the auto engine calls this directly and has an await
+  // gap (pndProfilePosts) before each call during which a manual scrape can grab the lane; without
+  // this, two runs would clobber the shared scrapeCtl / scrapeOneStatus (Pause hits the wrong post,
+  // ledger misattributed). One scrape at a time, always. The keyword sweep calls this sequentially,
+  // so finalizeScrape has already released the lane before its next call — this never false-fires there.
+  if (scrapeOneRunning) { log.warn("scrapeOneInner busy — concurrent call skipped", { postUrl }); return { ok: false, error: "already running" }; }
   scrapeOneRunning = true;
   scrapeCtl = { postUrl, paused: false };
   // Snapshot PND counters now; finalizeScrape diffs against this to record what THIS run cost.
   const creditBase = meterSinceBoot();
+  const { routeSourceEngager, campaignByKey } = await import("../services/campaigns.js");
   {
     try {
       const rec = (await scrapedPosts().findOne({ postUrl })) || {};
@@ -408,6 +449,23 @@ export async function scrapeOneInner({ postUrl, campaignKey = "" }) {
       // This is the same get-post call the title already made — it just ran fire-and-forget AFTER
       // routing. Awaiting it here costs no extra credit and gives the router the real body.
       const det = await pndPostInfo(postUrl).catch(() => null);
+
+      // Age guard (auto engine only): the get-post peek above just told us WHEN this post was
+      // published. If it's past the window, record why and stop here — total cost 1 credit,
+      // instead of paging a dead post's whole audience.
+      if (maxAgeDays > 0) {
+        const ts = parsePndDate(det?.posted);
+        if (ts && Date.now() - ts > maxAgeDays * 86400000) {
+          await scrapedPosts().updateOne({ postUrl }, {
+            $set: { postUrl, skipped_old: true, posted: det?.posted || null, title: det?.title || rec.title || null, finishedAt: new Date() },
+            $setOnInsert: { startedAt: new Date() },
+          }, { upsert: true }).catch(() => {});
+          log.info("post older than the auto window — skipped after the peek", { postUrl, posted: det?.posted, maxAgeDays });
+          scrapeOneRunning = false;
+          return { ok: true, skipped: "too-old" };
+        }
+      }
+
       const rt = routeText(det?.text || rec.text || "", postUrl);
       const category = rec.category || classifyPost(rt);
       // A post already under way keeps its campaign: re-routing a resume mid-way would split one
@@ -438,10 +496,10 @@ export async function scrapeOneInner({ postUrl, campaignKey = "" }) {
       const res = await scrapeAndEnrich(postUrl, camp, category);
       scrapeOneStatus.outOfCredits = pndOutOfCredits();
       if (res === "done") await scrapedPosts().updateOne({ postUrl }, { $set: { scrape_done: true, engager_total: await scrapeEngagers().countDocuments({ postUrl }) } });
-      return await finalizeScrape(postUrl, res === "paused" ? "paused" : res === "stopped" ? "stopped" : "done", creditBase);
+      return await finalizeScrape(postUrl, res === "paused" ? "paused" : res === "stopped" ? "stopped" : "done", creditBase, kind);
     } catch (e) {
       log.error("scrapeOne error", { err: e.message });
-      return await finalizeScrape(postUrl, "error", creditBase);
+      return await finalizeScrape(postUrl, "error", creditBase, kind);
     }
   }
 }

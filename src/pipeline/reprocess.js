@@ -17,7 +17,7 @@ import { leads, reprocessRuns } from "../db/mongo.js";
 import { findEmailWaterfall, verifyEmailWaterfall, companyFromHeadline } from "./enrichLead.js";
 import { isRoleBased, findEmailByNameDomain } from "../services/enrich.js";
 import { companyDomainGuarded } from "../services/clearbit.js";
-import { upsertLead, addToCampaign } from "../services/sendkit.js";
+import { upsertLead, addToCampaign, assignEmailCampaign } from "../services/sendkit.js";
 import { bumpUsage } from "../services/usage.js";
 import { meterFlush } from "../services/apiMeter.js";
 import { CAMPAIGN_ID, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
@@ -186,7 +186,8 @@ async function pushRecovered(d, email, domain, vr) {
   const [first, ...rest] = (d.name || "").split(" ");
   await upsertLead({ email, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags });
   const landed = [];
-  for (const cid of sendkitIdsFor(d.campaigns)) { if (await addToCampaign(cid, email)) landed.push(cid); }
+  const desired = sendkitIdsFor(d.campaigns)[0];
+  if (desired) { const cid = await assignEmailCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
   await leads().updateOne({ linkedin_url: d.linkedin_url }, {
     $set: {
       email, company_domain: domain || null, email_status: "verified", unverified: false, needs_email: false,

@@ -16,7 +16,7 @@ import { profileCompany } from "../services/linkedinProfile.js";
 import { pndExactDomain } from "../services/pnd.js";
 import { bouncebanVerify } from "../services/bounceban.js";
 import { meter } from "../services/apiMeter.js";
-import { findOurLead, upsertLead, addToCampaign, addToDnc } from "../services/sendkit.js";
+import { findOurLead, upsertLead, addToCampaign, addToDnc, assignEmailCampaign } from "../services/sendkit.js";
 import { scoreFromHistory } from "../services/score.js";
 import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
 import { isCompanyPage, isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
@@ -261,9 +261,10 @@ export async function enrichLead(input) {
       await upsertLead({ email: known.email, firstName: f, lastName: r.join(" "), companyName: known.company || "", jobTitle: headline || known.headline || "", linkedinUrl: key, tags });
       const fresh = await leads().findOne({ linkedin_url: key });
       const landed = [];
-      for (const cid of sendkitIdsFor(fresh?.campaigns || [campaign])) {
-        if (await addToCampaign(cid, known.email)) landed.push(cid);
-      }
+      // Route the first-campaign choice through the global email→campaign lock so the same email
+      // (even from a different profile) never lands in a second campaign.
+      const desired = sendkitIdsFor(fresh?.campaigns || [campaign])[0];
+      if (desired) { const cid = await assignEmailCampaign(known.email, desired); if (await addToCampaign(cid, known.email)) landed.push(cid); }
       await leads().updateOne({ linkedin_url: key }, { $set: { sendkit_campaigns: landed } });
     }
     await bumpUsage(campaign, { trigify_scraped: 1 }); // scraped only — zero email-provider spend
@@ -477,9 +478,8 @@ export async function enrichLead(input) {
   // from more than one campaign, and the dashboard counts them as verified in each.
   const doc = await leads().findOne({ linkedin_url: key });
   const landed = [];
-  for (const cid of sendkitIdsFor(doc?.campaigns || [campaign])) {
-    if (await addToCampaign(cid, email)) landed.push(cid);
-  }
+  const desired = sendkitIdsFor(doc?.campaigns || [campaign])[0];
+  if (desired) { const cid = await assignEmailCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
   await leads().updateOne({ linkedin_url: key }, { $set: { sendkit_campaigns: landed } });
 
   await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0, sendkit_pushed: isRepeat ? 0 : 1 });
