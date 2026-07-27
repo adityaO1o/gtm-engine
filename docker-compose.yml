@@ -5,7 +5,12 @@
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      # Set GIT_SHA in Dokploy's Environment tab to the deploy commit to surface it at /health.
+      # Unset -> "unknown" (harmless). Not required for anything to work.
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     restart: unless-stopped
     # Not published to the host — Traefik reaches it over the internal compose network.
     # (Publishing 3001 to the host would allow direct access that bypasses the proxy and

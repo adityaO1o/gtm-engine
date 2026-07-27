@@ -11,6 +11,7 @@
 import axios from "axios";
 import { config } from "../config.js";
 import { meter } from "./apiMeter.js";
+import { verifyCache } from "../db/mongo.js";
 import { log } from "../lib/logger.js";
 
 const BASE = "https://api.bounceban.com/v1";
@@ -21,6 +22,22 @@ export function bouncebanStats() { return { ...stats, enabled: !!config.bounceba
 // -> { result, score, deliverable, hardFail, acceptAll, role, free, disposable } | null (unusable)
 export async function bouncebanVerify(email) {
   if (!config.bouncebanKey || !email) return null;
+  const key = String(email).trim().toLowerCase();
+
+  // Reuse a recent verdict instead of re-buying it. BounceBan is our paid verifier and the SAME
+  // address is checked by the live path, reprocess, the audit and internal-tool — a lead stuck
+  // "unverified" gets re-verified on every retry pass. Only real verdicts are cached; a null
+  // (API down / out of credits) is never stored, so those retry live next time.
+  if (config.bouncebanCacheMs > 0) {
+    try {
+      const hit = await verifyCache().findOne({ email: key });
+      if (hit?.v && hit.at && Date.now() - new Date(hit.at).getTime() < config.bouncebanCacheMs) {
+        meter.inc("bounceban_cache_hits");
+        return hit.v;
+      }
+    } catch { /* cache is best-effort — fall through to a live call */ }
+  }
+
   try {
     stats.calls++; meter.inc("bounceban_calls");
     const r = await axios.get(`${BASE}/verify/single`, {
@@ -34,11 +51,15 @@ export async function bouncebanVerify(email) {
     if (deliverable) { stats.deliverable++; meter.inc("bounceban_deliverable"); }
     else if (hardFail) { stats.undeliverable++; meter.inc("bounceban_undeliverable"); }
     else { stats.ambiguous++; meter.inc("bounceban_ambiguous"); }
-    return {
+    const verdict = {
       result, score: d.score ?? null, deliverable, hardFail,
       acceptAll: !!d.is_accept_all, role: !!d.is_role, free: !!d.is_free, disposable: !!d.is_disposable,
       remaining: d.credits_remaining ?? null,
     };
+    if (config.bouncebanCacheMs > 0) {
+      verifyCache().updateOne({ email: key }, { $set: { email: key, v: verdict, at: new Date() } }, { upsert: true }).catch(() => {});
+    }
+    return verdict;
   } catch (e) {
     log.warn("bounceban threw", { err: e.message });
     return null;

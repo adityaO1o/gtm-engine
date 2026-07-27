@@ -68,8 +68,10 @@ function ipAllow(req, res, next) {
   return res.status(403).send("Forbidden");
 }
 
-// Health check — no secrets, no proxy count.
-app.get("/health", (_req, res) => res.json({ ok: true }));
+// Health check — no secrets. `sha` is the deployed commit, baked at image-build time (Dockerfile
+// ARG GIT_SHA -> ENV). Reads "unknown" until the build passes GIT_SHA; once wired, "is the latest
+// deploy live?" is a single curl instead of digging through the Dokploy UI.
+app.get("/health", (_req, res) => res.json({ ok: true, sha: process.env.GIT_SHA || "unknown" }));
 
 // Trigify ingest — token-guarded (inside the router) + rate-limited.
 app.use("/", enrichLimiter, enrichRouter);

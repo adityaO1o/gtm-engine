@@ -65,6 +65,11 @@ export const config = {
 
   // BounceBan — PRIMARY email verifier (before Enrich/Prospeo). Big pool, 100/s, flags catch-all.
   bouncebanKey: process.env.BOUNCEBAN_KEY || "",
+  // How long a BounceBan verdict is reused from cache before we re-verify (paid). A mailbox's status
+  // drifts over time, so this is finite on purpose — long enough to spare the repeated re-checks the
+  // live path, reprocess, audit and internal-tool all make on the same address, short enough not to freeze
+  // a stale verdict. 0 disables the cache entirely.
+  bouncebanCacheMs: Math.max(0, parseInt(process.env.BOUNCEBAN_CACHE_DAYS || "14", 10)) * 86400000,
   // Post/engager scraping host — default FRESH so its $10/500 credits are drained first.
   scrapeApiHost: process.env.SCRAPE_API_HOST || "fresh-linkedin-profile-data.p.rapidapi.com",
   // Spacing between scrape API calls (ms) — a shared limiter so we don't burst the plan's

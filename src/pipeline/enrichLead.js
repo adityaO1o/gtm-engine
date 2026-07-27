@@ -52,7 +52,10 @@ async function recordEngagement(key, { name, headline, category, engagement_type
     linkedin_url: key, name, headline, category,
     engagement: engagement_type, campaign, post_url, comment_text, created_at: now,
   });
-  const history = await engagements().find({ linkedin_url: key }).toArray();
+  // scoreFromHistory only reads category + engagement, so fetch only those. A repeat engager can
+  // have dozens of engagement docs (each carrying name/headline/comment_text/post_url); pulling the
+  // whole document on every engagement moved a lot of dead BSON — the comment bodies especially.
+  const history = await engagements().find({ linkedin_url: key }, { projection: { category: 1, engagement: 1, _id: 0 } }).toArray();
   return scoreFromHistory(history.map((h) => ({ category: h.category, engagement: h.engagement })));
 }
 
@@ -123,7 +126,28 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
     if (!company && resolved?.company) { company = resolved.company; await clearbitDomain(company); await tryNameDomain("enrich:name+domain"); }
   }
 
-  // (a2) PAID LAST RESORT — only when every FREE tier above failed to produce a domain.
+  // ── URL-BASED FINDERS FIRST (before the paid PND tier). These take the vanity URL directly and
+  // need NO domain, so when they work the lead never touches PND. They used to run AFTER PND, which
+  // meant a lead findable straight from its URL still burned a PND profile+company lookup (2 credits)
+  // first — PND was the "last resort" in the comment but the second-to-last in the code. On a big
+  // share-post scrape that misordering was a large share of the PND bill. A URN that the free tiers
+  // couldn't resolve stays a URN here, so these skip and PND (below) still handles it — PND accepts
+  // the raw URN, which is exactly why it belongs after, not before.
+
+  // (b) Enrich linkedin-to-email by url
+  if (!em.found && vanity && !isUrn(vanity)) {
+    const lte = await findEmailByLinkedin(vanity);
+    if (lte.found && lte.email) { em = { found: true, email: lte.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:url"; }
+  }
+  // (c) Prospeo by url
+  if (!em.found && vanity && !isUrn(vanity)) {
+    const p = await findEmail({ linkedin_url: vanity, full_name: name }); prospeoCalls++;
+    if (p.found && p.email) { em = p; emailSource = "prospeo"; emailMethod = "prospeo:url"; }
+    if (!domain && p.company_domain) { domain = p.company_domain; domainSource = "prospeo"; }
+  }
+
+  // (a2) PAID LAST RESORT — now genuinely last among the finders: only when the free name+domain,
+  // SERP resolve, and the URL-based finders above ALL failed to produce an email or a domain.
   // PND accepts the raw obfuscated URN directly, so it works even when the SERP resolve missed
   // entirely, and it returns the EXACT company website (no Clearbit guessing). Both hops are cached,
   // so repeat leads at the same company — and any later retry of this lead — cost nothing.
@@ -153,17 +177,7 @@ export async function findEmailWaterfall({ name = "", headline = "", linkedin_ur
       }
     }
   }
-  // (b) Enrich linkedin-to-email by url
-  if (!em.found && vanity && !isUrn(vanity)) {
-    const lte = await findEmailByLinkedin(vanity);
-    if (lte.found && lte.email) { em = { found: true, email: lte.email, company_domain: domain }; emailSource = "enrich"; emailMethod = "enrich:url"; }
-  }
-  // (c) Prospeo by url, then name+domain — last fallback
-  if (!em.found && vanity && !isUrn(vanity)) {
-    const p = await findEmail({ linkedin_url: vanity, full_name: name }); prospeoCalls++;
-    if (p.found && p.email) { em = p; emailSource = "prospeo"; emailMethod = "prospeo:url"; }
-    if (!domain && p.company_domain) { domain = p.company_domain; domainSource = "prospeo"; }
-  }
+  // (d) Prospeo by name+domain — needs a domain, so it can only run once PND/Clearbit produced one.
   if (!em.found && domain && firstName) {
     const p = await findEmail({ first_name: firstName, last_name: lastName, company_domain: domain }); prospeoCalls++;
     if (p.found && p.email) { em = p; emailSource = "prospeo"; emailMethod = "prospeo:name+domain"; }

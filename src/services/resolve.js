@@ -68,17 +68,43 @@ function queriesFor(name, company) {
   return q;
 }
 
-// Pull the company out of a LinkedIn SERP result. Titles/snippets read like
-// "Jane Doe - VP Marketing at Acme Corp | LinkedIn" — the company is right there, which lets us
-// find a domain (and an email) even when the person's own headline has no "at Company".
+// Words that are a JOB TITLE, not a company — used to avoid mistaking the headline's role for the
+// employer in the dash-format fallback below. Not exhaustive; it only needs to catch the common
+// last-segment-is-a-title case. A wrong guess is caught downstream anyway (Clearbit's name-match
+// guard rejects a company that doesn't match), so this errs toward trying.
+const TITLE_WORDS = /\b(founder|co-?founder|ceo|cto|coo|cmo|cfo|president|vp|vice president|head|director|manager|lead|engineer|developer|designer|consultant|advisor|owner|partner|analyst|specialist|officer|executive|account|sales|marketing|growth|recruiter|freelance|student|intern|coach|creator|author|speaker|investor|ex-|former)\b/i;
+
+// Pull the company out of a LinkedIn SERP result. Two formats show up, tried in confidence order:
+//   1. "... at Acme Corp | LinkedIn" / "... @Acme"       — explicit, high confidence
+//   2. "Jane Doe - VP Marketing - Acme Corp | LinkedIn"  — dash-separated; company is the LAST
+//      segment (after the name and title). LinkedIn emits this form constantly, and the old
+//      "at"-only matcher missed ALL of it — the single biggest reason the free company-recovery
+//      failed (~⅔ of resolves came back company:null) and leads fell to the paid PND tier.
+// The company lets us find a domain (and an email) even when the person's own headline has none.
 function companyFromHit(title = "", description = "") {
+  const clean = (s) => String(s || "").replace(/\s*[|·]\s*LinkedIn.*$/i, "").trim();
+
+  // 1) explicit "at/@ Company"
   for (const s of [title, description]) {
-    const m = String(s || "").replace(/\s*\|\s*LinkedIn.*$/i, "")
-      .match(/(?:\bat\b|@)\s+([A-Z][\w&.,'’\- ]{1,45})/);
+    const m = clean(s).match(/(?:\bat\b|@)\s+([A-Z][\w&.,'’\- ]{1,45})/);
     if (m) {
-      const co = m[1].split(/[|·•]|\s[-–]\s/)[0].trim().replace(/[.,]+$/, "");
+      const co = m[1].split(/[|·•]|\s[-–—]\s/)[0].trim().replace(/[.,]+$/, "");
       if (co.length >= 2 && !/^linkedin$/i.test(co)) return co;
     }
+  }
+
+  // 2) dash-format "Name - [Title -] Company". Split on hyphen/en/em dash surrounded by spaces,
+  //    drop the name (first segment), and take the LAST remaining segment as the company — unless
+  //    it reads like a job title (then there was no company segment, e.g. "Name - Founder").
+  for (const s of [title, description]) {
+    const parts = clean(s).split(/\s[-–—]\s/).map((p) => p.trim()).filter(Boolean);
+    if (parts.length < 2) continue;               // "Name | LinkedIn" — nothing to take
+    const last = parts[parts.length - 1].replace(/[.,]+$/, "");
+    if (last.length < 2 || last.length > 45) continue;
+    if (/^linkedin$/i.test(last)) continue;
+    if (TITLE_WORDS.test(last)) continue;          // last segment is the role, not the employer
+    if (!/[A-Za-z]/.test(last)) continue;          // needs at least one letter
+    return last;
   }
   return null;
 }

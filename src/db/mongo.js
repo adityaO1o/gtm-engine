@@ -48,11 +48,20 @@ export async function connect() {
   // Without these they were COLLECTION SCANS — ~200 of them under concurrency made the dashboard
   // take 15-17s to load. These turn them into fast index counts.
   await db.collection("leads").createIndex({ email_status: 1 });
+  // The retry pipeline (reprocess.js) scans email_status:"no-email" and then filters on last_retry_at
+  // for the backoff. email_status alone narrows to a large slice; this compound lets Mongo skip
+  // already-recently-tried leads on the index instead of in memory.
+  await db.collection("leads").createIndex({ email_status: 1, last_retry_at: 1 });
   await db.collection("leads").createIndex({ campaigns: 1 });
   await db.collection("leads").createIndex({ campaigns: 1, status: 1 });
   await db.collection("leads").createIndex({ campaigns: 1, email_status: 1, email: 1 });
   await db.collection("leads").createIndex({ bb_verdict: 1 });          // BounceBan audit + scorecard
   await db.collection("bounceban_runs").createIndex({ finishedAt: -1 });
+  // BounceBan verdict cache — keyed by email. The `at` TTL index is a hard cleanup bound (30d) so the
+  // collection can't grow forever; the reuse window is the shorter, configurable bouncebanCacheMs
+  // checked in code. (A wrong-person address is never cached — only real verdicts are stored.)
+  await db.collection("bounceban_cache").createIndex({ email: 1 }, { unique: true });
+  await db.collection("bounceban_cache").createIndex({ at: 1 }, { expireAfterSeconds: 30 * 24 * 3600 });
   await db.collection("scraped_posts").createIndex({ postUrl: 1 }, { unique: true });
   // /internal internal-tool tool — one doc per job/hiring-post, deduped by a stable key.
   await db.collection("internal_jobs").createIndex({ dedup_key: 1 }, { unique: true });
@@ -140,3 +149,4 @@ export const campaignState = () => db.collection("campaign_state");
 export const companyDomains = () => db.collection("company_domains");   // _id: companyUsername
 export const profileCache = () => db.collection("profile_cache");        // _id: profile url/urn
 export const bouncebanRuns = () => db.collection("bounceban_runs");      // audit run history
+export const verifyCache = () => db.collection("bounceban_cache");       // email -> {v: verdict, at}

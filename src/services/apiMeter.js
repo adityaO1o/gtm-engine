@@ -25,7 +25,7 @@ export const METER_FIELDS = [
   // How each lead's domain was obtained — proves the free tiers are doing the work.
   "domain_free", "domain_paid",
   // BounceBan (primary verifier). undeliverable verdicts are terminal → Enrich/Prospeo credits saved.
-  "bounceban_calls", "bounceban_deliverable", "bounceban_undeliverable", "bounceban_ambiguous",
+  "bounceban_calls", "bounceban_deliverable", "bounceban_undeliverable", "bounceban_ambiguous", "bounceban_cache_hits",
 ];
 const zero = () => Object.fromEntries(METER_FIELDS.map((f) => [f, 0]));
 
