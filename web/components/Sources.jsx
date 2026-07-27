@@ -111,6 +111,46 @@ function ScrapedPosts({ posts, onResume, busy }) {
   );
 }
 
+// The one automatic engine: scheduled keyword sweep + hub pass + daily influencer/list rotation.
+// Its enable switch is persisted server-side (survives deploys), unlike the old in-memory flag.
+function AutoEngineBox({ onRotate }) {
+  const toast = useToast();
+  const [a, setA] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => j("/api/auto/status").then((d) => alive && setA(d)).catch(() => {});
+    load();
+    const t = setInterval(load, 15000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  const toggle = async () => {
+    const next = !(a?.enabled);
+    const r = await post("/api/auto/toggle", { enabled: next });
+    setA((s) => ({ ...(s || {}), enabled: r.enabled }));
+    toast(r.enabled ? "Auto engine ON" : "Auto engine paused", r.enabled ? "good" : "info");
+  };
+  const hrs = (iso) => { if (!iso) return "—"; const d = (new Date(iso) - Date.now()) / 3600000; return d <= 0 ? "due now" : `in ${d < 1 ? Math.round(d * 60) + "m" : d.toFixed(1) + "h"}`; };
+  const on = a?.enabled;
+  return (
+    <div className="chartbox" style={{ marginBottom: "var(--s3)", borderTop: `2px solid ${on ? "var(--good)" : "var(--muted)"}` }}>
+      <div className="toolbar" style={{ marginBottom: "var(--s3)" }}>
+        <h4 style={{ margin: 0 }}><Icon name="bolt" />Auto engine <span className={on ? "tag-harv" : "tag-man"}>{on ? "on" : "paused"}</span></h4>
+        <div className="grow" />
+        <button className="btn btn-ghost btn-sm" onClick={onRotate} title="Run the daily influencer/list rotation right now"><Icon name="refresh" />Run rotation now</button>
+        <button className={`btn btn-sm ${on ? "btn-no" : "btn-ok"}`} onClick={toggle}><Icon name={on ? "pause" : "bolt"} />{on ? "Pause" : "Enable"}</button>
+      </div>
+      <div className="muted" style={{ fontSize: 12 }}>
+        Keyword sweep every <b>{a?.sweepEveryHours ?? 12}h</b> ({hrs(a?.nextSweepAt)}) · daily rotation picks <b>{a?.perList ?? 5}</b> per list + {a?.perList ?? 5} standalone,
+        scraping their last-3-months on-topic posts, then marking them done. Off-topic posts and already-scraped engagers cost nothing.
+        {a ? <> <br />Imported-list members: <b>{num(a.listMembers?.done || 0)}</b>/{num(a.listMembers?.total || 0)} done ·
+          PND credits: <b>{a.creditsRemaining != null ? num(a.creditsRemaining) : "?"}</b>
+          {a.idleLowCredits ? <span style={{ color: "var(--hot)" }}> — below floor ({num(a.minCredits)}), engine idle</span> : null}
+          {a.busyWith ? <span className="muted"> · a scrape is running</span> : null}</> : null}
+      </div>
+    </div>
+  );
+}
+
 export default function Sources() {
   const { refreshTop, jobs, pollJobs } = useDash();
   const toast = useToast();
@@ -165,7 +205,11 @@ export default function Sources() {
     await fetch("/api/sources/" + id, { method: "DELETE" });
     toast("Removed", "good");
   };
-  const runNow = async () => { await post("/api/sources/run", {}); toast("Sources sweep started", "info"); pollJobs(); };
+  const runNow = async () => {
+    const r = await post("/api/sources/run", {});
+    if (r?.ok === false) return toast(r.error || "Could not start", "bad");
+    toast("Rotation started — scraping the next batch of sources", "info");
+  };
 
   // Manual keyword scrape: search ONE keyword and send everyone it finds to the campaign you picked.
   // Routing is required and explicit — unlike the post scraper there is no "auto by topic", because a
@@ -229,13 +273,15 @@ export default function Sources() {
       <>
         <div className="toolbar"><button className="btn btn-ghost btn-sm" onClick={() => setList(null)}><Icon name="back" />All sources</button>
           <div className="grow" /><span className="resn"><b>{num(count)}</b> influencers in “{list}”</span></div>
-        <div className="tablewrap"><table><thead><tr><th>Name</th><th>Title</th><th>Profile</th><th>Posts</th><th>Last run</th><th></th></tr></thead>
+        <div className="tablewrap"><table><thead><tr><th>Name</th><th>Title</th><th>Profile</th><th>Posts</th><th title="PND credits spent scraping this person's engagers">PND cr</th><th>Last run</th><th></th></tr></thead>
           <tbody>{rows.map((s) => (
             <tr key={s._id}>
-              <td className="nm">{s.label || "—"}{s.active !== false ? <span className="tag-harv">on</span> : <span className="tag-man">paused</span>}</td>
+              <td className="nm">{s.label || "—"}{s.active !== false ? <span className="tag-harv">on</span> : <span className="tag-man">paused</span>}
+                {s.scrape_done ? <span className="tag-harv" title={`3-month backlog scraped${s.posts_scraped != null ? ` — ${s.posts_scraped} posts` : ""}. Done forever.`}>done</span> : null}</td>
               <td><span className="trunc sm muted" title={s.title || ""}>{s.title || ""}</span></td>
               <td><span className="trunc mono muted" title={s.url}>{s.url}</span></td>
               <td className="num-c">{s.lastPosts != null ? num(s.lastPosts) : <span className="muted">—</span>}</td>
+              <td className="num-c" style={{ color: "var(--primary-2)" }}>{s.pnd_credits ? num(s.pnd_credits) : <span className="muted">—</span>}</td>
               <td className="tstamp">{s.lastRun ? ts(s.lastRun) : "never"}</td>
               <td><div className="rowact">
                 {s.active !== false
@@ -259,9 +305,11 @@ export default function Sources() {
       <tbody>{rows.length ? rows.map((s) => (
         <tr key={s._id}>
           <td className="nm">{s.label || "—"}{s.harvestedFrom ? <span className="tag-harv" title="Auto-discovered from a hub page">harvested</span> : <span className="tag-man" title="Added by you">manual</span>}
-            {s.active === false ? <span className="tag-man" title="Paused — skipped by the daily run">paused</span> : null}</td>
+            {s.active === false ? <span className="tag-man" title="Paused — skipped by the auto engine">paused</span> : null}
+            {s.scrape_done ? <span className="tag-harv" title={`3-month backlog scraped${s.posts_scraped != null ? ` — ${s.posts_scraped} posts` : ""}. Auto engine won't revisit (done forever).`}>done</span> : null}</td>
           <td><span className="trunc mono muted" title={s.url}>{s.url}</span></td>
           <td className="num-c">{s.lastPosts != null ? num(s.lastPosts) : <span className="muted">—</span>}</td>
+          <td className="num-c" style={{ color: "var(--primary-2)" }}>{s.pnd_credits ? num(s.pnd_credits) : <span className="muted">—</span>}</td>
           <td className="tstamp">{s.lastRun ? ts(s.lastRun) : "never"}</td>
           <td><div className="rowact">
             {s.active !== false
@@ -270,17 +318,16 @@ export default function Sources() {
             <button className="btn btn-ghost btn-sm" onClick={() => delSrc(s._id)}><Icon name="trash" /></button>
           </div></td>
         </tr>
-      )) : <tr><td colSpan={5} className="muted" style={{ padding: 16 }}>None yet</td></tr>}</tbody></table></div>
+      )) : <tr><td colSpan={6} className="muted" style={{ padding: 16 }}>None yet</td></tr>}</tbody></table></div>
   );
 
   return (
     <>
-      <div className="note"><Icon name="radio" /><div>Scrape big cold-email <b>influencers’</b> posts and LinkedIn <b>top-content hubs</b>. Each post is auto-classified and its engagers routed to the Influencer/Hub campaigns. Runs daily.<br />
-        <span className="tag-harv">harvested</span> = we auto-found this person · <span className="tag-man">manual</span> = you added them.</div></div>
+      <AutoEngineBox onRotate={runNow} />
+      <div className="note"><Icon name="radio" /><div>Scrape big cold-email <b>influencers’</b> posts and LinkedIn <b>top-content hubs</b>. Each post is auto-classified and its engagers routed by topic. The auto engine above walks each source’s last-3-months on-topic posts once, then marks it <b>done</b>.<br />
+        <span className="tag-harv">harvested</span> = we auto-found this person · <span className="tag-man">manual</span> = you added them · <span className="tag-harv">done</span> = 3-month backlog scraped.</div></div>
       <div className="toolbar">
         <span className="resn"><b>{infl.length}</b> influencers · <b>{hubs.length}</b> hubs</span>
-        <div className="grow" />
-        <button className="btn btn-sm" disabled={data.status.running} onClick={runNow}><Icon name="refresh" />{data.status.running ? "Running…" : "Run now"}</button>
       </div>
 
       <div className="chartbox" style={{ marginBottom: "var(--s3)", borderTop: "2px solid var(--primary)" }}>
@@ -335,12 +382,13 @@ export default function Sources() {
         <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><h4 style={{ margin: 0 }}>Imported lists</h4><div className="grow" />
           <span className="muted" style={{ fontSize: 12 }}>Imported from CSV · <b>paused</b> until you enable them (enabling spends scraping credits)</span></div>
         {data.lists.length ? (
-          <div className="tablewrap" style={{ border: "none" }}><table><thead><tr><th>List</th><th>Influencers</th><th>Status</th><th>Progress</th><th></th></tr></thead>
+          <div className="tablewrap" style={{ border: "none" }}><table><thead><tr><th>List</th><th>Influencers</th><th>Status</th><th>Progress</th><th title="PND credits spent scraping this list's members">PND cr</th><th></th></tr></thead>
             <tbody>{data.lists.map((l) => (
               <tr key={l.list} className="click" onClick={() => { setList(l.list); setListPage(0); }}>
                 <td className="nm">{l.list}</td><td className="score">{num(l.count)}</td>
-                <td>{l.active ? <span className="tag-harv">{num(l.active)} on</span> : <span className="tag-man">paused</span>}</td>
+                <td>{l.active ? <span className="tag-harv">{num(l.active)} on</span> : <span className="tag-man">paused</span>}{l.done ? <span className="tag-harv" title="Members whose 3-month backlog is fully scraped">{num(l.done)} done</span> : null}</td>
                 <td className="muted">{l.ran ? num(l.ran) + " scraped" : "—"}</td>
+                <td className="num-c" style={{ color: "var(--primary-2)" }}>{l.pndCredits ? num(l.pndCredits) : <span className="muted">—</span>}</td>
                 <td onClick={(e) => e.stopPropagation()}><div className="rowact">
                   {l.active
                     ? <button className="btn btn-no btn-sm" title="Pause every influencer in this CSV" onClick={() => setListActive(l.list, false)}><Icon name="pause" />Pause</button>
@@ -357,12 +405,12 @@ export default function Sources() {
         <div className="chartbox" style={{ minWidth: 0, overflow: "hidden" }}><h4>Influencers</h4>
           <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><input className="search" placeholder="LinkedIn profile URL or handle" style={{ flex: 1, minWidth: 0 }} value={inInfl} onChange={(e) => setInInfl(e.target.value)} />
             <button className="btn btn-sm" onClick={() => addSrc("influencer", inInfl, () => setInInfl(""))}><Icon name="plus" />Add</button></div>
-          <SrcTable rows={infl} cols={["Name", "Profile", "Posts", "Last run"]} />
+          <SrcTable rows={infl} cols={["Name", "Profile", "Posts", "PND cr", "Last run"]} />
         </div>
         <div className="chartbox" style={{ minWidth: 0, overflow: "hidden" }}><h4>Hubs</h4>
           <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><input className="search" placeholder="linkedin.com/top-content/... URL" style={{ flex: 1, minWidth: 0 }} value={inHub} onChange={(e) => setInHub(e.target.value)} />
             <button className="btn btn-sm" onClick={() => addSrc("hub", inHub, () => setInHub(""))}><Icon name="plus" />Add</button></div>
-          <SrcTable rows={hubs} cols={["Hub", "URL", "Posts", "Last run"]} />
+          <SrcTable rows={hubs} cols={["Hub", "URL", "Posts", "PND cr", "Last run"]} />
         </div>
       </div>
     </>

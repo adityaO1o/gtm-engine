@@ -53,6 +53,34 @@ function KeywordSweep() {
         {sweep?.running ? <span className="muted" style={{ fontSize: 12 }}>{sweep.phase === "scraping" ? "scraping" : "searching"} &middot; <b>{sweep.keyword}</b> &rarr; {sweep.campaign}</span> : null}
       </div>
       <KeywordRunBox s={sweep} done={sweep?.keywordsDone} total={sweep?.totalKeywords} runningLabel="Sweeping" />
+      <PndDailyLog />
+    </div>
+  );
+}
+
+// PND credit "days log" — how many credits every scraping surface spent, per calendar day.
+// Sits under the sweep because the sweep is the biggest daily spender, but the totals here cover
+// every path (keyword, manual, hub, influencer, imported-list).
+const KIND_LABEL = { keyword: "sweep", manual: "manual", hub: "hubs", influencer: "influencers", post: "single-post" };
+function PndDailyLog() {
+  const [days, setDays] = useState([]);
+  useEffect(() => { j("/api/pnd/daily?days=14").then((r) => setDays(r?.days || [])).catch(() => {}); }, []);
+  if (!days.length) return null;
+  return (
+    <div style={{ marginTop: "var(--s3)" }}>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}><b>PND credits per day</b> — every scrape path, newest first. “Saved” = engager lookups served free from cache.</div>
+      <div className="tablewrap" style={{ border: "none" }}><table><thead><tr>
+        <th>Day</th><th title="Engager-list pages (likers/commenters)">Scrape</th><th title="Paid profile lookups">Profile</th>
+        <th title="Paid company lookups">Company</th><th>Total</th><th title="Cache hits — credits NOT spent">Saved</th><th>By surface</th></tr></thead>
+        <tbody>{days.map((d) => (
+          <tr key={d.day}>
+            <td className="nm">{d.day}</td>
+            <td className="num-c">{num(d.scrape)}</td><td className="num-c">{num(d.profile)}</td><td className="num-c">{num(d.company)}</td>
+            <td className="num-c" style={{ color: "var(--primary-2)", fontWeight: 600 }}>{num(d.total)}</td>
+            <td className="num-c" style={{ color: "var(--good)" }}>{d.cacheSaved ? num(d.cacheSaved) : "—"}</td>
+            <td><span className="muted" style={{ fontSize: 11 }}>{Object.entries(d.kinds || {}).filter(([, v]) => v).map(([k, v]) => `${KIND_LABEL[k] || k} ${num(v)}`).join(" · ") || "—"}</span></td>
+          </tr>
+        ))}</tbody></table></div>
     </div>
   );
 }
@@ -65,7 +93,8 @@ function CampaignList({ campaigns, onOpen }) {
       <th title="Verified lead records (one per LinkedIn profile)">Verified</th>
       <th title="Distinct email addresses — this is what SendKit holds.">In SendKit</th>
       <th>No-email</th><th title="Emails rescued by a hand-off retry">Recovered</th><th>Competitors</th>
-      <th title="On SendKit's Do-Not-Contact list">DNC</th><th>Trigify</th><th>Prospeo</th></tr></thead>
+      <th title="On SendKit's Do-Not-Contact list">DNC</th><th>Trigify</th><th>Prospeo</th>
+      <th title="PND credits spent scraping engagers into this campaign">PND cr</th></tr></thead>
       <tbody>{campaigns.map((c) => (
         <tr key={c.campaign} className="click" onClick={() => onOpen(c.campaign)}>
           <td className="nm">{c.label}</td><td className="score">{num(c.total)}</td><td>{num(c.hot)}</td><td>{num(c.warm)}</td>
@@ -74,6 +103,7 @@ function CampaignList({ campaigns, onOpen }) {
           <td>{num(c.noEmail)}</td><td className="num-c" style={{ color: "var(--good)" }}>{num(c.recovered || 0)}</td><td>{num(c.competitor)}</td>
           <td className="num-c" style={{ color: "var(--hot)", fontWeight: 600 }}>{num(c.dnc || 0)}</td>
           <td className="num-c">{num(c.credits.trigify)}</td><td className="num-c">{num(c.credits.prospeo)}</td>
+          <td className="num-c" style={{ color: "var(--primary-2)" }} title={`${num(c.pndPosts || 0)} posts`}>{num(c.pndCredits || 0)}</td>
         </tr>
       ))}</tbody></table></div>
   );
