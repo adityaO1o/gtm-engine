@@ -9,6 +9,8 @@ import { useKeywordRun, KeywordRunBox } from "./KeywordRun";
 import JobBox from "./JobBox";
 
 const SCR_PHASE = { working: "Scraping + finding emails", done: "Done", paused: "Paused", stopped: "Stopped", error: "Error" };
+// Which job scraped a post — shown as a badge so auto-scraped posts aren't mistaken for manual ones.
+const SRC_KIND = { keyword: "sweep", "keyword-manual": "manual", manual: "manual", influencer: "influencer", hub: "hub", post: "single" };
 
 function ScrapeBox({ s, onPause, onResume }) {
   if (!s || !s.postUrl || !s.phase || s.phase === "idle") return null;
@@ -68,6 +70,7 @@ function ScrapedPosts({ posts, onResume, busy }) {
               <tr key={p.postUrl}>
                 <td>
                   <a href={p.postUrl} target="_blank" rel="noopener" className="postlink" title={p.postUrl}>{label}<Icon name="external" /></a>
+                  {p.sourceKind ? <span className="tag-harv" title="Which job scraped this post">{SRC_KIND[p.sourceKind] || p.sourceKind}</span> : null}
                   {p.partial ? <span className="tag-man" style={{ color: "var(--hot)" }} title={p.partialReason || "This scrape is incomplete — re-scrape with the post's /feed/update/urn:li:activity:… URL"}>partial</span> : null}
                   {p.commentsSkipped ? <span className="tag-man" title={p.commentsSkipReason || "Commenters were not scraped for this post"}>likers only</span> : null}
                 </td>
@@ -262,7 +265,7 @@ export default function Sources() {
   };
   const pauseScrape = async () => { await post("/api/sources/scrape-post/pause", {}); toast("Scrape paused — resume anytime", "info"); pollScrape(); };
   const resumeScrape = async (url) => { await startScrape({ postUrl: url }, "Scrape resumed"); };
-  const setListActive = async (l, on) => { setListMsg(on ? "Enabling…" : "Pausing…"); const r = await post(`/api/sources/list/${encodeURIComponent(l)}/active`, { active: on }); setListMsg(`✓ ${on ? "Enabled" : "Paused"} “${l}” · ${num(r.matched)} influencers${on ? " — will scrape on the next run" : ""}`); load(); };
+  const setListActive = async (l, on) => { setListMsg(on ? "Enabling…" : "Pausing…"); const r = await post(`/api/sources/list/${encodeURIComponent(l)}/active`, { active: on }); if (!r?.ok) { setListMsg(`✗ Couldn't ${on ? "enable" : "pause"} “${l}” — try again`); return; } setListMsg(`✓ ${on ? "Enabled" : "Paused"} “${l}” · ${num(r.matched)} influencers${on ? " — will scrape on the next run" : ""}`); load(); };
   const delList = async (l) => { if (!window.confirm(`Delete the whole list “${l}”? This removes those influencers from Sources (leads already collected stay).`)) return; await fetch(`/api/sources/list/${encodeURIComponent(l)}`, { method: "DELETE" }); setList(null); load(); };
 
   // Imported-list drill-in view
@@ -280,9 +283,9 @@ export default function Sources() {
                 {s.scrape_done ? <span className="tag-harv" title={`3-month backlog scraped${s.posts_scraped != null ? ` — ${s.posts_scraped} posts` : ""}. Done forever.`}>done</span> : null}</td>
               <td><span className="trunc sm muted" title={s.title || ""}>{s.title || ""}</span></td>
               <td><span className="trunc mono muted" title={s.url}>{s.url}</span></td>
-              <td className="num-c">{s.lastPosts != null ? num(s.lastPosts) : <span className="muted">—</span>}</td>
+              <td className="num-c">{(s.posts_scraped ?? s.lastPosts) != null ? num(s.posts_scraped ?? s.lastPosts) : <span className="muted">—</span>}</td>
               <td className="num-c" style={{ color: "var(--primary-2)" }}>{s.pnd_credits ? num(s.pnd_credits) : <span className="muted">—</span>}</td>
-              <td className="tstamp">{s.lastRun ? ts(s.lastRun) : "never"}</td>
+              <td className="tstamp">{s.last_picked_at || s.lastRun ? ts(s.last_picked_at || s.lastRun) : "never"}</td>
               <td><div className="rowact">
                 {s.active !== false
                   ? <button className="btn btn-no btn-sm" title="Stop scraping just this person — the rest of the list keeps running" onClick={() => setSrcActive(s._id, false)}><Icon name="pause" />Pause</button>
@@ -308,9 +311,9 @@ export default function Sources() {
             {s.active === false ? <span className="tag-man" title="Paused — skipped by the auto engine">paused</span> : null}
             {s.scrape_done ? <span className="tag-harv" title={`3-month backlog scraped${s.posts_scraped != null ? ` — ${s.posts_scraped} posts` : ""}. Auto engine won't revisit (done forever).`}>done</span> : null}</td>
           <td><span className="trunc mono muted" title={s.url}>{s.url}</span></td>
-          <td className="num-c">{s.lastPosts != null ? num(s.lastPosts) : <span className="muted">—</span>}</td>
+          <td className="num-c">{(s.posts_scraped ?? s.lastPosts) != null ? num(s.posts_scraped ?? s.lastPosts) : <span className="muted">—</span>}</td>
           <td className="num-c" style={{ color: "var(--primary-2)" }}>{s.pnd_credits ? num(s.pnd_credits) : <span className="muted">—</span>}</td>
-          <td className="tstamp">{s.lastRun ? ts(s.lastRun) : "never"}</td>
+          <td className="tstamp">{s.last_picked_at || s.lastRun ? ts(s.last_picked_at || s.lastRun) : "never"}</td>
           <td><div className="rowact">
             {s.active !== false
               ? <button className="btn btn-no btn-sm" title="Skip this source on the daily run" onClick={() => setSrcActive(s._id, false)}><Icon name="pause" /></button>

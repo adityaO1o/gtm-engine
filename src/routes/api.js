@@ -2,7 +2,7 @@
 
 import { Router } from "express";
 import { ObjectId } from "mongodb";
-import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, scrapeEngagers, bouncebanRuns, campaignState, pndDaily } from "../db/mongo.js";
+import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, scrapeEngagers, bouncebanRuns, campaignState, pndDaily, engineState } from "../db/mongo.js";
 import { sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost } from "../pipeline/sources.js";
 import { rapidScrapeStats, activityUrn } from "../services/rapidScrape.js";
 import { pndStats, pndPostInfo, pndRaw, pndOutOfCredits } from "../services/pnd.js";
@@ -460,7 +460,7 @@ apiRouter.get("/sources", async (_req, res) => {
   const agg = await sources().aggregate([
     { $match: { lists: { $nin: [null, []] } } },
     { $unwind: "$lists" },
-    { $group: { _id: "$lists", count: { $sum: 1 }, active: { $sum: { $cond: [{ $eq: ["$active", true] }, 1, 0] } }, ran: { $sum: { $cond: [{ $ifNull: ["$lastRun", false] }, 1, 0] } }, done: { $sum: { $cond: [{ $eq: ["$scrape_done", true] }, 1, 0] } }, pndCredits: { $sum: { $ifNull: ["$pnd_credits", 0] } } } },
+    { $group: { _id: "$lists", count: { $sum: 1 }, active: { $sum: { $cond: [{ $eq: ["$active", true] }, 1, 0] } }, ran: { $sum: { $cond: [{ $ifNull: ["$last_picked_at", false] }, 1, 0] } }, done: { $sum: { $cond: [{ $eq: ["$scrape_done", true] }, 1, 0] } }, pndCredits: { $sum: { $ifNull: ["$pnd_credits", 0] } } } },
     { $sort: { count: -1 } },
   ]).toArray();
   const lists = agg.map((a) => ({ list: a._id, count: a.count, active: a.active, ran: a.ran, done: a.done, pndCredits: a.pndCredits || 0 }));
@@ -549,10 +549,27 @@ apiRouter.post("/sources/import", async (req, res) => {
 });
 
 // POST /api/sources/list/:list/active { active } — enable/disable a whole imported list at once.
+// `active` is a single flag per source, but an influencer can belong to SEVERAL lists (cold-email
+// people overlap heavily). A naive updateMany({lists:list}) would deactivate members shared with
+// OTHER still-active lists (and re-activate ones you paused elsewhere). So we track the paused-list
+// set and, when pausing, only deactivate members whose EVERY list is now paused.
 apiRouter.post("/sources/list/:list/active", async (req, res) => {
   const list = decodeURIComponent(req.params.list);
   const active = !!req.body?.active;
-  const r = await sources().updateMany({ lists: list }, { $set: { active } });
+  let r;
+  if (active) {
+    // Resuming: the list is active again, so every member of it should be on.
+    await engineState().updateOne({ _id: "paused_lists" }, { $pull: { lists: list } }, { upsert: true }).catch(() => {});
+    r = await sources().updateMany({ lists: list }, { $set: { active: true } });
+  } else {
+    await engineState().updateOne({ _id: "paused_lists" }, { $addToSet: { lists: list } }, { upsert: true }).catch(() => {});
+    const paused = (await engineState().findOne({ _id: "paused_lists" }).catch(() => null))?.lists || [list];
+    // members of this list with NO list outside the paused set (i.e. nothing else keeps them active)
+    r = await sources().updateMany(
+      { $and: [{ lists: list }, { lists: { $not: { $elemMatch: { $nin: paused } } } }] },
+      { $set: { active: false } },
+    );
+  }
   res.json({ ok: true, list, active, matched: r.matchedCount });
 });
 
@@ -664,7 +681,7 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
       postUrl: p.postUrl,
       activityId: p.activity_urn || p.activityId || activityUrn(p.postUrl),
       title: p.title || null, posterName: p.poster_name || null,
-      campaign: p.campaign || null, at: p.finishedAt || p.startedAt, running: !!p.running,
+      campaign: p.campaign || null, sourceKind: p.source_kind || null, at: p.finishedAt || p.startedAt, running: !!p.running,
       engagers, verified, noEmail, unverified,
       scraped, skippedCompany,
       // Resume state, so the dashboard can offer Resume and say honestly what it will re-read.
