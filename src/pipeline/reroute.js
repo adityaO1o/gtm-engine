@@ -7,7 +7,7 @@
 
 import { leads } from "../db/mongo.js";
 import { routeSourceEngager, campaignByKey } from "../services/campaigns.js";
-import { upsertLeads, addLeadsToCampaign, reassignEmailCampaign } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, reassignEmailCampaign, removeFromCampaign, campaignMembers } from "../services/sendkit.js";
 import { log } from "../lib/logger.js";
 
 // same weights as score.js — pick the strongest interest a lead has shown
@@ -63,6 +63,28 @@ export async function rerouteSourceLeads() {
           $addToSet: { campaigns: g.key, campaign_ids: cid, sendkit_campaigns: cid },
           $set: { rerouted_to: g.key, updated_at: new Date() },
         });
+      }
+    }
+
+    // Pull the moved leads OUT of the empty source campaigns — otherwise each lead now sits in BOTH
+    // its old source campaign and its new topic campaign, which is the exact double-membership the
+    // uniqueness lock exists to prevent. removeFromCampaign needs the per-campaign campaignLeadId,
+    // which campaignMembers() resolves from the email.
+    status.phase = "cleanup";
+    const movedEmails = new Set();
+    for (const [, g] of byCampaign) for (const e of g.emails) movedEmails.add(e);
+    if (movedEmails.size) {
+      for (const srcKey of SOURCE_CAMPAIGN_KEYS) {
+        const src = campaignByKey(srcKey);
+        if (!src?.sendkitId) continue;
+        const members = await campaignMembers(src.sendkitId).catch(() => []);
+        const ids = members.filter((m) => movedEmails.has((m.email || "").trim().toLowerCase())).map((m) => m.campaignLeadId).filter(Boolean);
+        if (ids.length) {
+          const rr = await removeFromCampaign(src.sendkitId, ids).catch(() => ({ removed: 0 }));
+          log.info("reroute pulled leads from source campaign", { srcKey, removed: rr.removed });
+        }
+        await leads().updateMany({ email: { $in: [...movedEmails] }, campaigns: srcKey },
+          { $pull: { campaigns: srcKey, sendkit_campaigns: src.sendkitId, campaign_ids: src.sendkitId } }).catch(() => {});
       }
     }
   } catch (e) {

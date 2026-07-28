@@ -24,6 +24,14 @@ export async function assignEmailCampaign(email, desiredCampaignId) {
     // driver v6 returns the doc directly; older returns { value }
     return (r && (r.campaignId ?? r.value?.campaignId)) || desiredCampaignId;
   } catch (e) {
+    // A concurrent insert for the SAME email makes the loser's upsert throw a duplicate-key error
+    // (E11000 on _id). Falling open to `desired` here would let the loser push the email into its OWN
+    // campaign — the exact double-membership this lock exists to stop. Re-read the doc the winner just
+    // wrote and return THAT campaign instead; only fall to desired if it's a genuine DB error.
+    if (e?.code === 11000 || /E11000|duplicate key/i.test(e?.message || "")) {
+      const won = await emailCampaign().findOne({ _id: key }).catch(() => null);
+      if (won?.campaignId) return won.campaignId;
+    }
     log.warn("assignEmailCampaign failed — using desired campaign", { err: e.message });
     return desiredCampaignId;
   }

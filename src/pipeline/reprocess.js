@@ -192,8 +192,12 @@ async function pushRecovered(d, email, domain, vr) {
     $set: {
       email, company_domain: domain || null, email_status: "verified", unverified: false, needs_email: false,
       verified_by: vr.verifiedBy, verify_detail: vr.verifyLabel, tags,
-      recovered: true, recovered_at: new Date(), sendkit_campaigns: landed, updated_at: new Date(),
+      recovered: true, recovered_at: new Date(), updated_at: new Date(),
     },
+    // ADD to the SendKit-membership record, never overwrite it. A transient push failure leaves
+    // `landed` empty; a $set would then wipe a membership SendKit still holds, breaking the DNC
+    // safety net (dncIfAlreadyInSendkit / bounceban leak detection gate on this field's length).
+    ...(landed.length ? { $addToSet: { sendkit_campaigns: { $each: landed } } } : {}),
   });
   const campaign = (d.campaigns || [])[0] || "";
   await bumpUsage(campaign, { sendkit_pushed: 1 });

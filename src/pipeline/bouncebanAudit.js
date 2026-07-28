@@ -75,7 +75,7 @@ async function auditOne(d, dnc) {
           const landed = [];
           const desired = sendkitIdsFor(d.campaigns)[0];
           if (desired) { const cid = await assignEmailCampaign(d.email, desired); if (await addToCampaign(cid, d.email)) landed.push(cid); }
-          if (landed.length) await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { sendkit_campaigns: landed } });
+          if (landed.length) await leads().updateOne({ linkedin_url: d.linkedin_url }, { $addToSet: { sendkit_campaigns: { $each: landed } } });
           await leads().updateOne({ linkedin_url: d.linkedin_url }, { $unset: { bb_push_failed: "" } });
           status.pushed++;
         }

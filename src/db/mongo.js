@@ -136,6 +136,9 @@ export async function connect() {
     if (!marker) {
       const rows = await db.collection("leads").aggregate([
         { $match: { email: { $ne: null }, email_status: "verified", sendkit_campaigns: { $exists: true, $ne: [] } } },
+        // $first is order-sensitive: without a sort, two profiles sharing an email seed the lock to
+        // whichever doc scanned first (non-deterministic). Sort so the most-recently-updated wins.
+        { $sort: { updated_at: -1, _id: 1 } },
         { $group: { _id: { $toLower: "$email" }, campaignId: { $first: { $arrayElemAt: ["$sendkit_campaigns", 0] } } } },
       ]).toArray();
       const ops = rows.filter((r) => r._id && r.campaignId)

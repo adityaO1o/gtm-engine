@@ -265,7 +265,9 @@ export async function enrichLead(input) {
       // (even from a different profile) never lands in a second campaign.
       const desired = sendkitIdsFor(fresh?.campaigns || [campaign])[0];
       if (desired) { const cid = await assignEmailCampaign(known.email, desired); if (await addToCampaign(cid, known.email)) landed.push(cid); }
-      await leads().updateOne({ linkedin_url: key }, { $set: { sendkit_campaigns: landed } });
+      // ADD to the membership record, never overwrite: a transient push failure leaves `landed` empty
+      // and a $set would wipe a membership SendKit still holds (breaks the DNC safety net).
+      if (landed.length) await leads().updateOne({ linkedin_url: key }, { $addToSet: { sendkit_campaigns: { $each: landed } } });
     }
     await bumpUsage(campaign, { trigify_scraped: 1 }); // scraped only — zero email-provider spend
     log.info("repeat engager (email already known)", { name, email: known.email, status: known.email_status, seen: scored.timesSeen });
@@ -480,7 +482,9 @@ export async function enrichLead(input) {
   const landed = [];
   const desired = sendkitIdsFor(doc?.campaigns || [campaign])[0];
   if (desired) { const cid = await assignEmailCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
-  await leads().updateOne({ linkedin_url: key }, { $set: { sendkit_campaigns: landed } });
+  // ADD to the membership record, never overwrite: a transient push failure leaves `landed` empty
+  // and a $set would wipe a membership SendKit still holds (breaks the DNC safety net).
+  if (landed.length) await leads().updateOne({ linkedin_url: key }, { $addToSet: { sendkit_campaigns: { $each: landed } } });
 
   await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0, sendkit_pushed: isRepeat ? 0 : 1 });
 
