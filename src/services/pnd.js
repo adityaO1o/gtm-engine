@@ -301,6 +301,10 @@ export async function pndPostInfo(urlOrUrn) {
   const d = await call("get-post", { params: { url: `https://www.linkedin.com/feed/update/urn:li:activity:${urn}/` } });
   const p = d?.data;
   if (!p) return null;
+  // get-post costs 1 credit like any scrape call. It was the only PND call that never metered, so the
+  // routing peek + hub growth-peek + age-guard peek were invisible to the ledger / pnd_daily / balance,
+  // making "credits used" read systematically low. Count it in the same bucket as the other page calls.
+  stats.scrapePages++; meter.inc("pnd_scrape_pages");
   const a = p.author || {};
   const name = [a.firstName, a.lastName].filter(Boolean).join(" ").trim();
   const text = String(p.text || "").replace(/\s+/g, " ").trim();

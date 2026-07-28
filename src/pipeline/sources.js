@@ -6,7 +6,7 @@ import { getProfilePosts, getPostEngagements, getPostComments, trigifyOutOfCredi
 import { hubScrape } from "../services/hubScrape.js";
 import { classifyPost } from "../services/classify.js";
 import { routeSourceEngager } from "../services/campaigns.js";
-import { activityUrn } from "../services/rapidScrape.js";
+import { activityUrn, canonicalPostUrl } from "../services/rapidScrape.js";
 import { pndReactionPage, pndCommentPage, pndPostInfo, pndOutOfCredits, REACTION_TYPES } from "../services/pnd.js";
 import { resolveActivityUrn } from "../services/postUrn.js";
 import { enrichLead } from "./enrichLead.js";
@@ -422,6 +422,7 @@ function parsePndDate(s) {
 // credit instead of scraping a months-dead audience. 0/absent = no age limit (manual scrapes).
 // An UNPARSEABLE date does not trigger the guard — unknown age is not proof of old age.
 export async function scrapeOneInner({ postUrl, campaignKey = "", maxAgeDays = 0, kind = "post" }) {
+  postUrl = canonicalPostUrl(postUrl); // collapse search/profile/hub URL forms to one dedup key (no double-scrape)
   // Re-entrancy guard — CLAIM THE LANE SYNCHRONOUSLY, before any await, so two callers can't both
   // slip past. scrapeOnePost guards too, but the auto engine calls this directly and has an await
   // gap (pndProfilePosts) before each call during which a manual scrape can grab the lane; without
@@ -450,6 +451,15 @@ export async function scrapeOneInner({ postUrl, campaignKey = "", maxAgeDays = 0
       // routing. Awaiting it here costs no extra credit and gives the router the real body.
       const det = await pndPostInfo(postUrl).catch(() => null);
 
+      const rt = routeText(det?.text || rec.text || "", postUrl);
+      const category = rec.category || classifyPost(rt);
+      // A post already under way keeps its campaign: re-routing a resume mid-way would split one
+      // post's engagers across two campaigns. Pass campaignKey to override deliberately.
+      // Routed BEFORE the age guard so a skipped-old post still records which campaign it belongs to
+      // (else influencer/hub posts past the window show campaign=null in the dashboard).
+      const forced = campaignKey ? campaignByKey(campaignKey) : (rec.campaign_key ? campaignByKey(rec.campaign_key) : null);
+      const camp = forced || routeSourceEngager(rt, category);
+
       // Age guard (auto engine only): the get-post peek above just told us WHEN this post was
       // published. If it's past the window, record why and stop here — total cost 1 credit,
       // instead of paging a dead post's whole audience.
@@ -457,7 +467,7 @@ export async function scrapeOneInner({ postUrl, campaignKey = "", maxAgeDays = 0
         const ts = parsePndDate(det?.posted);
         if (ts && Date.now() - ts > maxAgeDays * 86400000) {
           await scrapedPosts().updateOne({ postUrl }, {
-            $set: { postUrl, skipped_old: true, posted: det?.posted || null, title: det?.title || rec.title || null, finishedAt: new Date() },
+            $set: { postUrl, campaign: camp.label, campaign_key: camp.key, category, skipped_old: true, posted: det?.posted || null, title: det?.title || rec.title || null, finishedAt: new Date() },
             $setOnInsert: { startedAt: new Date() },
           }, { upsert: true }).catch(() => {});
           log.info("post older than the auto window — skipped after the peek", { postUrl, posted: det?.posted, maxAgeDays });
@@ -465,13 +475,6 @@ export async function scrapeOneInner({ postUrl, campaignKey = "", maxAgeDays = 0
           return { ok: true, skipped: "too-old" };
         }
       }
-
-      const rt = routeText(det?.text || rec.text || "", postUrl);
-      const category = rec.category || classifyPost(rt);
-      // A post already under way keeps its campaign: re-routing a resume mid-way would split one
-      // post's engagers across two campaigns. Pass campaignKey to override deliberately.
-      const forced = campaignKey ? campaignByKey(campaignKey) : (rec.campaign_key ? campaignByKey(rec.campaign_key) : null);
-      const camp = forced || routeSourceEngager(rt, category);
 
       const enrichedSoFar = await scrapeEngagers().countDocuments({ postUrl, enriched: true });
       scrapeOneStatus = {

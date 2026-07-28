@@ -18,6 +18,7 @@ import { scrapedPosts, scrapeEngagers, campaignState } from "../db/mongo.js";
 import { pndSearchPosts, pndOutOfCredits } from "../services/pnd.js";
 import { CAMPAIGNS, campaignByKey } from "../services/campaigns.js";
 import { scrapeOneInner, pauseScrapePost, scrapePostStatus } from "./sources.js";
+import { canonicalPostUrl } from "../services/rapidScrape.js";
 import { meterFlush } from "../services/apiMeter.js";
 import { log } from "../lib/logger.js";
 
@@ -136,12 +137,16 @@ async function processKeyword(item, st, c) {
     if (!p.postUrl) continue;
     st.postsFound++;
 
+    // Canonical activity-form key so this post dedups against the SAME post reached from a profile
+    // listing (rotation) or a hub — otherwise search's `/posts/slug-activity-ID?utm…` and the
+    // rotation's `feed/update/urn:li:activity:ID` fork one post into two docs that both get scraped.
+    const postUrl = canonicalPostUrl(p.postUrl);
     const counts = p.counts || {};
     const engagers = (counts.totalReactions || 0) + (counts.comments || 0);
 
     // Has this post already been scraped, and has it GROWN since? Both answered for free from
     // the search result — no call needed to find out there's nothing new.
-    const rec = await scrapedPosts().findOne({ postUrl: p.postUrl });
+    const rec = await scrapedPosts().findOne({ postUrl });
 
     // Too thin to be worth opening — but only if we've never touched it. Raising this threshold
     // would otherwise strand posts queued under the old one: their engagers are already scraped
@@ -151,14 +156,14 @@ async function processKeyword(item, st, c) {
     // Growth-delta gate (shared with the auto engine): unchanged → free skip; grown → reopened
     // with per-type memory kept so only the delta is paid for. Checked BEFORE the record write
     // below, which refreshes last_total_engagers to the new baseline.
-    const verdict = await reopenIfGrown(p.postUrl, rec, engagers);
+    const verdict = await reopenIfGrown(postUrl, rec, engagers);
     if (verdict === "unchanged") { st.skippedUnchanged++; continue; }
 
     // Store what we learned for free BEFORE scraping: the per-type counts let the scraper skip
     // reaction types nobody used, and last_total_engagers is next run's growth baseline.
-    await scrapedPosts().updateOne({ postUrl: p.postUrl }, {
+    await scrapedPosts().updateOne({ postUrl }, {
       $set: {
-        postUrl: p.postUrl, type_counts: counts, last_total_engagers: engagers,
+        postUrl, type_counts: counts, last_total_engagers: engagers,
         expected_reactions: counts.totalReactions ?? null, expected_comments: counts.comments ?? null,
         text: (p.text || "").slice(0, 300), posted: p.postedAt || null,
         source_kind: item.manual ? "keyword-manual" : "keyword", keyword: item.keyword,
@@ -167,10 +172,10 @@ async function processKeyword(item, st, c) {
     }, { upsert: true }).catch(() => {});
 
     st.phase = "scraping";
-    const before = await scrapeEngagers().countDocuments({ postUrl: p.postUrl });
-    await scrapeOneInner({ postUrl: p.postUrl, campaignKey: item.campaignKey, kind: item.manual ? "manual" : "keyword" }).catch((e) =>
-      log.warn("keyword post scrape failed", { postUrl: p.postUrl, err: e.message }));
-    const after = await scrapeEngagers().countDocuments({ postUrl: p.postUrl });
+    const before = await scrapeEngagers().countDocuments({ postUrl });
+    await scrapeOneInner({ postUrl, campaignKey: item.campaignKey, kind: item.manual ? "manual" : "keyword" }).catch((e) =>
+      log.warn("keyword post scrape failed", { postUrl, err: e.message }));
+    const after = await scrapeEngagers().countDocuments({ postUrl });
     st.newEngagers += Math.max(0, after - before);
     st.postsScraped++;
 

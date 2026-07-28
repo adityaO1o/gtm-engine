@@ -26,11 +26,25 @@ import { hubScrape } from "../services/hubScrape.js";
 import { isRelevantPost } from "../services/classify.js";
 import { runKeywordSweep, keywordRunnerBusy, reopenIfGrown, MIN_ENGAGERS } from "./keywordSweep.js";
 import { scrapeOneInner, routeText } from "./sources.js";
+import { canonicalPostUrl } from "../services/rapidScrape.js";
 import { meterSinceBoot } from "../services/apiMeter.js";
 import { log } from "../lib/logger.js";
 
 const DAY = 86400000;
 const HUB_REVISIT_MS = 7 * DAY; // a done hub post is only re-checked for growth for its first week
+const utcDayKey = (d = new Date()) => d.toISOString().slice(0, 10); // "YYYY-MM-DD" in UTC
+
+// ONE scrape budget for the whole calendar day, SHARED across the hub pass, the daily rotation, and
+// every manual "Run now". Previously each got its own fresh {left: maxPostsPerDay} (and the sweep
+// had none), so the "runaway brake" was per-job, not per-day — hub ran twice/day, rotation added 40,
+// manual minted another 40 each press. This makes maxPostsPerDay a true daily ceiling for the
+// launch-a-scrape jobs. (The keyword sweep is bounded separately by how much NEW content exists.)
+let dayBudget = { day: null, left: 0 };
+function todaysBudget() {
+  const d = utcDayKey();
+  if (dayBudget.day !== d) dayBudget = { day: d, left: config.autoMaxPostsPerDay };
+  return dayBudget;
+}
 
 // ── Persisted state ───────────────────────────────────────────────────────────────────────────
 const AUTO_ID = "auto";
@@ -70,7 +84,6 @@ function creditsOk() {
   // the very next call captures it, and pndOutOfCredits() still hard-stops a truly drained plan.
   return !pndOutOfCredits() && (bal == null || bal >= config.autoMinCredits);
 }
-const utcDayKey = (d = new Date()) => d.toISOString().slice(0, 10); // "YYYY-MM-DD" in UTC
 
 // ── Job 2: hub pass ───────────────────────────────────────────────────────────────────────────
 async function hubPass(budget) {
@@ -86,11 +99,16 @@ async function hubPass(budget) {
         { $setOnInsert: { url: a, type: "influencer", label: (a.split("/in/")[1] || "").replace(/\/$/, ""), active: true, harvestedFrom: h.url, addedAt: new Date() } },
         { upsert: true }).catch(() => {});
     }
-    for (const postUrl of posts) {
+    for (const rawUrl of posts) {
       if (budget.left <= 0 || !creditsOk() || keywordRunnerBusy()) break;
       // Relevance from the URL slug — free. Hub HTML carries no text, so this is the only free signal.
-      if (!isRelevantPost(routeText("", postUrl))) continue;
+      // A `feed/update/urn:li:activity:` URL has no descriptive slug (routeText can't match a keyword),
+      // so gating on it would silently drop every such hub post. Only gate URLs that HAVE a `/posts/`
+      // slug; slug-less ones come from a curated cold-email hub, so let them through to be scraped.
+      if (/\/posts\//.test(rawUrl) && !isRelevantPost(routeText("", rawUrl))) continue;
+      const postUrl = canonicalPostUrl(rawUrl); // dedup against whatever form another surface used
       const rec = await scrapedPosts().findOne({ postUrl });
+      if (rec?.skipped_old) continue; // already found older than the window — posts don't get younger, don't re-peek
       // A post fully done more than a week ago is settled — don't even peek. Within the first week
       // it may still be growing, so peek (1 credit via get-post) and re-open only if it grew.
       if (rec?.scrape_done) {
@@ -103,7 +121,7 @@ async function hubPass(budget) {
       const res = await scrapeOneInner({ postUrl, campaignKey: "", maxAgeDays: config.autoPostMaxAgeDays, kind: "hub" })
         .catch((e) => { log.warn("hub post scrape failed", { postUrl, err: e.message }); return null; });
       if (res?.error === "already running") return; // a manual scrape took the lane — stop the hub pass
-      if (res?.skipped !== "too-old") budget.left--;
+      budget.left--; // count every launch incl. an age-guard peek, so a hub full of old posts can't burn credits unbounded
     }
     await sources().updateOne({ _id: h._id }, { $set: { lastRun: new Date() } }).catch(() => {});
   }
@@ -115,7 +133,7 @@ async function scrapeMember(m, budget) {
   // scrape/enrich) and show it per-influencer and rolled up per-list.
   const cbase = meterSinceBoot();
   // List this person's posts, newest first, stopping at the age window. paginationToken walks deeper.
-  let token = "", total = 0, relevant = 0, scraped = 0, done = true;
+  let token = "", total = 0, relevant = 0, scraped = 0, done = true, oldStreak = 0;
   outer:
   for (let pageNo = 0; pageNo < 10; pageNo++) { // hard cap: 10 pages (~500 posts) of history
     if (!creditsOk() || keywordRunnerBusy()) { done = false; break; }
@@ -123,27 +141,38 @@ async function scrapeMember(m, budget) {
     if (!r || !r.posts.length) break;
     for (const p of r.posts) {
       total++;
-      // Newest-first: the first post past the window means everything after is older too.
-      if (p.postedTimestamp && Date.now() - p.postedTimestamp > config.autoPostMaxAgeDays * DAY) break outer;
+      // "Newest-first" is only mostly true: LinkedIn PINS a post to the top of a profile, so a years-old
+      // pinned post can sit at index 0. Bailing on the first past-window post therefore used to abort the
+      // whole member (and mark them scrape_done FOREVER) having scraped nothing. Instead skip individual
+      // old posts and only stop once we've seen a RUN of consecutive old ones (the real chronological tail).
+      if (p.postedTimestamp && Date.now() - p.postedTimestamp > config.autoPostMaxAgeDays * DAY) {
+        if (++oldStreak >= 3) break outer;
+        continue;
+      }
+      oldStreak = 0;
+      const postUrl = canonicalPostUrl(p.postUrl); // dedup against the search/hub URL form of the same post
       if (!isRelevantPost(p.text)) continue;
       const engagers = (p.counts?.totalReactions || 0) + (p.counts?.comments || 0);
-      if (engagers < MIN_ENGAGERS) continue; // thin post — its engagers rarely convert, skip free
-      relevant++;
-      if (budget.left <= 0) { done = false; break outer; } // day's scrape budget spent — finish this member tomorrow
       // Seed the growth baseline + type counts (free), then scrape. reopenIfGrown handles a post
       // another source already did: unchanged → skips inside scrapeOneInner's own dedup.
-      const rec = await scrapedPosts().findOne({ postUrl: p.postUrl });
-      await scrapedPosts().updateOne({ postUrl: p.postUrl }, {
-        $set: { postUrl: p.postUrl, type_counts: p.counts, last_total_engagers: engagers,
+      const rec = await scrapedPosts().findOne({ postUrl });
+      // Thin post → skip free — but (parity with the keyword sweep) NEVER skip one we've already
+      // touched: its engager count can read lower from get-profile-posts than from search, and we
+      // still want its growth re-checked.
+      if (engagers < MIN_ENGAGERS && !rec) continue;
+      relevant++;
+      if (budget.left <= 0) { done = false; break outer; } // day's scrape budget spent — finish this member tomorrow
+      await scrapedPosts().updateOne({ postUrl }, {
+        $set: { postUrl, type_counts: p.counts, last_total_engagers: engagers,
                 text: (p.text || "").slice(0, 300), posted: p.posted, source_kind: "influencer" },
         $setOnInsert: { startedAt: new Date() },
       }, { upsert: true }).catch(() => {});
-      if ((await reopenIfGrown(p.postUrl, rec, engagers)) === "unchanged") { scraped++; continue; }
-      const res = await scrapeOneInner({ postUrl: p.postUrl, campaignKey: "", maxAgeDays: config.autoPostMaxAgeDays, kind: "influencer" })
-        .catch((e) => { log.warn("member post scrape failed", { postUrl: p.postUrl, err: e.message }); return null; });
+      if ((await reopenIfGrown(postUrl, rec, engagers)) === "unchanged") { scraped++; continue; }
+      const res = await scrapeOneInner({ postUrl, campaignKey: "", maxAgeDays: config.autoPostMaxAgeDays, kind: "influencer" })
+        .catch((e) => { log.warn("member post scrape failed", { postUrl, err: e.message }); return null; });
       if (res?.error === "already running") { done = false; break outer; } // a manual scrape took the lane — resume this member tomorrow
       scraped++;
-      if (res?.skipped !== "too-old") budget.left--; // an old-post peek (1 credit) doesn't consume a scrape slot
+      budget.left--; // count every launch incl. an age-guard peek, so a member of old posts can't burn credits unbounded
     }
     token = r.paginationToken;
     if (!token) break;
@@ -164,6 +193,13 @@ async function scrapeMember(m, budget) {
 
 // ── Job 3: daily rotation ─────────────────────────────────────────────────────────────────────
 async function rotation(budget) {
+  const seen = new Set(); // a member in several lists must be scraped ONCE per rotation, not once per list
+  const pick = async (m) => {
+    const id = String(m._id);
+    if (seen.has(id)) return;
+    seen.add(id);
+    await scrapeMember(m, budget);
+  };
   // 5 per resumed imported list (active members not yet done, oldest-picked first)...
   const lists = await sources().distinct("lists", { type: "influencer", active: { $ne: false }, lists: { $exists: true, $ne: [] } }).catch(() => []);
   for (const list of (lists || []).filter(Boolean)) {
@@ -172,7 +208,7 @@ async function rotation(budget) {
       .sort({ last_picked_at: 1 }).limit(config.autoPerList).toArray().catch(() => []);
     for (const m of members) {
       if (budget.left <= 0 || !creditsOk() || keywordRunnerBusy()) return;
-      await scrapeMember(m, budget);
+      await pick(m);
     }
   }
   // ...plus 5 standalone influencers (hand-added or hub-harvested, i.e. no list membership).
@@ -181,7 +217,7 @@ async function rotation(budget) {
       .sort({ last_picked_at: 1 }).limit(config.autoPerList).toArray().catch(() => []);
     for (const m of solo) {
       if (budget.left <= 0 || !creditsOk() || keywordRunnerBusy()) return;
-      await scrapeMember(m, budget);
+      await pick(m);
     }
   }
 }
@@ -194,7 +230,7 @@ let rotationRunning = false;
 async function runRotationGuarded() {
   if (rotationRunning) return { ok: false, error: "a rotation is already running" };
   rotationRunning = true;
-  const budget = { left: config.autoMaxPostsPerDay };
+  const budget = todaysBudget(); // shared with the hub pass + manual runs, so the daily cap is real
   try { await rotation(budget); return { ok: true, remaining: budget.left }; }
   finally { rotationRunning = false; }
 }
@@ -211,28 +247,37 @@ export async function autoTick() {
     if (keywordRunnerBusy()) return; // a manual scrape / sweep holds the single lane — yield
 
     const now = new Date();
-
-    // 1) Keyword sweep every N hours (+ the hub pass rides the same window). Stamp at START so a
-    // crash mid-sweep can't tight-loop it.
-    const sweepDue = !s.sweepLastAt || (now.getTime() - new Date(s.sweepLastAt).getTime()) >= config.autoSweepHours * 3600000;
-    if (sweepDue) {
-      await patch({ sweepLastAt: now });
-      log.info("auto: keyword sweep starting");
-      await runKeywordSweep().catch((e) => log.warn("auto sweep failed", { err: e.message }));
-      if (creditsOk() && !keywordRunnerBusy()) {
-        const budget = { left: config.autoMaxPostsPerDay };
-        await hubPass(budget).catch((e) => log.warn("auto hub pass failed", { err: e.message }));
-      }
-    }
-
-    // 2) Daily rotation — once per UTC day, on the first tick at/after the rotate hour.
     const today = utcDayKey(now);
+
+    // 1) Daily rotation + hub pass FIRST — these are BOUNDED (once/day, capped by the shared daily
+    // budget), so putting them ahead of the open-ended keyword sweep guarantees lists/influencers/hubs
+    // get their turn instead of starving behind a multi-hour sweep. Both share todaysBudget().
     const rotationDue = s.rotationLastDay !== today && now.getUTCHours() >= config.autoRotateUtcHour;
     if (rotationDue && creditsOk() && !keywordRunnerBusy()) {
       await patch({ rotationLastDay: today });
       log.info("auto: daily rotation starting", { day: today });
       const r = await runRotationGuarded().catch((e) => { log.warn("auto rotation failed", { err: e.message }); return null; });
+      if (creditsOk() && !keywordRunnerBusy()) {
+        await hubPass(todaysBudget()).catch((e) => log.warn("auto hub pass failed", { err: e.message }));
+      }
       log.info("auto: daily rotation done", { day: today, remaining: r?.remaining });
+    }
+
+    // 2) Keyword sweep LAST, every N hours. Stamp at START (so a crash mid-sweep can't tight-loop it)
+    // AND re-stamp at COMPLETION (so a sweep that runs LONGER than the cadence — the first-run case —
+    // can't immediately re-qualify as due on the next tick and sweep back-to-back forever). If the
+    // sweep didn't actually run (a manual run grabbed the lane in the stamp gap), restore the old
+    // stamp so this cadence isn't silently consumed by work that never happened.
+    if (!keywordRunnerBusy()) {
+      const sweepDue = !s.sweepLastAt || (Date.now() - new Date(s.sweepLastAt).getTime()) >= config.autoSweepHours * 3600000;
+      if (sweepDue && creditsOk()) {
+        const prevSweepAt = s.sweepLastAt || null;
+        await patch({ sweepLastAt: new Date() });
+        log.info("auto: keyword sweep starting");
+        const swept = await runKeywordSweep().catch((e) => { log.warn("auto sweep failed", { err: e.message }); return null; });
+        if (swept?.alreadyRunning) await patch({ sweepLastAt: prevSweepAt });
+        else await patch({ sweepLastAt: new Date() });
+      }
     }
   } catch (e) {
     log.error("auto tick error", { err: e.message });

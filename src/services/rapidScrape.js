@@ -58,6 +58,17 @@ export function activityUrn(postUrl = "") {
   return m ? m[1] : null;
 }
 
+// Canonical dedup key for a post: the same activity reached from search (`/posts/slug-activity-ID?utm…`),
+// a profile listing (`feed/update/urn:li:activity:ID`), or a hub page all collapse to ONE string, so
+// scraped_posts / scrape_engagers / leads.posts_seen stop forking a post into duplicates that get
+// re-scraped and re-charged. The canonical `feed/update` form is proven to work with every PND scrape
+// endpoint (the rotation path already scrapes with it). A URL with no resolvable activity id (a raw
+// share/ugcPost link) is returned unchanged — scrapeOneInner resolves those separately.
+export function canonicalPostUrl(postUrl = "") {
+  const id = activityUrn(postUrl);
+  return id ? `https://www.linkedin.com/feed/update/urn:li:activity:${id}/` : String(postUrl || "");
+}
+
 // ADAPTIVE shared rate limiter — starts at the configured gap and AUTO-SLOWS on 429s (×1.5, up to
 // 8s) so it self-tunes to whatever the plan's per-minute cap actually is, then slowly decays back
 // on sustained success. This is why a too-small configured gap no longer causes a 429 storm.
