@@ -50,8 +50,8 @@ services:
       # Auto engine + caches — all optional (config.js has defaults); set in Dokploy to tune.
       AUTO_SWEEP_HOURS: ${AUTO_SWEEP_HOURS:-}
       AUTO_ROTATE_UTC_HOUR: ${AUTO_ROTATE_UTC_HOUR:-}
-      AUTO_PER_LIST: ${AUTO_PER_LIST:-}
-      AUTO_MAX_POSTS_PER_DAY: ${AUTO_MAX_POSTS_PER_DAY:-}
+      AUTO_PER_LIST: ${AUTO_PER_LIST:-25}
+      AUTO_MAX_POSTS_PER_DAY: ${AUTO_MAX_POSTS_PER_DAY:-300}
       AUTO_MIN_CREDITS: ${AUTO_MIN_CREDITS:-}
       AUTO_POST_MAX_AGE_DAYS: ${AUTO_POST_MAX_AGE_DAYS:-}
       BOUNCEBAN_CACHE_DAYS: ${BOUNCEBAN_CACHE_DAYS:-}

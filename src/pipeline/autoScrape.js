@@ -299,6 +299,9 @@ export async function rotateNow() {
   if (rotationRunning) return { ok: false, error: "a rotation is already running" };
   if (keywordRunnerBusy()) return { ok: false, error: "a scrape is already running — try again shortly" };
   if (!creditsOk()) return { ok: false, error: "auto engine is below its credit floor" };
+  // Honest "did nothing" — the day's scrape budget is spent, so a rotation would start and instantly
+  // stop at the first budget check, which used to look like a silent no-op ("clicked, nothing happened").
+  if (todaysBudget().left <= 0) return { ok: false, error: `today's scrape budget (${config.autoMaxPostsPerDay}) is used up — resets at 00:00 UTC` };
   runRotationGuarded().catch((e) => log.warn("manual rotate failed", { err: e.message }));
   return { ok: true, started: true };
 }
