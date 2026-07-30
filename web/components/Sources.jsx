@@ -298,7 +298,23 @@ export default function Sources() {
     const r = await post("/api/sources/scrape-post", body).catch(() => null);
     if (!r?.ok) { toast(r?.error ? `Not started: ${r.error}` : "Could not start the scrape", "bad"); return; }
     toast(okMsg, "info");
-    pollScrape();
+    // Show the box immediately (optimistic) and keep polling until the backend registers the run.
+    // The status endpoint can still read "idle" for a beat after start; the plain pollScrape() would
+    // see running:false, stop, and the box only appeared on the next manual refresh.
+    setScrape({ postUrl: body.postUrl, phase: "working", running: true, total: 0, enriched: 0, sent: 0 });
+    let tries = 0;
+    const kick = async () => {
+      const d = await j("/api/sources/scrape-post/status").catch(() => null);
+      if (d && d.phase && d.phase !== "idle") {
+        setScrape(d);
+        clearTimeout(scrapeTimer.current);
+        if (d.running) scrapeTimer.current = setTimeout(pollScrape, 2500);
+        return;
+      }
+      if (++tries < 8) scrapeTimer.current = setTimeout(kick, 1500);
+    };
+    clearTimeout(scrapeTimer.current);
+    kick();
   };
   const scrapePost = async () => {
     if (!inPost.trim()) return;

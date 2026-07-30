@@ -31,6 +31,10 @@ const BODIES = { overview: Overview, leads: Leads, handoff: Handoff, review: Rev
 
 export default function Dashboard() {
   const [view, setView] = useState("overview");
+  // Remember the last tab across refreshes. Restore on mount (not via a lazy initializer, so the
+  // prerendered "overview" and first client render match — no hydration mismatch), then persist.
+  useEffect(() => { try { const s = localStorage.getItem("gtm.view"); if (s && TABS.some((t) => t.id === s)) setView(s); } catch { /* ignore */ } }, []);
+  useEffect(() => { try { localStorage.setItem("gtm.view", view); } catch { /* ignore */ } }, [view]);
   const [stats, setStats] = useState({});
   const [campaigns, setCampaigns] = useState([]);
   const [prospeo, setProspeo] = useState(null);
