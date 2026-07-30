@@ -12,6 +12,18 @@ const SCR_PHASE = { working: "Scraping + finding emails", done: "Done", paused: 
 // Which job scraped a post — shown as a badge so auto-scraped posts aren't mistaken for manual ones.
 const SRC_KIND = { keyword: "sweep", "keyword-manual": "manual", manual: "manual", influencer: "influencer", hub: "hub", post: "single" };
 
+// Every topic (Smartlead, GTM, …) now routes into the ONE intake campaign — Cold Email 2.0. The
+// `campaign` value stored on a scrape/post is just the keyword bucket used for reporting, NOT the
+// destination. So show the real destination (2.0, or 1.0 when explicitly chosen) and surface the
+// matched keyword as a chip, instead of making it look like leads go into a per-topic campaign.
+function RouteTag({ campaign }) {
+  if (!campaign) return <span className="muted">—</span>;
+  const c = String(campaign);
+  if (c.includes("2.0")) return <b>Cold Email 2.0</b>;
+  if (c.includes("1.0")) return <b>Cold Email 1.0</b>;
+  return <><b>Cold Email 2.0</b> <span className="tag-harv" title="Keyword/topic that matched this post — the leads route into Cold Email 2.0">kw: {c}</span></>;
+}
+
 function ScrapeBox({ s, onPause, onResume }) {
   if (!s || !s.postUrl || !s.phase || s.phase === "idle") return null;
   const id = (String(s.postUrl).match(/activity[:-](\d+)/) || [])[1] || s.postUrl.slice(-24);
@@ -21,7 +33,7 @@ function ScrapeBox({ s, onPause, onResume }) {
   const Stat = ({ l, v, cls }) => <span className="scstat"><b className={cls || ""}>{num(v)}</b>{l}</span>;
   return (
     <div className={`jobbox${s.running ? " on" : ""}`}>
-      <div className="jobh"><Icon name={icon} /><span><b>{SCR_PHASE[s.phase] || s.phase}</b> <span className="mono muted">activity:{id}</span>{s.campaign ? <> → <b>{s.campaign}</b></> : null}</span></div>
+      <div className="jobh"><Icon name={icon} /><span><b>{SCR_PHASE[s.phase] || s.phase}</b> <span className="mono muted">activity:{id}</span>{s.campaign ? <> → <RouteTag campaign={s.campaign} /></> : null}</span></div>
       <div className="scrow">
         <Stat l="engagers scraped" v={s.total} />
         <Stat l="processed" v={s.enriched} />
@@ -88,7 +100,7 @@ function ScrapedPosts({ onResume, busy }) {
                   {p.partial ? <span className="tag-man" style={{ color: "var(--hot)" }} title={p.partialReason || "This scrape is incomplete — re-scrape with the post's /feed/update/urn:li:activity:… URL"}>partial</span> : null}
                   {p.commentsSkipped ? <span className="tag-man" title={p.commentsSkipReason || "Commenters were not scraped for this post"}>likers only</span> : null}
                 </td>
-                <td>{p.campaign ? <b>{p.campaign}</b> : <span className="muted">—</span>}</td>
+                <td><RouteTag campaign={p.campaign} /></td>
                 <td className="num-c">
                   {num(p.engagers)}
                   {reachable ? (
