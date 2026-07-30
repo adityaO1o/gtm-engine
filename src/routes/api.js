@@ -188,7 +188,7 @@ apiRouter.get("/leads/ids", async (req, res) => {
 apiRouter.get("/leads", async (req, res) => {
   const filter = buildLeadFilter(req.query);
   const sortField = req.query.sort === "recent" ? "last_engagement_at" : "score";
-  const limit = Math.min(parseInt(req.query.limit || "100", 10), 500);
+  const limit = Math.min(parseInt(req.query.limit || "100", 10), 10000);
   const skip = parseInt(req.query.skip || "0", 10);
 
   const [rows, count] = await Promise.all([
@@ -469,14 +469,17 @@ apiRouter.get("/sources", async (_req, res) => {
   res.json({ sources: rows, lists, status: sourcesStatus() });
 });
 
-// GET /api/sources/list/:list?skip=&limit= — members of one imported list (paginated)
+// GET /api/sources/list/:list?skip=&limit=&q= — members of one imported list (paginated + searchable)
 apiRouter.get("/sources/list/:list", async (req, res) => {
   const list = decodeURIComponent(req.params.list);
-  const limit = Math.min(parseInt(req.query.limit || "100", 10), 500);
+  const limit = Math.min(parseInt(req.query.limit || "100", 10), 10000);
   const skip = parseInt(req.query.skip || "0", 10);
+  const q = S(req.query.q).trim();
+  const filter = { lists: list };
+  if (q) { const rx = escRegex(q); filter.$or = [{ label: { $regex: rx, $options: "i" } }, { url: { $regex: rx, $options: "i" } }, { title: { $regex: rx, $options: "i" } }]; }
   const [rows, count] = await Promise.all([
-    sources().find({ lists: list }).sort({ label: 1 }).skip(skip).limit(limit).toArray(),
-    sources().countDocuments({ lists: list }),
+    sources().find(filter).sort({ label: 1 }).skip(skip).limit(limit).toArray(),
+    sources().countDocuments(filter),
   ]);
   res.json({ rows, count });
 });

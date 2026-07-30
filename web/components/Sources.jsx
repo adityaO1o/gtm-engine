@@ -163,6 +163,8 @@ export default function Sources() {
   const [list, setList] = useState(null);
   const [listPage, setListPage] = useState(0);
   const [listRows, setListRows] = useState({ rows: [], count: 0 });
+  const [listQ, setListQ] = useState("");
+  const [listSize, setListSize] = useState(100);
   const [inPost, setInPost] = useState("");
   const [inCamp, setInCamp] = useState(""); // "" = auto-route by the post's topic
   const [kwIn, setKwIn] = useState("");        // the keyword you type
@@ -196,8 +198,8 @@ export default function Sources() {
   useEffect(() => { load(); pollScrape(); return () => clearTimeout(scrapeTimer.current); }, [load, pollScrape]);
   useEffect(() => { j("/api/campaigns/list").then((d) => setAllCamps(d.campaigns || [])).catch(() => {}); }, []);
   useEffect(() => {
-    if (list) j(`/api/sources/list/${encodeURIComponent(list)}?skip=${listPage * 100}&limit=100`).then((d) => setListRows({ rows: d.rows || [], count: d.count || 0 }));
-  }, [list, listPage]);
+    if (list) j(`/api/sources/list/${encodeURIComponent(list)}?skip=${listPage * listSize}&limit=${listSize}${listQ ? `&q=${encodeURIComponent(listQ)}` : ""}`).then((d) => setListRows({ rows: d.rows || [], count: d.count || 0 }));
+  }, [list, listPage, listSize, listQ]);
 
   // handlers
   const addSrc = async (type, url, clear) => { if (!url.trim()) return; await post("/api/sources", { type, url: url.trim() }); clear(); load(); toast(`${type === "hub" ? "Hub" : "Influencer"} added`, "good"); };
@@ -271,10 +273,12 @@ export default function Sources() {
   // Imported-list drill-in view
   if (list) {
     const { rows, count } = listRows;
-    const from = count ? listPage * 100 + 1 : 0, to = Math.min(count, (listPage + 1) * 100), last = Math.max(0, Math.ceil(count / 100) - 1);
+    const from = count ? listPage * listSize + 1 : 0, to = Math.min(count, (listPage + 1) * listSize), last = Math.max(0, Math.ceil(count / listSize) - 1);
     return (
       <>
         <div className="toolbar"><button className="btn btn-ghost btn-sm" onClick={() => setList(null)}><Icon name="back" />All sources</button>
+          <input className="search" placeholder="Search name / profile / title…" style={{ minWidth: 220 }}
+            value={listQ} onChange={(e) => { setListQ(e.target.value); setListPage(0); }} />
           <div className="grow" /><span className="resn"><b>{num(count)}</b> influencers in “{list}”</span></div>
         <div className="tablewrap"><table><thead><tr><th>Name</th><th>Title</th><th>Profile</th><th>Posts</th><th title="PND credits spent scraping this person's engagers">PND cr</th><th>Last run</th><th></th></tr></thead>
           <tbody>{rows.map((s) => (
@@ -294,7 +298,11 @@ export default function Sources() {
               </div></td>
             </tr>
           ))}</tbody></table></div>
-        <div className="pager"><span>{num(from)}–{num(to)} of {num(count)}</span>
+        <div className="pager"><span>Rows</span>
+          <select value={listSize} onChange={(e) => { setListSize(+e.target.value); setListPage(0); }}>
+            {[100, 200, 500, 1000, 10000].map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <span>{num(from)}–{num(to)} of {num(count)}</span>
           <button className="btn btn-ghost btn-sm" disabled={listPage <= 0} onClick={() => setListPage((p) => Math.max(0, p - 1))}>Prev</button>
           <button className="btn btn-ghost btn-sm" disabled={listPage >= last} onClick={() => setListPage((p) => p + 1)}>Next</button></div>
       </>
