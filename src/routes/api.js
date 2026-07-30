@@ -668,7 +668,7 @@ apiRouter.get("/sources/scraped-posts", async (req, res) => {
   // ?refreshTitles=1 ignores the retry gate — for when a fix has just landed and waiting a day to
   // find out whether it worked is not an option.
   const DAY = 24 * 60 * 60 * 1000;
-  const force = S(_req.query.refreshTitles) === "1";
+  const force = S(req.query.refreshTitles) === "1";
   for (const p of posts) {
     const triedAt = p.titleTried instanceof Date ? p.titleTried.getTime() : null;
     if (!force && (p.title || (triedAt && Date.now() - triedAt < DAY))) continue;
