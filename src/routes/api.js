@@ -780,3 +780,33 @@ apiRouter.post("/reset", async (req, res) => {
   const b = await engagements().deleteMany({});
   res.json({ ok: true, leadsDeleted: a.deletedCount, engagementsDeleted: b.deletedCount });
 });
+
+// POST /api/leads/bulk-email-update — write externally-recovered emails onto existing no-email leads
+// (Bitscale/BetterContact finds, BounceBan/BetterContact verified). Ingest-token guarded. Matches by
+// linkedin_url AND only touches rows still marked no-email, so it can't clobber a lead the live scrape
+// has since verified. Body: { rows: [{ linkedin_url, email, email_status: "verified"|"unverified" }] }.
+apiRouter.post("/leads/bulk-email-update", async (req, res) => {
+  if (!safeEqual(req.headers["x-ingest-token"] || "", config.ingestToken)) return res.status(401).json({ ok: false });
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  const ops = [];
+  for (const r of rows) {
+    const url = String(r?.linkedin_url || "").trim();
+    const email = String(r?.email || "").trim().toLowerCase();
+    if (!url || !email || !email.includes("@")) continue;
+    const status = r?.email_status === "verified" ? "verified" : "unverified";
+    ops.push({ updateOne: {
+      filter: { linkedin_url: url, email_status: "no-email" },
+      update: { $set: {
+        email, email_status: status, unverified: status === "unverified",
+        needs_email: false, verified_by: "external-recovery", verify_detail: "bitscale/bettercontact",
+        recovered: true, recovered_at: new Date(), updated_at: new Date(),
+      } },
+    } });
+  }
+  let updated = 0;
+  for (let i = 0; i < ops.length; i += 1000) {
+    const r = await leads().bulkWrite(ops.slice(i, i + 1000), { ordered: false }).catch(() => ({ modifiedCount: 0 }));
+    updated += r.modifiedCount || 0;
+  }
+  res.json({ ok: true, received: rows.length, matchedOps: ops.length, updated });
+});
