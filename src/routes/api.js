@@ -23,7 +23,7 @@ import { autoStatus, setAutoEnabled, rotateNow } from "../pipeline/autoScrape.js
 import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
-import { upsertLeads, addLeadsToCampaign, addToDnc, assignEmailCampaign } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign } from "../services/sendkit.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -354,7 +354,7 @@ apiRouter.post("/leads/decision", async (req, res) => {
   for (const d of keep) {
     const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
     const e = d.email.trim().toLowerCase();
-    const cid = await assignEmailCampaign(e, desired); // global email→campaign lock
+    const cid = await intakeCampaign(e, desired); // global email→campaign lock + retirement guard
     emailToCid.set(e, cid);
     if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
     perCampaign.get(cid).add(e);

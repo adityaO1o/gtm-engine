@@ -185,8 +185,8 @@ export default function Sources() {
   const [listRows, setListRows] = useState({ rows: [], count: 0 });
   const [listQ, setListQ] = useState("");
   const [listSize, setListSize] = useState(100);
-  const [inflOpen, setInflOpen] = useState(false);
-  const [hubsOpen, setHubsOpen] = useState(false);
+  const [inflOpen, setInflOpen] = useState(true);
+  const [hubsOpen, setHubsOpen] = useState(true);
   const [inPost, setInPost] = useState("");
   const [inCamp, setInCamp] = useState(""); // "" = auto-route by the post's topic
   const [kwIn, setKwIn] = useState("");        // the keyword you type

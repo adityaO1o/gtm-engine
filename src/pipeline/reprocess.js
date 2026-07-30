@@ -17,7 +17,7 @@ import { leads, reprocessRuns } from "../db/mongo.js";
 import { findEmailWaterfall, verifyEmailWaterfall, companyFromHeadline } from "./enrichLead.js";
 import { isRoleBased, findEmailByNameDomain } from "../services/enrich.js";
 import { companyDomainGuarded } from "../services/clearbit.js";
-import { upsertLead, addToCampaign, assignEmailCampaign } from "../services/sendkit.js";
+import { upsertLead, addToCampaign, intakeCampaign } from "../services/sendkit.js";
 import { bumpUsage } from "../services/usage.js";
 import { meterFlush } from "../services/apiMeter.js";
 import { CAMPAIGN_ID, isCompetitor, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
@@ -191,7 +191,7 @@ async function pushRecovered(d, email, domain, vr) {
   await upsertLead({ email, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags });
   const landed = [];
   const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
-  if (desired) { const cid = await assignEmailCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
+  if (desired) { const cid = await intakeCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
   await leads().updateOne({ linkedin_url: d.linkedin_url }, {
     $set: {
       email, company_domain: domain || null, email_status: "verified", unverified: false, needs_email: false,

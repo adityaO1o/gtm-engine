@@ -16,7 +16,7 @@ import { profileCompany } from "../services/linkedinProfile.js";
 import { pndExactDomain } from "../services/pnd.js";
 import { bouncebanVerify } from "../services/bounceban.js";
 import { meter } from "../services/apiMeter.js";
-import { findOurLead, upsertLead, addToCampaign, addToDnc, assignEmailCampaign } from "../services/sendkit.js";
+import { findOurLead, upsertLead, addToCampaign, addToDnc, intakeCampaign } from "../services/sendkit.js";
 import { scoreFromHistory } from "../services/score.js";
 import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor, desiredCampaignId } from "../services/campaigns.js";
 import { isCompanyPage, isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
@@ -264,7 +264,7 @@ export async function enrichLead(input) {
       // Route the first-campaign choice through the global email→campaign lock so the same email
       // (even from a different profile) never lands in a second campaign.
       const desired = desiredCampaignId(campaign); // manual 1.0/2.0 pick wins, else default 2.0
-      if (desired) { const cid = await assignEmailCampaign(known.email, desired); if (await addToCampaign(cid, known.email)) landed.push(cid); }
+      if (desired) { const cid = await intakeCampaign(known.email, desired); if (await addToCampaign(cid, known.email)) landed.push(cid); }
       // ADD to the membership record, never overwrite: a transient push failure leaves `landed` empty
       // and a $set would wipe a membership SendKit still holds (breaks the DNC safety net).
       if (landed.length) await leads().updateOne({ linkedin_url: key }, { $addToSet: { sendkit_campaigns: { $each: landed } } });
@@ -481,7 +481,7 @@ export async function enrichLead(input) {
   const doc = await leads().findOne({ linkedin_url: key });
   const landed = [];
   const desired = desiredCampaignId(campaign); // manual 1.0/2.0 pick wins, else default 2.0
-  if (desired) { const cid = await assignEmailCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
+  if (desired) { const cid = await intakeCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
   // ADD to the membership record, never overwrite: a transient push failure leaves `landed` empty
   // and a $set would wipe a membership SendKit still holds (breaks the DNC safety net).
   if (landed.length) await leads().updateOne({ linkedin_url: key }, { $addToSet: { sendkit_campaigns: { $each: landed } } });

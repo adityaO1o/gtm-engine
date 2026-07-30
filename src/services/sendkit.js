@@ -4,6 +4,7 @@
 import axios from "axios";
 import { config } from "../config.js";
 import { emailCampaign } from "../db/mongo.js";
+import { isActiveCampaignId, INTAKE_SENDKIT_ID } from "./campaigns.js";
 import { log } from "../lib/logger.js";
 
 // GLOBAL email → campaign uniqueness. Returns the ONE campaign id this email is allowed to live in.
@@ -44,6 +45,20 @@ export async function reassignEmailCampaign(email, campaignId) {
   const key = String(email || "").trim().toLowerCase();
   if (!key || !campaignId) return;
   await emailCampaign().updateOne({ _id: key }, { $set: { campaignId, at: new Date() } }, { upsert: true }).catch(() => {});
+}
+
+// INTAKE routing with a retirement guard. All ongoing scrapes must land only in the active campaigns
+// (1.0 / 2.0). But the uniqueness lock still holds legacy assignments pointing at the now-retired topic
+// campaigns — so a re-seen email whose lock says "Smartlead" would otherwise be re-enrolled there. This
+// wrapper resolves the lock; if it lands on a RETIRED topic, it repoints the lock to the intended intake
+// campaign (default 2.0) and returns that instead, guaranteeing no new lead ever enters an old topic.
+// Genuinely new emails behave exactly as before (lock inserts the desired campaign, which is active).
+export async function intakeCampaign(email, desiredCampaignId) {
+  const desired = desiredCampaignId || INTAKE_SENDKIT_ID;
+  const cid = await assignEmailCampaign(email, desired);
+  if (isActiveCampaignId(cid)) return cid;         // already in 1.0 / 2.0 — keep it there
+  await reassignEmailCampaign(email, desired);      // lock was on a retired topic — move it to intake
+  return desired;
 }
 
 const h = () => ({ "X-Api-Key": config.sendkit.key, "Content-Type": "application/json" });

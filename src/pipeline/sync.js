@@ -6,7 +6,7 @@
 
 import { leads } from "../db/mongo.js";
 import { findEmailWaterfall } from "./enrichLead.js";
-import { upsertLeads, addLeadsToCampaign, addToDnc, assignEmailCampaign } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign } from "../services/sendkit.js";
 import { reconcileDnc } from "./dncSync.js";
 import { resolveKey, campaignByKey, isCompetitor, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
 import { nameMatchesEmail, emailDomain } from "../services/quality.js";
@@ -107,7 +107,7 @@ export async function syncVerified({ campaign = "" } = {}) {
     const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
     if (!desired) continue;
     // Route through the global email→campaign lock so bulk sync can't scatter an email either.
-    const cid = await assignEmailCampaign(e, desired);
+    const cid = await intakeCampaign(e, desired);
     if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
     perCampaign.get(cid).add(e);
   }

@@ -114,6 +114,12 @@ export const desiredCampaignId = (campaignKey) => {
   return (c && c.manualTarget && c.sendkitId) ? c.sendkitId : INTAKE_SENDKIT_ID;
 };
 
+// The only campaigns that still receive intake: 1.0 / 2.0. Everything else (the retired topic
+// campaigns) must NOT get new leads — so a lead whose uniqueness-lock still points at an old topic
+// is repointed to the intake instead of re-enrolled there.
+export const ACTIVE_CAMPAIGN_IDS = new Set(CAMPAIGNS.filter((c) => c.manualTarget).map((c) => c.sendkitId));
+export const isActiveCampaignId = (id) => ACTIVE_CAMPAIGN_IDS.has(id);
+
 export const campaignLabel = (name) =>
   (campaignByKey(name)?.label) || (name || "").replace(/\s*(Keyword )?Engagers - InboxKit$/, "").replace(/ - InboxKit$/, "").trim();
 
