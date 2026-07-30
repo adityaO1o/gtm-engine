@@ -203,8 +203,14 @@ export default function Sources() {
   const scrapeTimer = useRef(null);
 
   const load = useCallback(async () => {
-    const [d, sp] = await Promise.all([j("/api/sources"), j("/api/sources/scraped-posts").catch(() => ({ posts: [] }))]);
-    setData({ sources: d.sources || [], lists: d.lists || [], status: d.status || {} });
+    const [d, sp] = await Promise.all([j("/api/sources").catch(() => null), j("/api/sources/scraped-posts").catch(() => ({ posts: [] }))]);
+    // Right after a deploy the container can answer before Mongo is ready and return empty arrays (or the
+    // call can transiently fail). Never let that blank an already-populated view — keep what we have.
+    if (d) setData((prev) => {
+      const sources = d.sources || [], lists = d.lists || [];
+      if (!sources.length && !lists.length && (prev.sources.length || prev.lists.length)) return prev;
+      return { sources, lists, status: d.status || {} };
+    });
     setPosts(sp.posts || []);
   }, []);
 
