@@ -48,10 +48,16 @@ const ttlCache = (seconds) => (req, res, next) => {
 };
 
 // counts for a lead filter (optionally scoped to one campaign)
-async function countBlock(campaign) {
+// Go-forward bucketing: 2.0 = leads first seen on/after 27 Jul (the new-intake era), 1.0 = older
+// (the multi-campaign base). Derived from created_at since the SendKit 1.0/2.0 membership isn't
+// mirrored per-lead in Mongo. Campaigns + Hand-off drill 1.0/2.0 -> topic using this.
+const BUCKET_CUTOFF = new Date("2026-07-27T00:00:00.000Z");
+const bucketFilter = (b) => b === "1.0" ? { created_at: { $lt: BUCKET_CUTOFF } } : b === "2.0" ? { created_at: { $gte: BUCKET_CUTOFF } } : {};
+
+async function countBlock(campaign, bucket) {
   campaign = S(campaign);
   const L = leads();
-  const base = campaign ? { campaigns: campaign } : {};
+  const base = { ...(campaign ? { campaigns: campaign } : {}), ...bucketFilter(S(bucket)) };
   const [total, hot, warm, cold, verified, noEmail, unverified, review, competitor, recovered, dnc, discarded] = await Promise.all([
     L.countDocuments(base),
     L.countDocuments({ ...base, status: "hot" }),
@@ -89,6 +95,7 @@ function buildLeadFilter(query) {
   if (src === "keyword") filter.source = { $in: [null, ""] };   // keyword engagers carry no source
   else if (src) filter.source = src;                            // influencer | hub
   if (S(query.list)) filter.source_list = { $regex: escRegex(query.list), $options: "i" };
+  Object.assign(filter, bucketFilter(S(query.bucket))); // 1.0 / 2.0 drill-down
   if (q) {
     const rx = escRegex(q); // escaped -> literal substring match, no ReDoS / regex injection
     filter.$or = [{ name: { $regex: rx, $options: "i" } }, { email: { $regex: rx, $options: "i" } }, { company: { $regex: rx, $options: "i" } }];
@@ -99,7 +106,7 @@ function buildLeadFilter(query) {
 // GET /api/stats?campaign= — headline counts (all campaigns, or one), + live Trigify balance
 apiRouter.get("/stats", ttlCache(8), async (req, res) => {
   const campaign = S(req.query.campaign);
-  const counts = await countBlock(campaign);
+  const counts = await countBlock(campaign, S(req.query.bucket));
   const engFilter = campaign ? { campaign } : {};
   const engCount = await engagements().countDocuments(engFilter);
   const [prospeo, jina, meter, apiBalance, bounceban] = await Promise.all([prospeoBalance(), jinaBalance(), meterCumulative(), readBalances(), bouncebanBalance()]);
@@ -115,10 +122,11 @@ apiRouter.get("/stats", ttlCache(8), async (req, res) => {
 // that made this take 17s under concurrency.
 const cnt = (field, val) => ({ $sum: { $cond: [{ $eq: ["$" + field, val] }, 1, 0] } });
 const cntTruthy = (field) => ({ $sum: { $cond: [{ $ifNull: ["$" + field, false] }, 1, 0] } });
-apiRouter.get("/campaigns", ttlCache(10), async (_req, res) => {
+apiRouter.get("/campaigns", ttlCache(10), async (req, res) => {
+  const bucket = S(req.query.bucket);
   const [agg, uRows, prospeo, jina, pausedRows, credRows] = await Promise.all([
     leads().aggregate([
-      { $match: { campaigns: { $exists: true, $ne: [] } } },
+      { $match: { campaigns: { $exists: true, $ne: [] }, ...bucketFilter(bucket) } },
       { $unwind: "$campaigns" },
       { $group: {
         _id: "$campaigns", total: { $sum: 1 },
@@ -376,7 +384,7 @@ apiRouter.post("/reprocess", (req, res) => {
   // concurrency 14: each lead is mostly network-wait (Clearbit -> Enrich -> proxy resolve -> Prospeo),
   // so a wider pool is ~3x faster wall-clock without meaningfully more CPU.
   // deep: ignore backoff/terminal-skip/attempt-cap/paid-once — every stuck lead, always pay, once more.
-  reprocessNoEmail({ concurrency: 14, campaigns: campList(req.body?.campaigns), deep: !!req.body?.deep })
+  reprocessNoEmail({ concurrency: 14, campaigns: campList(req.body?.campaigns), deep: !!req.body?.deep, bucket: S(req.body?.bucket) })
     .catch((e) => console.error("reprocess error", e.message));
   res.json({ started: true });
 });
@@ -450,7 +458,7 @@ apiRouter.get("/reprocess/runs", async (_req, res) => {
 // counted twice (that's how "8,262 to retry" appeared next to a real hand-off of 7,048).
 apiRouter.get("/reprocess/count", async (req, res) => {
   const camps = S(req.query.campaigns).split(",").map((x) => x.trim()).filter(Boolean);
-  res.json({ count: await leads().countDocuments(noEmailQuery(camps)) });
+  res.json({ count: await leads().countDocuments(noEmailQuery(camps, S(req.query.bucket))) });
 });
 
 // ── Sources (LinkedIn hubs + influencers) ──────────────────────────────

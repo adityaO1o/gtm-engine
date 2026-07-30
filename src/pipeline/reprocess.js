@@ -53,8 +53,12 @@ const tagsFor = (d) => [
 
 // ── Query builders ───────────────────────────────────────────────────────────
 // no-email leads still worth a try. "deep" drops backoff / terminal-skip / attempt-cap.
-function noEmailRetryQuery(campaigns, deep) {
-  const q = { email_status: "no-email" };
+// 1.0 / 2.0 bucketing by created_at (matches api.js BUCKET_CUTOFF) so Hand-off retries stay scoped.
+const BUCKET_CUTOFF = new Date("2026-07-27T00:00:00.000Z");
+const bucketMatch = (b) => b === "1.0" ? { created_at: { $lt: BUCKET_CUTOFF } } : b === "2.0" ? { created_at: { $gte: BUCKET_CUTOFF } } : {};
+
+function noEmailRetryQuery(campaigns, deep, bucket) {
+  const q = { email_status: "no-email", ...bucketMatch(bucket) };
   if (campaigns.length) q.campaigns = { $in: campaigns };
   if (!deep) {
     q.$and = [
@@ -70,8 +74,8 @@ function noEmailRetryQuery(campaigns, deep) {
   return q;
 }
 // unverified leads — likely a wrong Clearbit domain, worth an alternate-domain pass.
-function unverifiedRetryQuery(campaigns, deep) {
-  const q = { email_status: "unverified" };
+function unverifiedRetryQuery(campaigns, deep, bucket) {
+  const q = { email_status: "unverified", ...bucketMatch(bucket) };
   if (campaigns.length) q.campaigns = { $in: campaigns };
   if (!deep) {
     q.$and = [
@@ -211,13 +215,13 @@ async function reprocessOne(d, deep) {
 // `campaigns` is the exact set the user ticked. Leads are matched with $in, so a person who
 // sits in two selected campaigns is retried ONCE — the per-campaign totals overlap and must
 // never be summed. (Count endpoint only — counts the no-email pool the UI shows.)
-export function noEmailQuery(campaigns = []) {
-  const q = { email_status: "no-email" };
+export function noEmailQuery(campaigns = [], bucket = "") {
+  const q = { email_status: "no-email", ...bucketMatch(bucket) };
   if (campaigns.length) q.campaigns = { $in: campaigns };
   return q;
 }
 
-export async function reprocessNoEmail({ limit = 0, concurrency = 4, campaigns = [], deep = false } = {}) {
+export async function reprocessNoEmail({ limit = 0, concurrency = 4, campaigns = [], deep = false, bucket = "" } = {}) {
   if (running) return { alreadyRunning: true, ...status };
   running = true;
   // Invariant: a lead with no email cannot also be flagged "recovered". Older builds could
@@ -226,8 +230,8 @@ export async function reprocessNoEmail({ limit = 0, concurrency = 4, campaigns =
 
   // Both pools: no-email (full waterfall) + unverified (alternate-domain recovery).
   const [noEmailDocs, unverDocs] = await Promise.all([
-    leads().find(noEmailRetryQuery(campaigns, deep)).toArray(),
-    leads().find(unverifiedRetryQuery(campaigns, deep)).toArray(),
+    leads().find(noEmailRetryQuery(campaigns, deep, bucket)).toArray(),
+    leads().find(unverifiedRetryQuery(campaigns, deep, bucket)).toArray(),
   ]);
   let docs = [...noEmailDocs, ...unverDocs];
   const list = limit ? docs.slice(0, limit) : docs;

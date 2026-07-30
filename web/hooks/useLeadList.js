@@ -7,7 +7,7 @@ import { useDash } from "@/lib/ctx";
 // Leads / Review / Competitors / Campaign-detail. `fixed` locks filters a tab always applies.
 export function useLeadList(fixed = {}) {
   const [filters, setFilters] = useState({
-    status: "", email: "", cat: "", campaign: "", q: "", sort: "score", recovered: "", dnc: "", source: "", list: "", ...fixed,
+    status: "", email: "", cat: "", campaign: "", q: "", sort: "score", recovered: "", dnc: "", source: "", list: "", bucket: "", ...fixed,
   });
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(50);
@@ -20,7 +20,7 @@ export function useLeadList(fixed = {}) {
     const p = new URLSearchParams();
     let f = { ...filters };
     if (f.source === "manual-post") f = { ...f, source: "", list: "manual-post" };
-    ["status", "campaign", "cat", "sort", "q", "recovered", "dnc", "source", "list"].forEach((k) => {
+    ["status", "campaign", "cat", "sort", "q", "recovered", "dnc", "source", "list", "bucket"].forEach((k) => {
       if (f[k]) p.set(k === "cat" ? "category" : k, f[k]);
     });
     if (f.email) p.set("email_status", f.email);

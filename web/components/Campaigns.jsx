@@ -21,6 +21,7 @@ const METRICS = { total: "Leads", verified: "Verified", hot: "Hot", warm: "Warm"
 // scrape" box on the Sources tab.)
 function KeywordSweep() {
   const toast = useToast();
+  const [showLogs, setShowLogs] = useState(false);
   const { status: sweep, start, pause: doPause } = useKeywordRun("/api/keywords/sweep");
 
   const run = async () => {
@@ -50,9 +51,11 @@ function KeywordSweep() {
           ? <button className="btn btn-ghost btn-sm" onClick={pause}><Icon name="pause" />Pause sweep</button>
           : <button className="btn btn-sm" onClick={run}><Icon name="bolt" />Run keyword sweep</button>}
         {sweep?.running ? <span className="muted" style={{ fontSize: 12 }}>{sweep.phase === "scraping" ? "scraping" : "searching"} &middot; <b>{sweep.keyword}</b> &rarr; {sweep.campaign}</span> : null}
+        <div className="grow" />
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowLogs((v) => !v)}><Icon name="radio" />{showLogs ? "Hide logs" : "Logs"}</button>
       </div>
       <KeywordRunBox s={sweep} done={sweep?.keywordsDone} total={sweep?.totalKeywords} runningLabel="Sweeping" />
-      <PndDailyLog />
+      {showLogs ? <PndDailyLog /> : null}
     </div>
   );
 }
@@ -108,20 +111,20 @@ function CampaignList({ campaigns, onOpen }) {
   );
 }
 
-function CampaignDetail({ campaign, label, onBack }) {
+function CampaignDetail({ campaign, bucket, label, onBack }) {
   const { openLead, openReverify, jobs, pollJobs, campaigns, refreshTop } = useDash();
   const toast = useToast();
   const [s, setS] = useState({});
   const [cardMetrics, setCardMetrics] = useState(["total", "verified", "hot", "noEmail"]);
   const [msg, setMsg] = useState("");
-  const L = useLeadList({ campaign });
+  const L = useLeadList({ campaign, bucket: bucket || "" });
 
   useEffect(() => {
-    j("/api/stats?campaign=" + encodeURIComponent(campaign)).then((d) => {
+    j("/api/stats?campaign=" + encodeURIComponent(campaign) + (bucket ? "&bucket=" + bucket : "")).then((d) => {
       d.verifyRate = d.total ? Math.round((d.verified / d.total) * 100) : 0;
       setS(d);
     });
-  }, [campaign]);
+  }, [campaign, bucket]);
 
   const setCard = (i, v) => setCardMetrics((m) => m.map((x, idx) => (idx === i ? v : x)));
   const exportFiltered = () => { const p = L.query(); p.delete("limit"); p.delete("skip"); window.location = "/api/export?" + p.toString(); };
@@ -172,18 +175,59 @@ function CampaignDetail({ campaign, label, onBack }) {
   );
 }
 
-export default function Campaigns() {
-  const { campaigns, pendingCampaign, clearPending } = useDash();
-  const [active, setActive] = useState(null);
-  useEffect(() => { if (pendingCampaign) { setActive(pendingCampaign); clearPending(); } }, [pendingCampaign, clearPending]);
-  if (active) {
-    const c = campaigns.find((x) => x.campaign === active);
-    return <CampaignDetail campaign={active} label={c?.label || active} onBack={() => setActive(null)} />;
-  }
+// Top level: pick a bucket (1.0 old / 2.0 new). Each drills into the same topic-campaign table,
+// scoped to that bucket; a topic then drills into its leads (bucket + topic).
+function BucketPicker({ onPick }) {
+  const [counts, setCounts] = useState({});
+  useEffect(() => {
+    Promise.all([j("/api/stats?bucket=2.0"), j("/api/stats?bucket=1.0")])
+      .then(([b2, b1]) => setCounts({ "2.0": b2, "1.0": b1 })).catch(() => {});
+  }, []);
+  const Card = ({ b, title, sub }) => {
+    const c = counts[b] || {};
+    return (
+      <div className="chartbox click" style={{ cursor: "pointer" }} onClick={() => onPick(b)}>
+        <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><h4 style={{ margin: 0 }}><Icon name="mega" />{title}</h4>
+          <div className="grow" /><Icon name="external" /></div>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>{sub}</div>
+        <div className="grid g-cred">
+          <div className="card pri"><div className="kh">Leads</div><div className="v">{c.total != null ? num(c.total) : "—"}</div></div>
+          <div className="card pri"><div className="kh">Verified</div><div className="v">{c.verified != null ? num(c.verified) : "—"}</div></div>
+          <div className="card pri"><div className="kh">No-email</div><div className="v">{c.noEmail != null ? num(c.noEmail) : "—"}</div></div>
+        </div>
+      </div>
+    );
+  };
   return (
-    <>
-      <KeywordSweep />
-      <CampaignList campaigns={campaigns} onOpen={setActive} />
-    </>
+    <div className="grid" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: "var(--s3)", alignItems: "start" }}>
+      <Card b="2.0" title="Cold Email 2.0 — new leads" sub="Everything scraped from 27 Jul onwards — the current intake. Click to see it broken down by keyword topic." />
+      <Card b="1.0" title="Cold Email 1.0 — old leads" sub="The earlier multi-campaign base (contacted separately). Click to see it by keyword topic." />
+    </div>
   );
+}
+
+export default function Campaigns() {
+  const { pendingCampaign, clearPending } = useDash();
+  const [bucket, setBucket] = useState(null);   // null | "1.0" | "2.0"
+  const [active, setActive] = useState(null);    // topic campaign key
+  const [rows, setRows] = useState(null);        // topic rows for the picked bucket
+  useEffect(() => { if (pendingCampaign) { setActive(pendingCampaign); clearPending(); } }, [pendingCampaign, clearPending]);
+  useEffect(() => {
+    if (bucket && !active) { setRows(null); j("/api/campaigns?bucket=" + bucket).then((d) => setRows(d.campaigns || [])); }
+  }, [bucket, active]);
+
+  if (active) {
+    const c = (rows || []).find((x) => x.campaign === active);
+    return <CampaignDetail campaign={active} bucket={bucket} label={c?.label || active} onBack={() => setActive(null)} />;
+  }
+  if (bucket) {
+    return (
+      <>
+        <div className="toolbar"><button className="btn btn-ghost btn-sm" onClick={() => setBucket(null)}><Icon name="back" />1.0 / 2.0</button>
+          <div className="grow" /><span className="resn">{bucket === "2.0" ? "Cold Email 2.0 · new leads · by keyword topic" : "Cold Email 1.0 · old leads · by keyword topic"}</span></div>
+        {rows === null ? <div className="muted" style={{ padding: 16 }}>Loading…</div> : <CampaignList campaigns={rows} onOpen={setActive} />}
+      </>
+    );
+  }
+  return (<><KeywordSweep /><BucketPicker onPick={setBucket} /></>);
 }
