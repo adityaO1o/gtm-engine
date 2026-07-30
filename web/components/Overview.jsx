@@ -23,48 +23,6 @@ const Tile = ({ icon, k, v, cls }) => (
 // Static, self-contained SVG/markup from the proven chart builders.
 const Raw = ({ html, ...p }) => <div {...p} dangerouslySetInnerHTML={{ __html: html }} />;
 
-function ApiUsagePanel({ s }) {
-  const rv = s.resolver || {}, m = s.meter || {}, bal = s.apiBalance || {};
-  const freshEng = m.rapid_engagers || 0;
-  const eff = (b) => (b ? Math.max(0, Math.min(b.creditsRemaining ?? Infinity, b.requestsRemaining ?? Infinity)) : null);
-  const fLeft = eff(bal.fresh), wLeft = eff(bal.webscrape), pLeft = eff(bal.pnd);
-  const fLim = bal.fresh?.creditsLimit || 500, wLim = bal.webscrape?.creditsLimit || 500, pLim = bal.pnd?.creditsLimit || 10000;
-  const Row = ({ name, val, note, warn }) => (
-    <div className="urow">
-      <span className="un">{name}</span>
-      <span className={`uv ${warn ? "warn" : ""}`} dangerouslySetInnerHTML={{ __html: val }} />
-      <span className="uc">{note}</span>
-    </div>
-  );
-  return (
-    <div className="chartbox" style={{ marginTop: "var(--s3)" }}>
-      <h4><Icon name="radio" /> API consumption <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>· real balance</span></h4>
-      <div className="utable">
-        <Row name="🟣 PND · scrape + enrich" warn={bal.pnd && pLeft <= 0}
-          val={bal.pnd ? `<b>${num(pLeft)}</b> left / ${num(pLim)}` : `<b>${num(m.pnd_scrape_pages || 0)}</b> pages`}
-          note={`${num(m.pnd_scrape_pages || 0)} scrape · ${num(m.pnd_profile_calls || 0)} profile · ${num(m.pnd_company_calls || 0)} company · ${num(m.pnd_cache_hits || 0)} cache-saved${bal.pnd && pLeft <= 0 ? " · OUT" : ""}`} />
-        <Row name="💡 Domain source" val={`free <b>${num(m.domain_free || 0)}</b> · paid ${num(m.domain_paid || 0)}`}
-          note="free tiers vs PND credits — higher free = cheaper" />
-        <Row name="🎯 BounceBan (verifier)" val={`<b>${num(m.bounceban_deliverable || 0)}</b>/${num(m.bounceban_calls || 0)} deliverable`}
-          note={`${num(m.bounceban_undeliverable || 0)} undeliverable · ${num(m.bounceban_ambiguous || 0)} ambiguous · ${num(s.bounceban?.remaining ?? 0)} credits left`} />
-        <Row name="🟢 RapidAPI · Fresh (scrape)" warn={bal.fresh && fLeft <= 0}
-          val={bal.fresh ? `<b>${num(fLeft)}</b> left / ${num(fLim)}` : `<b>${num(m.rapid_pages || 0)}</b> pages`}
-          note={bal.fresh ? `${num(fLim - fLeft)} credits used · ${num(freshEng)} engagers scraped${fLeft <= 0 ? " · OUT" : ""}` : `${num(freshEng)} engagers`} />
-        <Row name="🔵 RapidAPI · Web-scrape (profile)" warn={bal.webscrape && wLeft <= 0}
-          val={bal.webscrape ? `<b>${num(wLeft)}</b> left / ${num(wLim)}` : `<b>${num(m.webscrape_calls || 0)}</b> calls`}
-          note={bal.webscrape ? `${num(wLim - wLeft)} credits used · company lookups${wLeft <= 0 ? " · OUT" : ""}` : "company lookups"} />
-        <Row name="🔎 Resolver" val={`SEO <b>${num(m.resolver_seo || 0)}</b> · Serper ${num(m.resolver_serper || 0)} · Proxy ${num(m.resolver_proxy || 0)}`}
-          note={`URN→URL · ${num(m.resolver_miss || 0)} missed · ${num(rv.serperKeysLive || 0)}/${num(rv.serperKeysTotal || 0)} serper keys`} />
-        <Row name="✉️ Prospeo" val={`<b>${num(m.prospeo_finds || 0)}</b>/${num(m.prospeo_calls || 0)} finds`} note="email finder" />
-        <Row name="🛡️ Clearbit" val={`<b>${num(m.clearbit_calls || 0)}</b> lookups`} note={`name→domain · ${num(m.clearbit_rejects || 0)} wrong-domain blocked`} />
-      </div>
-      <div className="muted" style={{ fontSize: 11.5, marginTop: 10 }}>
-        Fresh &amp; Web-scrape “left” is the plans’ REAL remaining from RapidAPI rate-limit headers (blocks on whichever of credits/requests hits 0). Resolver/Prospeo/Clearbit are counters tracked since the meter was added.
-      </div>
-    </div>
-  );
-}
-
 export default function Overview() {
   const { stats: s } = useDash();               // reuse the topbar's stats — no duplicate /api/stats
   const [a, setA] = useState(null);
@@ -122,8 +80,6 @@ export default function Overview() {
           <span>Unverified {num(a.funnel.unverified)}</span>
         </div>
       </div>
-
-      <ApiUsagePanel s={s} />
     </>
   );
 }

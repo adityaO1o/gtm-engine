@@ -39,8 +39,7 @@ function KeywordSweep() {
 
   return (
     <div className="chartbox" style={{ marginBottom: "var(--s3)", borderTop: "2px solid var(--primary)" }}>
-      <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><h4 style={{ margin: 0 }}><Icon name="search" />Keyword sweep</h4><div className="grow" />
-        <span className="muted" style={{ fontSize: 12 }}>replaces the Trigify workflows</span></div>
+      <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><h4 style={{ margin: 0 }}><Icon name="search" />Keyword sweep</h4><div className="grow" /></div>
       <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
         Finds this week&rsquo;s posts for every campaign keyword and scrapes their engagers into that campaign.
         Posts already done are skipped unless they&rsquo;ve <b>grown</b> — and that check costs nothing, because the search
@@ -93,7 +92,7 @@ function CampaignList({ campaigns, onOpen }) {
       <th title="Verified lead records (one per LinkedIn profile)">Verified</th>
       <th title="Distinct email addresses — this is what SendKit holds.">In SendKit</th>
       <th>No-email</th><th title="Emails rescued by a hand-off retry">Recovered</th><th>Competitors</th>
-      <th title="On SendKit's Do-Not-Contact list">DNC</th><th>Trigify</th><th>Prospeo</th>
+      <th title="On SendKit's Do-Not-Contact list">DNC</th><th>Prospeo</th>
       <th title="PND credits spent scraping engagers into this campaign">PND cr</th></tr></thead>
       <tbody>{campaigns.map((c) => (
         <tr key={c.campaign} className="click" onClick={() => onOpen(c.campaign)}>
@@ -102,7 +101,7 @@ function CampaignList({ campaigns, onOpen }) {
           <td className="num-c" style={{ color: "var(--primary-2)", fontWeight: 600 }}>{num(c.verifiedEmails ?? c.verified)}</td>
           <td>{num(c.noEmail)}</td><td className="num-c" style={{ color: "var(--good)" }}>{num(c.recovered || 0)}</td><td>{num(c.competitor)}</td>
           <td className="num-c" style={{ color: "var(--hot)", fontWeight: 600 }}>{num(c.dnc || 0)}</td>
-          <td className="num-c">{num(c.credits.trigify)}</td><td className="num-c">{num(c.credits.prospeo)}</td>
+          <td className="num-c">{num(c.credits.prospeo)}</td>
           <td className="num-c" style={{ color: "var(--primary-2)" }} title={`${num(c.pndPosts || 0)} posts`}>{num(c.pndCredits || 0)}</td>
         </tr>
       ))}</tbody></table></div>

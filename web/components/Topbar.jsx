@@ -44,9 +44,8 @@ export default function Topbar({ title, stats, prospeo, onCmdK }) {
             Prospeo · <b>{num(prospeo.remaining)}</b> left
           </div>
         )}
-        {/* fresh / web-scrape only appear if a REAL response header ever populated them */}
+        {/* Fresh only appears if a REAL response header ever populated it */}
         <BalChip label="Fresh" b={bal.fresh} note="Fresh scraper — legacy" />
-        <BalChip label="Web-scrape" b={bal.webscrape} note="Web-scrape — legacy" />
       </div>
       <button className="themebtn" title="Search — ⌘K / Ctrl-K" onClick={onCmdK}><Icon name="search" /></button>
       <ThemeToggle />
