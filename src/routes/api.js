@@ -652,8 +652,13 @@ apiRouter.post("/sources/scrape-post/pause", (_req, res) => res.json(pauseScrape
 // GET /api/sources/scraped-posts — history of "Scrape via post" runs, with LIVE per-post counts
 // (engagers / verified / no-email / unverified) computed from leads.posts_seen. Counts stay current
 // as retries recover emails, so Verified climbs here on its own.
-apiRouter.get("/sources/scraped-posts", async (_req, res) => {
-  const posts = await scrapedPosts().find({}).sort({ startedAt: -1 }).limit(50).toArray();
+apiRouter.get("/sources/scraped-posts", async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || "50", 10), 10000);
+  const skip = parseInt(req.query.skip || "0", 10);
+  const [posts, total] = await Promise.all([
+    scrapedPosts().find({}).sort({ startedAt: -1 }).skip(skip).limit(limit).toArray(),
+    scrapedPosts().countDocuments({}),
+  ]);
   // Lazily fetch a human title (poster + post text) for any post missing one — once, then cached
   // on the doc. Skipped when out of credits so we don't set titleTried prematurely.
   // titleTried used to be a permanent tombstone: one failed lookup and the post could never get a
@@ -714,7 +719,7 @@ apiRouter.get("/sources/scraped-posts", async (_req, res) => {
       } : null,
     };
   }));
-  res.json({ posts: out });
+  res.json({ posts: out, total });
 });
 
 // Keyword sweep — finds this week's posts for every campaign keyword and scrapes their engagers.

@@ -124,7 +124,9 @@ async function processKeyword(item, st, c) {
   st.campaign = item.label;
   st.phase = "searching";
 
-  const r = await pndSearchPosts({ keyword: item.keyword, datePosted: "past-week", sortBy: "date_posted" }).catch(() => null);
+  // Manual runs want POPULAR posts (relevance sort, wider window) — latest posts often have no
+  // engagers yet. The auto sweep stays on fresh weekly posts (date_posted / past-week).
+  const r = await pndSearchPosts({ keyword: item.keyword, datePosted: item.datePosted || "past-week", sortBy: item.sortBy || "date_posted" }).catch(() => null);
   if (pndOutOfCredits()) { log.warn("keyword run stopping — out of credits"); return "credits"; }
 
   // How many posts this search returned, known up front. `postsFound` counts posts as we WALK them,
@@ -268,7 +270,7 @@ export async function runManualKeyword({ keyword = "", campaignKey = "" } = {}) 
     };
 
     try {
-      await processKeyword({ keyword: kw, campaignKey: camp.key, label: camp.label, manual: true }, manualStatus, manualCtl);
+      await processKeyword({ keyword: kw, campaignKey: camp.key, label: camp.label, manual: true, sortBy: "relevance", datePosted: "past-month" }, manualStatus, manualCtl);
       manualStatus.keywordsDone = 1;
     } catch (e) {
       log.error("manual keyword run failed", { keyword: kw, err: e.message });

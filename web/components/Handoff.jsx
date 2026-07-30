@@ -54,9 +54,11 @@ export default function Handoff() {
   const source = bucket ? (bRows || []) : campaigns;
   const batches = source.filter((c) => c.noEmail > 0 || c.recovered > 0).sort((a, b) => b.noEmail - a.noEmail);
   const totRec = stats.recovered ?? 0;
-  if (!bucket) return <HandoffBucketPicker onPick={setBucket} />;
 
+  // NOTE: all hooks must run every render — the bucket-picker early-return lives at the END, after
+  // every useEffect, so hook order never changes (fixes React #310).
   useEffect(() => {
+    if (!bucket) return;
     const camps = [...checked];
     setBatchCount(null);
     const t = setTimeout(async () => {
@@ -78,6 +80,8 @@ export default function Handoff() {
   const selLine = checked.size
     ? <><b>{checked.size}</b> campaign{checked.size === 1 ? "" : "s"} selected · {batchCount == null ? <span className="muted">counting…</span> : <><b>{num(batchCount)}</b> leads to retry</>}</>
     : <><span className="muted">0 selected — Retry runs <b>all</b> campaigns</span> · <b>{num(batchCount ?? stats.noEmail)}</b> leads</>;
+
+  if (!bucket) return <HandoffBucketPicker onPick={setBucket} />;
 
   return (
     <>

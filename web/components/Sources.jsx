@@ -50,11 +50,25 @@ function labelFromUrl(u = "") {
   return text ? `${name} — ${text}` : name || null;
 }
 
-function ScrapedPosts({ posts, onResume, busy }) {
-  if (!posts.length) return null;
+function ScrapedPosts({ onResume, busy }) {
+  const [open, setOpen] = useState(false);
+  const [page, setPage] = useState(0);
+  const [size, setSize] = useState(25);
+  const [data, setData] = useState({ posts: [], total: 0 });
+  useEffect(() => {
+    if (!open) return;
+    j(`/api/sources/scraped-posts?skip=${page * size}&limit=${size}`).then((d) => setData({ posts: d.posts || [], total: d.total || 0 })).catch(() => {});
+  }, [open, page, size]);
+  const { posts, total } = data;
+  const from = total ? page * size + 1 : 0, to = Math.min(total, (page + 1) * size), last = Math.max(0, Math.ceil(total / size) - 1);
   return (
     <div className="chartbox" style={{ marginBottom: "var(--s3)" }}>
-      <h4><Icon name="check" />Scraped posts <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>· live counts</span></h4>
+      <div className="toolbar" style={{ marginBottom: open ? "var(--s3)" : 0 }}>
+        <h4 style={{ margin: 0 }}><Icon name="check" />Scraped posts <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>· live counts</span></h4>
+        <div className="grow" />
+        <button className="btn btn-ghost btn-sm" onClick={() => setOpen((v) => !v)}>{open ? "Hide" : "Expand"}</button>
+      </div>
+      {open ? (<>
       <div className="tablewrap" style={{ border: "none" }}>
         <table><thead><tr><th>Post</th><th>Campaign</th><th>Engagers</th><th>Verified</th><th>No-email</th><th>Unverified</th><th title="verified ÷ engagers">Hit</th><th title="PND credits this post cost: scrape pages + paid profile/company lookups">PND cr</th><th>When</th><th></th></tr></thead>
           <tbody>{posts.map((p) => {
@@ -109,7 +123,13 @@ function ScrapedPosts({ posts, onResume, busy }) {
             );
           })}</tbody></table>
       </div>
+      <div className="pager"><span>Rows</span>
+        <select value={size} onChange={(e) => { setSize(+e.target.value); setPage(0); }}>{[25, 50, 100, 200, 500, 1000].map((n) => <option key={n} value={n}>{n}</option>)}</select>
+        <span>{num(from)}–{num(to)} of {num(total)}</span>
+        <button className="btn btn-ghost btn-sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Prev</button>
+        <button className="btn btn-ghost btn-sm" disabled={page >= last} onClick={() => setPage((p) => p + 1)}>Next</button></div>
       <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>Counts are live — as retries recover no-email leads, Verified climbs here automatically.</div>
+      </>) : null}
     </div>
   );
 }
@@ -165,6 +185,8 @@ export default function Sources() {
   const [listRows, setListRows] = useState({ rows: [], count: 0 });
   const [listQ, setListQ] = useState("");
   const [listSize, setListSize] = useState(100);
+  const [inflOpen, setInflOpen] = useState(false);
+  const [hubsOpen, setHubsOpen] = useState(false);
   const [inPost, setInPost] = useState("");
   const [inCamp, setInCamp] = useState(""); // "" = auto-route by the post's topic
   const [kwIn, setKwIn] = useState("");        // the keyword you type
@@ -386,7 +408,7 @@ export default function Sources() {
         <div style={{ marginTop: 10 }}><ScrapeBox s={scrape} onPause={pauseScrape} onResume={resumeScrape} /></div>
       </div>
 
-      <ScrapedPosts posts={posts} onResume={resumeScrape} busy={!!scrape?.running} />
+      <ScrapedPosts onResume={resumeScrape} busy={!!scrape?.running} />
       <JobBox kind="sources" s={jobs.sources} />
 
       <div className="chartbox" style={{ marginBottom: "var(--s3)" }}>
@@ -413,15 +435,19 @@ export default function Sources() {
       </div>
 
       <div className="grid" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: "var(--s3)", alignItems: "start" }}>
-        <div className="chartbox" style={{ minWidth: 0, overflow: "hidden" }}><h4>Influencers</h4>
+        <div className="chartbox" style={{ minWidth: 0, overflow: "hidden" }}>
+          <div className="toolbar"><h4 style={{ margin: 0 }}>Influencers <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>({infl.length})</span></h4><div className="grow" />
+            <button className="btn btn-ghost btn-sm" onClick={() => setInflOpen((v) => !v)}>{inflOpen ? "Hide" : "Expand"}</button></div>
           <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><input className="search" placeholder="LinkedIn profile URL or handle" style={{ flex: 1, minWidth: 0 }} value={inInfl} onChange={(e) => setInInfl(e.target.value)} />
             <button className="btn btn-sm" onClick={() => addSrc("influencer", inInfl, () => setInInfl(""))}><Icon name="plus" />Add</button></div>
-          <SrcTable rows={infl} cols={["Name", "Profile", "Posts", "PND cr", "Last run"]} />
+          {inflOpen ? <SrcTable rows={infl} cols={["Name", "Profile", "Posts", "PND cr", "Last run"]} /> : null}
         </div>
-        <div className="chartbox" style={{ minWidth: 0, overflow: "hidden" }}><h4>Hubs</h4>
+        <div className="chartbox" style={{ minWidth: 0, overflow: "hidden" }}>
+          <div className="toolbar"><h4 style={{ margin: 0 }}>Hubs <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>({hubs.length})</span></h4><div className="grow" />
+            <button className="btn btn-ghost btn-sm" onClick={() => setHubsOpen((v) => !v)}>{hubsOpen ? "Hide" : "Expand"}</button></div>
           <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><input className="search" placeholder="linkedin.com/top-content/... URL" style={{ flex: 1, minWidth: 0 }} value={inHub} onChange={(e) => setInHub(e.target.value)} />
             <button className="btn btn-sm" onClick={() => addSrc("hub", inHub, () => setInHub(""))}><Icon name="plus" />Add</button></div>
-          <SrcTable rows={hubs} cols={["Hub", "URL", "Posts", "PND cr", "Last run"]} />
+          {hubsOpen ? <SrcTable rows={hubs} cols={["Hub", "URL", "Posts", "PND cr", "Last run"]} /> : null}
         </div>
       </div>
     </>
