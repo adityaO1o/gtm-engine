@@ -22,7 +22,7 @@ import { runKeywordSweep, keywordSweepStatus, pauseKeywordSweep, runManualKeywor
 import { autoStatus, setAutoEnabled, rotateNow } from "../pipeline/autoScrape.js";
 import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
-import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor } from "../services/campaigns.js";
+import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
 import { upsertLeads, addLeadsToCampaign, addToDnc, assignEmailCampaign } from "../services/sendkit.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
@@ -341,11 +341,12 @@ apiRouter.post("/leads/decision", async (req, res) => {
   await upsertLeads([...byEmail.values()]);
 
   const perCampaign = new Map();
+  const emailToCid = new Map();
   for (const d of keep) {
-    const desired = sendkitIdsFor(d.campaigns)[0];
-    if (!desired) continue;
+    const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
     const e = d.email.trim().toLowerCase();
     const cid = await assignEmailCampaign(e, desired); // global email→campaign lock
+    emailToCid.set(e, cid);
     if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
     perCampaign.get(cid).add(e);
   }
@@ -359,7 +360,7 @@ apiRouter.post("/leads/decision", async (req, res) => {
       $set: {
         email_status: "verified", email_low_confidence: false, needs_email: false, unverified: false,
         manually_approved: true, approved_at: now, verified_by: "manual",
-        tags: tagsForDoc(d), sendkit_campaigns: sendkitIdsFor(d.campaigns), updated_at: now,
+        tags: tagsForDoc(d), sendkit_campaigns: emailToCid.get(d.email.trim().toLowerCase()) ? [emailToCid.get(d.email.trim().toLowerCase())] : [], updated_at: now,
       },
     });
   }

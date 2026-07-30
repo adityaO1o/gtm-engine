@@ -93,6 +93,14 @@ export const sendkitIdsFor = (campaigns = []) => {
   return id ? [id] : [];
 };
 
+// GO-FORWARD INTAKE — every NEW lead is enrolled into ONE campaign: "Cold Email Keyword Engagers 2.0".
+// The old topic campaigns (Data Tool / GTM / Cold Email …) and their multi-campaign leads now live in
+// "Cold email engagers 1.0" (contacted separately, later). So all push sites route intake here instead
+// of per-topic. The email→campaign uniqueness lock still applies: a NEW email locks to 2.0; an email
+// already locked to an old topic campaign stays there (won't be re-enrolled). Env-overridable so the
+// intake target can be repointed without a code change.
+export const INTAKE_SENDKIT_ID = process.env.INTAKE_SENDKIT_ID || "6a68b7146d040c2dfc1cae31";
+
 export const campaignLabel = (name) =>
   (campaignByKey(name)?.label) || (name || "").replace(/\s*(Keyword )?Engagers - InboxKit$/, "").replace(/ - InboxKit$/, "").trim();
 

@@ -15,7 +15,7 @@ import { leads, bouncebanRuns } from "../db/mongo.js";
 import { bouncebanVerify } from "../services/bounceban.js";
 import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails, isBlockedBy, campaignMembers, assignEmailCampaign } from "../services/sendkit.js";
 import { reconcileDnc } from "./dncSync.js";
-import { sendkitIdsFor, CAMPAIGNS } from "../services/campaigns.js";
+import { sendkitIdsFor, CAMPAIGNS, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
 import { log } from "../lib/logger.js";
 
 let running = false;
@@ -73,7 +73,7 @@ async function auditOne(d, dnc) {
           await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { bb_push_failed: true } });
         } else {
           const landed = [];
-          const desired = sendkitIdsFor(d.campaigns)[0];
+          const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
           if (desired) { const cid = await assignEmailCampaign(d.email, desired); if (await addToCampaign(cid, d.email)) landed.push(cid); }
           if (landed.length) await leads().updateOne({ linkedin_url: d.linkedin_url }, { $addToSet: { sendkit_campaigns: { $each: landed } } });
           await leads().updateOne({ linkedin_url: d.linkedin_url }, { $unset: { bb_push_failed: "" } });
@@ -200,7 +200,7 @@ export async function runBouncebanRepair() {
     for (const d of docs) {
       const e = String(d.email).trim().toLowerCase();
       if (isBlocked(e)) continue;
-      const desired = sendkitIdsFor(d.campaigns)[0];
+      const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
       if (!desired) continue;
       const cid = await assignEmailCampaign(e, desired); // global email→campaign lock
       if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());

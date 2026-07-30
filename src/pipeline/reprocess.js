@@ -20,7 +20,7 @@ import { companyDomainGuarded } from "../services/clearbit.js";
 import { upsertLead, addToCampaign, assignEmailCampaign } from "../services/sendkit.js";
 import { bumpUsage } from "../services/usage.js";
 import { meterFlush } from "../services/apiMeter.js";
-import { CAMPAIGN_ID, isCompetitor, sendkitIdsFor } from "../services/campaigns.js";
+import { CAMPAIGN_ID, isCompetitor, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
 import { isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { isUrn } from "../services/resolve.js";
 import { log } from "../lib/logger.js";
@@ -186,7 +186,7 @@ async function pushRecovered(d, email, domain, vr) {
   const [first, ...rest] = (d.name || "").split(" ");
   await upsertLead({ email, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags });
   const landed = [];
-  const desired = sendkitIdsFor(d.campaigns)[0];
+  const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
   if (desired) { const cid = await assignEmailCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
   await leads().updateOne({ linkedin_url: d.linkedin_url }, {
     $set: {
