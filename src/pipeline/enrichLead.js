@@ -18,7 +18,7 @@ import { bouncebanVerify } from "../services/bounceban.js";
 import { meter } from "../services/apiMeter.js";
 import { findOurLead, upsertLead, addToCampaign, addToDnc, assignEmailCampaign } from "../services/sendkit.js";
 import { scoreFromHistory } from "../services/score.js";
-import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
+import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor, desiredCampaignId } from "../services/campaigns.js";
 import { isCompanyPage, isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { bumpUsage } from "../services/usage.js";
 import { config } from "../config.js";
@@ -263,7 +263,7 @@ export async function enrichLead(input) {
       const landed = [];
       // Route the first-campaign choice through the global email→campaign lock so the same email
       // (even from a different profile) never lands in a second campaign.
-      const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
+      const desired = desiredCampaignId(campaign); // manual 1.0/2.0 pick wins, else default 2.0
       if (desired) { const cid = await assignEmailCampaign(known.email, desired); if (await addToCampaign(cid, known.email)) landed.push(cid); }
       // ADD to the membership record, never overwrite: a transient push failure leaves `landed` empty
       // and a $set would wipe a membership SendKit still holds (breaks the DNC safety net).
@@ -480,7 +480,7 @@ export async function enrichLead(input) {
   // from more than one campaign, and the dashboard counts them as verified in each.
   const doc = await leads().findOne({ linkedin_url: key });
   const landed = [];
-  const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
+  const desired = desiredCampaignId(campaign); // manual 1.0/2.0 pick wins, else default 2.0
   if (desired) { const cid = await assignEmailCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
   // ADD to the membership record, never overwrite: a transient push failure leaves `landed` empty
   // and a $set would wipe a membership SendKit still holds (breaks the DNC safety net).

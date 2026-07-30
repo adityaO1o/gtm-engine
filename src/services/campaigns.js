@@ -21,6 +21,11 @@ export const CAMPAIGNS = [
   // now route by topic instead (see routeSourceEngager), so these no longer receive new leads.
   { key: "Influencer Engagers - InboxKit",                label: "Influencers",     category: "cold-email",       sendkitId: "6a53bb3d757679d541224126", keywords: [], source: "influencer" },
   { key: "LinkedIn Hub Engagers - InboxKit",              label: "LinkedIn Hubs",   category: "cold-email",       sendkitId: "6a53bb3e757679d54122419e", keywords: [], source: "hub" },
+  // GO-FORWARD manual send targets — the ONLY two campaigns the dashboard offers for manual routing.
+  // 2.0 = all new leads (also the default auto intake); 1.0 = the old multi-campaign leads.
+  // keywords:[] so the keyword sweep never auto-targets them; manualTarget flags them for the dropdown.
+  { key: "Cold Email Keyword Engagers 2.0", label: "Cold Email 2.0 (new leads)", category: "cold-email", sendkitId: "6a68b7146d040c2dfc1cae31", keywords: [], manualTarget: true },
+  { key: "Cold email engagers 1.0",         label: "Cold Email 1.0 (old leads)", category: "cold-email", sendkitId: "6a6b2fac6d040c2dfc577e52", keywords: [], manualTarget: true },
 ];
 
 // Route a SOURCE engager (influencer / hub / CSV) to the campaign whose EMAIL matches what the
@@ -100,6 +105,14 @@ export const sendkitIdsFor = (campaigns = []) => {
 // already locked to an old topic campaign stays there (won't be re-enrolled). Env-overridable so the
 // intake target can be repointed without a code change.
 export const INTAKE_SENDKIT_ID = process.env.INTAKE_SENDKIT_ID || "6a68b7146d040c2dfc1cae31";
+
+// The SendKit campaign a push should target: a MANUAL pick of 1.0/2.0 wins (its own id); anything
+// else — the keyword sweep's topic campaign, an auto rotation/hub route, or an empty key — defaults
+// to the go-forward intake (2.0). This is how manual routing to 1.0 overrides the 2.0 default.
+export const desiredCampaignId = (campaignKey) => {
+  const c = campaignByKey(campaignKey);
+  return (c && c.manualTarget && c.sendkitId) ? c.sendkitId : INTAKE_SENDKIT_ID;
+};
 
 export const campaignLabel = (name) =>
   (campaignByKey(name)?.label) || (name || "").replace(/\s*(Keyword )?Engagers - InboxKit$/, "").replace(/ - InboxKit$/, "").trim();

@@ -172,7 +172,8 @@ apiRouter.get("/pnd/daily", async (req, res) => {
 // with no leads yet is missing from it entirely — which made it impossible to route a manual
 // scrape INTO an empty campaign. This is the list the routing dropdowns use.
 apiRouter.get("/campaigns/list", (_req, res) =>
-  res.json({ campaigns: CAMPAIGNS.map((c) => ({ key: c.key, label: c.label, category: c.category })) }));
+  // Only the two go-forward send targets (1.0 / 2.0) — the topic campaigns no longer receive new leads.
+  res.json({ campaigns: CAMPAIGNS.filter((c) => c.manualTarget).map((c) => ({ key: c.key, label: c.label, category: c.category })) }));
 
 // GET /api/leads/ids — every linkedin_url matching the CURRENT filter, so "select all" can mean
 // all 800 results rather than the 100 on screen. Ids only (no documents), so even a large result
