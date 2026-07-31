@@ -24,6 +24,7 @@ import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
 import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign, listCampaigns } from "../services/sendkit.js";
+import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revokeMcpKey, recentAudit as recentMcpAudit } from "../services/mcpKeys.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -189,6 +190,13 @@ apiRouter.get("/sendkit/campaigns", async (_req, res) => {
   try { res.json({ campaigns: await listCampaigns() }); }
   catch (e) { res.status(502).json({ error: "sendkit unavailable", detail: e.message }); }
 });
+
+// ── Hosted-MCP key management (behind the dashboard basic-auth). Issue a key per teammate, list
+// usage (incl. last IP), and revoke. The raw key is returned ONCE on creation and never again. ──
+apiRouter.post("/mcp/keys", async (req, res) => res.json(await createMcpKey(S(req.body?.label))));
+apiRouter.get("/mcp/keys", async (_req, res) => res.json({ keys: await listMcpKeys() }));
+apiRouter.post("/mcp/keys/:id/revoke", async (req, res) => res.json(await revokeMcpKey(req.params.id)));
+apiRouter.get("/mcp/audit", async (req, res) => res.json({ audit: await recentMcpAudit(parseInt(req.query.limit || "100", 10)) }));
 
 // GET /api/leads/ids — every linkedin_url matching the CURRENT filter, so "select all" can mean
 // all 800 results rather than the 100 on screen. Ids only (no documents), so even a large result

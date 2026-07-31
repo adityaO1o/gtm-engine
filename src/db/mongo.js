@@ -187,3 +187,5 @@ export const companyDomains = () => db.collection("company_domains");   // _id: 
 export const profileCache = () => db.collection("profile_cache");        // _id: profile url/urn
 export const bouncebanRuns = () => db.collection("bounceban_runs");      // audit run history
 export const verifyCache = () => db.collection("bounceban_cache");       // email -> {v: verdict, at}
+export const mcpKeys = () => db.collection("mcp_keys");                   // remote-MCP access keys
+export const mcpAudit = () => db.collection("mcp_audit");                 // per-request IP/tool log

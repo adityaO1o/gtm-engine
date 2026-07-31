@@ -8,6 +8,7 @@ import { config } from "./config.js";
 import { connect } from "./db/mongo.js";
 import { enrichRouter } from "./routes/enrich.js";
 import { apiRouter } from "./routes/api.js";
+import { mcpRouter } from "./routes/mcp.js";
 import { internalRouter } from "./routes/internal.js";
 import { basicAuth, internalAuth } from "./lib/auth.js";
 import { poolSize } from "./lib/proxies.js";
@@ -75,6 +76,10 @@ app.get("/health", (_req, res) => res.json({ ok: true, sha: process.env.GIT_SHA 
 
 // Trigify ingest — token-guarded (inside the router) + rate-limited.
 app.use("/", enrichLimiter, enrichRouter);
+
+// Hosted MCP — public URL, guarded by per-teammate secret keys (checked INSIDE the router, not by
+// basic-auth), so it is mounted BEFORE /api. No IP allowlist: teammates connect from anywhere.
+app.use("/mcp", mcpRouter);
 
 // /internal — the personal internal-tool tool. Its OWN login (internalAuth), mounted BEFORE the main /api and
 // the catch-all so the dashboard's basic-auth never applies to it and vice-versa.
