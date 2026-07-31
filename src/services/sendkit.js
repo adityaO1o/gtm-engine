@@ -188,6 +188,26 @@ export async function campaignLeadCount(campaignId) {
   } catch (e) { log.warn("sendkit campaign count threw", { campaignId, err: e.message }); return null; }
 }
 
+// Live list of EVERY campaign in the SendKit workspace — so a campaign created directly in SendKit
+// (not in our hardcoded CAMPAIGNS config) is still visible to the MCP / dashboard. Read-only.
+export async function listCampaigns() {
+  const out = [];
+  let cursor = "";
+  for (let i = 0; i < 30; i++) {
+    const r = await withRetry(() => axios.get(`${base}/v1/campaigns`, {
+      headers: h(), params: { limit: 100, ...(cursor ? { cursor } : {}) },
+      timeout: 25000, validateStatus: () => true,
+    }));
+    if (r.status >= 300) { log.warn("sendkit list campaigns failed", { status: r.status, got: out.length }); break; }
+    for (const c of (r.data?.data || [])) {
+      out.push({ id: c._id, name: c.name, status: c.status, leads: c.leadsCount ?? c.totalLeads ?? null });
+    }
+    cursor = r.data?.pagination?.nextCursor || "";
+    if (!cursor) break;
+  }
+  return out;
+}
+
 // Every member of a campaign, as SendKit records them: address, send status, and WHEN they were
 // added. addedAt is the only honest source for "was this lead in the campaign before the audit" —
 // our own dnc/verified flags were inflated by pushes that silently failed, so they can't answer it.

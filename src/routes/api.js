@@ -23,7 +23,7 @@ import { autoStatus, setAutoEnabled, rotateNow } from "../pipeline/autoScrape.js
 import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
-import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign, listCampaigns } from "../services/sendkit.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -182,6 +182,13 @@ apiRouter.get("/pnd/daily", async (req, res) => {
 apiRouter.get("/campaigns/list", (_req, res) =>
   // Only the two go-forward send targets (1.0 / 2.0) — the topic campaigns no longer receive new leads.
   res.json({ campaigns: CAMPAIGNS.filter((c) => c.manualTarget).map((c) => ({ key: c.key, label: c.label, category: c.category })) }));
+
+// GET /api/sendkit/campaigns — LIVE list of every campaign in the SendKit workspace, including any
+// created directly in SendKit (not in our hardcoded config). Read-only; used by the MCP server.
+apiRouter.get("/sendkit/campaigns", async (_req, res) => {
+  try { res.json({ campaigns: await listCampaigns() }); }
+  catch (e) { res.status(502).json({ error: "sendkit unavailable", detail: e.message }); }
+});
 
 // GET /api/leads/ids — every linkedin_url matching the CURRENT filter, so "select all" can mean
 // all 800 results rather than the 100 on screen. Ids only (no documents), so even a large result
