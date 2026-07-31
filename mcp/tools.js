@@ -14,18 +14,21 @@ export function registerTools(server, api) {
     });
 
   // ── READ / INSIGHTS ──
-  tool("gtm_get_stats", "Overall lead totals (total, verified, no-email, recovered, review, competitor). Optional bucket '1.0' (old) or '2.0' (new).",
+  tool("gtm_get_stats", "Whole-pipeline totals across ALL leads the engine has ever scraped (Mongo): total, verified, no-email, recovered, review, competitor. This is NOT per-campaign — for the 1.0/2.0 campaign numbers use gtm_get_campaigns. Optional bucket '1.0' (old) or '2.0' (new).",
     { bucket: z.enum(["1.0", "2.0"]).optional() },
     ({ bucket }) => api("GET", "/api/stats", { query: { bucket } }));
 
-  tool("gtm_get_campaigns", "Per-topic campaign breakdown (leads, verified, no-email, recovered per keyword topic). Optional bucket '1.0'/'2.0'.",
-    { bucket: z.enum(["1.0", "2.0"]).optional() },
+  tool("gtm_get_campaigns", "The TWO real campaigns — Cold Email 1.0 (old base) and 2.0 (new intake) — with correct numbers. `sendkit` is the source of truth (inCampaign, sent, replied, bounced from SendKit); `have` is what the engine collected for that bucket (verified addresses, no-email, recovered). The old topic names (Smartlead/GTM/…) are KEYWORDS now, not campaigns — for those use gtm_get_keyword_breakdown.",
+    {}, () => api("GET", "/api/campaigns/summary"));
+
+  tool("gtm_get_keyword_breakdown", "Per-KEYWORD breakdown of leads within a campaign bucket. Smartlead, GTM, Cold Email, Instantly, etc. are KEYWORD TOPICS the scraped posts matched — NOT campaigns. Counts are Mongo lead counts per keyword. Requires bucket '2.0' (new) or '1.0' (old).",
+    { bucket: z.enum(["1.0", "2.0"]) },
     ({ bucket }) => api("GET", "/api/campaigns", { query: { bucket } }));
 
   tool("gtm_list_target_campaigns", "The two go-forward SEND targets leads can be routed into (Cold Email 1.0 / 2.0), with their routing keys.",
     {}, () => api("GET", "/api/campaigns/list"));
 
-  tool("gtm_list_sendkit_campaigns", "LIVE list of every campaign in the SendKit workspace — including ones created directly in SendKit that aren't in the engine's config. Use this to discover new campaigns.",
+  tool("gtm_list_sendkit_campaigns", "LIVE list of every campaign object in the SendKit workspace. NOTE: most are ARCHIVED legacy topic campaigns that no longer receive leads — the only live go-forward campaigns are Cold Email 2.0 (active) and 1.0. Use this to discover a newly-created SendKit campaign; use gtm_get_campaigns for the real 1.0/2.0 numbers.",
     {}, () => api("GET", "/api/sendkit/campaigns"));
 
   tool("gtm_search_leads", "Search/list leads. Filters: query (name/email/company), email_status (verified|no-email|unverified|review|competitor), bucket (1.0|2.0). sort (score|recent). Paginated.",

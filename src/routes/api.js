@@ -23,7 +23,7 @@ import { autoStatus, setAutoEnabled, rotateNow } from "../pipeline/autoScrape.js
 import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
-import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign, listCampaigns } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign, listCampaigns, campaignSummary } from "../services/sendkit.js";
 import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revokeMcpKey, recentAudit as recentMcpAudit } from "../services/mcpKeys.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
@@ -189,6 +189,25 @@ apiRouter.get("/campaigns/list", (_req, res) =>
 apiRouter.get("/sendkit/campaigns", async (_req, res) => {
   try { res.json({ campaigns: await listCampaigns() }); }
   catch (e) { res.status(502).json({ error: "sendkit unavailable", detail: e.message }); }
+});
+
+// GET /api/campaigns/summary — the CORRECT campaign view: the two real go-forward campaigns (1.0 / 2.0).
+// `sendkit` = the source of truth (what's actually in the campaign + sent/replied/bounced). `have` =
+// what the engine has collected for that bucket in Mongo (verified addresses, no-email, recovered).
+// The old topic names (Smartlead, GTM, …) are KEYWORDS now, not campaigns — see /api/campaigns.
+apiRouter.get("/campaigns/summary", async (_req, res) => {
+  const targets = CAMPAIGNS.filter((c) => c.manualTarget && c.sendkitId);
+  const out = await Promise.all(targets.map(async (c) => {
+    const bucket = /2\.0/.test(c.key) ? "2.0" : /1\.0/.test(c.key) ? "1.0" : "";
+    const [sk, have] = await Promise.all([campaignSummary(c.sendkitId), countBlock("", bucket)]);
+    return {
+      key: c.key, label: c.label, bucket, sendkitId: c.sendkitId,
+      status: sk?.status || "unknown",
+      sendkit: sk ? { inCampaign: sk.inCampaign, sent: sk.sent, replied: sk.replied, bounced: sk.bounced, active: sk.active, pending: sk.pending } : null,
+      have: { total: have.total, verified: have.verifiedEmails, verifiedProfiles: have.verified, noEmail: have.noEmail, unverified: have.unverified, recovered: have.recovered },
+    };
+  }));
+  res.json({ campaigns: out });
 });
 
 // ── Hosted-MCP key management (behind the dashboard basic-auth). Issue a key per teammate, list

@@ -208,6 +208,24 @@ export async function listCampaigns() {
   return out;
 }
 
+// One campaign's REAL numbers from SendKit (source of truth for "what's actually in the campaign and
+// sent"): membership + send/reply/bounce stats. Used by the 1.0/2.0 summary the MCP + dashboard show.
+export async function campaignSummary(campaignId) {
+  if (!campaignId) return null;
+  try {
+    const r = await withRetry(() => axios.get(`${base}/v1/campaigns/${campaignId}`, { headers: h(), timeout: 20000, validateStatus: () => true }));
+    if (r.status >= 300) { log.warn("sendkit campaign summary failed", { campaignId, status: r.status }); return null; }
+    const c = r.data?.data || r.data || {};
+    const s = c.stats || {};
+    return {
+      id: campaignId, name: c.name, status: c.status,
+      inCampaign: c.totalLeads ?? c.leadCounts?.total ?? s.totalLeads ?? null,
+      sent: s.sent ?? s.contacted ?? null, replied: s.replied ?? null, bounced: s.bounced ?? null,
+      active: s.active ?? null, pending: s.pending ?? null,
+    };
+  } catch (e) { log.warn("sendkit campaign summary threw", { campaignId, err: e.message }); return null; }
+}
+
 // Every member of a campaign, as SendKit records them: address, send status, and WHEN they were
 // added. addedAt is the only honest source for "was this lead in the campaign before the audit" —
 // our own dnc/verified flags were inflated by pushes that silently failed, so they can't answer it.
