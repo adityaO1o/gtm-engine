@@ -177,32 +177,50 @@ function CampaignDetail({ campaign, bucket, label, onBack }) {
 
 // Top level: pick a bucket (1.0 old / 2.0 new). Each drills into the same topic-campaign table,
 // scoped to that bucket; a topic then drills into its leads (bucket + topic).
+// Two numbers, deliberately shown side by side so they never confuse:
+//  • "In SendKit" = the campaign's ACTUAL membership (the real sending list, source of truth).
+//  • "Verified (new-era)" = verified emails whose lead was FIRST SEEN in this date window.
+// They differ because 2.0 also holds recovered leads first-seen before 27 Jul + any manual SendKit
+// adds — so SendKit membership can exceed the date-bucket verified count. Tooltips explain each.
 function BucketPicker({ onPick }) {
-  const [counts, setCounts] = useState({});
-  useEffect(() => {
-    Promise.all([j("/api/stats?bucket=2.0"), j("/api/stats?bucket=1.0")])
-      .then(([b2, b1]) => setCounts({ "2.0": b2, "1.0": b1 })).catch(() => {});
-  }, []);
+  const [sum, setSum] = useState(null);
+  useEffect(() => { j("/api/campaigns/summary").then((d) => setSum(d.campaigns || [])).catch(() => {}); }, []);
+  const byBucket = Object.fromEntries((sum || []).map((c) => [c.bucket, c]));
+  const Stat = ({ k, v, title, good, txt }) => (
+    <div className="card pri" title={title}><div className="kh">{k}</div>
+      <div className="v" style={{ ...(good ? { color: "var(--good)" } : {}), ...(txt ? { fontSize: 14 } : {}) }}>{txt != null ? txt : v != null ? num(v) : "—"}</div></div>
+  );
   const Card = ({ b, title, sub }) => {
-    const c = counts[b] || {};
+    const c = byBucket[b] || {}; const sk = c.sendkit || {}; const have = c.have || {};
     return (
       <div className="chartbox click" style={{ cursor: "pointer" }} onClick={() => onPick(b)}>
         <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><h4 style={{ margin: 0 }}><Icon name="mega" />{title}</h4>
+          {c.status ? <span className={c.status === "active" ? "tag-harv" : "tag-man"} style={{ marginLeft: 8 }}>{c.status}</span> : null}
           <div className="grow" /><Icon name="external" /></div>
         <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>{sub}</div>
         <div className="grid g-cred">
-          <div className="card pri"><div className="kh">Leads</div><div className="v">{c.total != null ? num(c.total) : "—"}</div></div>
-          <div className="card pri"><div className="kh">Verified</div><div className="v">{c.verified != null ? num(c.verified) : "—"}</div></div>
-          <div className="card pri"><div className="kh">No-email</div><div className="v">{c.noEmail != null ? num(c.noEmail) : "—"}</div></div>
+          <Stat k="In SendKit" v={sk.inCampaign} title="Actual members in the SendKit campaign — the real sending list (source of truth). Includes recovered leads first-seen before 27 Jul and any manual adds, so it can exceed 'Verified (new-era)'." />
+          {b === "2.0"
+            ? <Stat k="Sent" v={sk.sent} good title="Emails SendKit has actually sent so far." />
+            : <Stat k="Sending" txt="draft" title="This campaign is a draft — not sending yet." />}
+          <Stat k="Replied" v={sk.replied} good title="Replies recorded in SendKit." />
+        </div>
+        <div className="grid g-cred" style={{ marginTop: 8 }}>
+          <Stat k="Verified (new-era)" v={have.verified} title="Verified emails the engine collected whose lead was FIRST SEEN in this era (2.0 = 27 Jul onwards, 1.0 = before). A DATE bucket, NOT SendKit membership — which is why it differs from 'In SendKit'." />
+          <Stat k="No-email" v={have.noEmail} title="Leads first-seen in this era we couldn't find an email for." />
+          <Stat k="Recovered" v={have.recovered} title="No-email leads later rescued by a retry." />
         </div>
       </div>
     );
   };
   return (
-    <div className="grid" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: "var(--s3)", alignItems: "start" }}>
-      <Card b="2.0" title="Cold Email 2.0 — new leads" sub="Everything scraped from 27 Jul onwards — the current intake. Click to see it broken down by keyword topic." />
-      <Card b="1.0" title="Cold Email 1.0 — old leads" sub="The earlier multi-campaign base (contacted separately). Click to see it by keyword topic." />
-    </div>
+    <>
+      <div className="note"><Icon name="inbox" /><div><b>In SendKit</b> = real members in the campaign (what actually sends). <b>Verified (new-era)</b> = verified emails first-seen in this date window. They differ because 2.0 also holds recovered leads first-seen before 27 Jul + manual adds — hover any number for its exact meaning.</div></div>
+      <div className="grid" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: "var(--s3)", alignItems: "start" }}>
+        <Card b="2.0" title="Cold Email 2.0 — new leads" sub="The current intake — everything routed to 2.0. Click to see it by keyword topic." />
+        <Card b="1.0" title="Cold Email 1.0 — old leads" sub="The earlier base (contacted separately). Click to see it by keyword topic." />
+      </div>
+    </>
   );
 }
 

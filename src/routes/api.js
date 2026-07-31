@@ -195,7 +195,7 @@ apiRouter.get("/sendkit/campaigns", async (_req, res) => {
 // `sendkit` = the source of truth (what's actually in the campaign + sent/replied/bounced). `have` =
 // what the engine has collected for that bucket in Mongo (verified addresses, no-email, recovered).
 // The old topic names (Smartlead, GTM, …) are KEYWORDS now, not campaigns — see /api/campaigns.
-apiRouter.get("/campaigns/summary", async (_req, res) => {
+apiRouter.get("/campaigns/summary", ttlCache(20), async (_req, res) => {
   const targets = CAMPAIGNS.filter((c) => c.manualTarget && c.sendkitId);
   const out = await Promise.all(targets.map(async (c) => {
     const bucket = /2\.0/.test(c.key) ? "2.0" : /1\.0/.test(c.key) ? "1.0" : "";
