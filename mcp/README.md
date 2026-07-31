@@ -1,9 +1,48 @@
 # GTM Engine MCP server
 
-Exposes the InboxKit GTM lead engine to any MCP client (Claude Desktop, Claude Code, …) as tools.
+Exposes the InboxKit GTM lead engine to any MCP client (Claude Desktop, Claude Code, …) as 27 tools.
 It's a thin, typed wrapper over the platform's existing `/api/*` endpoints — an AI can scrape posts,
 add influencers, search/export leads, route to campaigns, recover emails, and read insights: the
 same operations the dashboard performs.
+
+There are two ways to run it: **hosted** (recommended for teammates — a URL + a personal key, nothing
+to install) and **local** (stdio, runs on your own machine).
+
+---
+
+## Hosted (recommended) — a URL + a personal key
+
+The engine already serves the MCP at **`https://<host>/mcp`**. Each person connects with their own
+secret key; every request is logged with its source IP + the tool it called, and keys are revocable.
+
+### 1. Issue a key (admin — behind the dashboard login)
+
+```bash
+curl -u "$DASH_USER:$DASH_PASS" -X POST https://<host>/api/mcp/keys \
+  -H "Content-Type: application/json" -d '{"label":"alice"}'
+# → { "id": "...", "key": "sk_gtm_xxxxxxxx...", "label": "alice" }   ← the key is shown ONCE
+```
+
+Manage keys: `GET /api/mcp/keys` (list + last IP + request count), `POST /api/mcp/keys/:id/revoke`,
+`GET /api/mcp/audit` (recent requests with IP + tool).
+
+### 2. Teammate connects (no install)
+
+**Claude Code:**
+```bash
+claude mcp add gtm-engine --transport http "https://<host>/mcp/sk_gtm_xxxxxxxx..."
+# (or keep the key in a header instead of the URL:)
+claude mcp add gtm-engine --transport http "https://<host>/mcp" --header "Authorization: Bearer sk_gtm_xxxx..."
+```
+
+**Any MCP client that takes a URL:** use `https://<host>/mcp/<key>`.
+
+The key can travel in the **URL path** (`/mcp/<key>`), an **`Authorization: Bearer <key>`** header, or
+a **`?key=`** query param — whichever your client supports.
+
+---
+
+## Local (stdio) — runs on your machine
 
 ## Setup
 
