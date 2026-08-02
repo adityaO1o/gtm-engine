@@ -43,8 +43,6 @@ services:
       PROXIES: ${PROXIES}
       DASH_USER: ${DASH_USER}
       DASH_PASS: ${DASH_PASS}
-      internal_USER: ${internal_USER}
-      internal_PASS: ${internal_PASS}
       PROXY_TIMEOUT_MS: 20000
       SCRAPE_RETRIES: 4
       # Auto engine + caches — all optional (config.js has defaults); set in Dokploy to tune.

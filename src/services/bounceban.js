@@ -25,7 +25,7 @@ export async function bouncebanVerify(email) {
   const key = String(email).trim().toLowerCase();
 
   // Reuse a recent verdict instead of re-buying it. BounceBan is our paid verifier and the SAME
-  // address is checked by the live path, reprocess, the audit and internal-tool — a lead stuck
+  // address is checked by the live path, reprocess and the audit — a lead stuck
   // "unverified" gets re-verified on every retry pass. Only real verdicts are cached; a null
   // (API down / out of credits) is never stored, so those retry live next time.
   if (config.bouncebanCacheMs > 0) {

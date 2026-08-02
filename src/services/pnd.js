@@ -117,56 +117,6 @@ export async function pndReactionPage(postUrl, page, reactionType) {
   return { engagers, count: items.length, total: typeof d?.data?.total === "number" ? d.data.total : null };
 }
 
-// ── internal-tool (the /internal tool) ───────────────────────────────────────────────
-// Same professional-network-data plan as everything above — verified the engine's key can hit
-// these. These search LinkedIn's structured job board and post feed; nothing here scrapes engagers,
-// so it's cheap (one search = one credit for ~25 results).
-
-// Structured job listings. salary/datePosted/onsiteRemote are LinkedIn's own server-side filters,
-// so "100k+, pastWeek, remote" is enforced before results ever reach us.
-// Returns { jobs:[{id,title,url,company,location,postAt,postedTimestamp}], total }.
-export async function pndSearchJobs({ keywords, datePosted = "pastWeek", salary = "", onsiteRemote = "", sort = "mostRecent", locationId = "", start = "" } = {}) {
-  const params = { keywords, datePosted, sort };
-  if (salary) params.salary = salary;
-  if (onsiteRemote) params.onsiteRemote = onsiteRemote;
-  if (locationId) params.locationId = locationId;
-  if (start) params.start = String(start);
-  const d = await call("search-jobs", { params });
-  if (!d) return null;
-  meter.inc("pnd_profile_calls");
-  const items = Array.isArray(d.data?.items) ? d.data.items : Array.isArray(d.data) ? d.data : [];
-  const jobs = items.map((j) => ({
-    id: String(j.id || j.jobId || ""),
-    title: j.title || "",
-    url: j.url || j.jobUrl || (j.id ? `https://www.linkedin.com/jobs/view/${j.id}/` : ""),
-    company: j.company?.name || j.companyName || "",
-    companyLogo: j.company?.logo || null,
-    companyUrl: j.company?.url || "",
-    companyUsername: companyUsernameFromUrl(j.company?.url || ""),
-    staffRange: j.company?.staffCountRange && Object.keys(j.company.staffCountRange).length ? j.company.staffCountRange : null,
-    location: j.location || "",
-    postAt: j.postAt || j.postedAt || null,
-    postedTimestamp: j.postedTimestamp || j.postedDateTimestamp || null,
-  })).filter((j) => j.id || j.url);
-  return { jobs, total: d.data?.total ?? jobs.length };
-}
-
-// The recruiter(s)/hiring manager attached to a job — the actual person to reach.
-// Returns [{name, linkedin, title, headline}].
-export async function pndHiringTeam(jobId) {
-  if (!jobId) return [];
-  const d = await call("get-hiring-team", { params: { id: String(jobId) } });
-  if (!d) return [];
-  meter.inc("pnd_profile_calls");
-  const members = Array.isArray(d.data?.items) ? d.data.items : Array.isArray(d.data) ? d.data : (d.data ? [d.data] : []);
-  return members.map((m) => ({
-    name: m.fullName || m.name || [m.firstName, m.lastName].filter(Boolean).join(" "),
-    linkedin: m.profileUrl || m.url || m.linkedinUrl || (m.username ? `https://www.linkedin.com/in/${m.username}` : ""),
-    title: m.title || "",
-    headline: m.headline || m.title || "",
-  })).filter((m) => m.name || m.linkedin);
-}
-
 // Keyword post search — surfaces "we're hiring" posts whose author is a REAL person (founder / HM),
 // often with an email right in the text. Returns [{postUrl, urn, text, author:{name,linkedin,headline}, postedAt}].
 export async function pndSearchPosts({ keyword, datePosted = "past-week", sortBy = "date_posted", page = 1 } = {}) {
@@ -356,9 +306,8 @@ export async function pndCompanyDomain(companyUsername) {
 }
 
 // Full company card — domain AND size — from ONE get-company-details call, cached forever in
-// company_domains. staffCountRange ("51 - 200") and followerCount are how /internal judges whether a
-// startup is big/backed enough to actually pay well: a 1-10-person, 200-follower shop can't; a
-// 51-200 scale-up with 30k followers and a Crunchbase page can.
+// company_domains. The domain is what the email waterfall (pndExactDomain) needs; staffCountRange
+// and followerCount are also stored for any size-based signals.
 export async function pndCompanyDetails(companyUsername) {
   if (!companyUsername) return null;
   const hit = await companyDomains().findOne({ _id: companyUsername }).catch(() => null);
@@ -382,47 +331,6 @@ export async function pndCompanyDetails(companyUsername) {
   };
   await companyDomains().updateOne({ _id: companyUsername }, { $set: rec }, { upsert: true }).catch(() => {});
   return rec;
-}
-
-// Find a named human at a company by job title — used to reach a company's RECRUITER when a job
-// listing exposes no hiring team (which is most of them). Verified live: company=Razorpay,
-// keywordTitle="talent acquisition" returns "Sumit Premi — Head-Talent Acquisition at Razorpay".
-// Note the endpoint drops non-public profiles, so a tiny company can report total>0 with items:null
-// — which is fine, those are the companies least able to pay anyway.
-export async function pndSearchPeople({ company, keywordTitle = "", keywords = "" } = {}) {
-  if (!company) return [];
-  const d = await call("search-people", { params: { company, keywordTitle, keywords, geo: "" } });
-  if (!d?.data) return [];
-  meter.inc("pnd_profile_calls");
-  const items = Array.isArray(d.data.items) ? d.data.items : [];
-  return items.map((p) => ({
-    name: p.fullName || p.name || "",
-    headline: p.headline || p.title || "",
-    linkedin: p.profileURL || p.profileUrl || p.url || (p.username ? `https://www.linkedin.com/in/${p.username}` : ""),
-    username: p.username || null,
-    location: p.location || "",
-  })).filter((p) => p.name && p.linkedin);
-}
-
-// The company's best reachable recruiter, cached FOREVER on the company doc. Several job listings
-// usually share one company, so this is looked up once and reused — and a later run pays nothing.
-const HR_TITLES = ["talent acquisition", "recruiter", "hr"];
-export async function pndCompanyHr(companyName, companyUsername) {
-  if (!companyName) return null;
-  const key = companyUsername || `name:${companyName.toLowerCase()}`;
-  const hit = await companyDomains().findOne({ _id: key }).catch(() => null);
-  if (hit && hit.hr !== undefined) { stats.cacheHits++; meter.inc("pnd_cache_hits"); return hit.hr; }
-  if (paidBlocked()) return null;
-
-  let found = null;
-  for (const title of HR_TITLES) {
-    const people = await pndSearchPeople({ company: companyName, keywordTitle: title });
-    if (people.length) { found = { ...people[0], via: title }; break; }
-  }
-  // Cache the miss too (as null) so a company with no public recruiter isn't re-searched every run.
-  await companyDomains().updateOne({ _id: key },
-    { $set: { _id: key, hr: found, hr_at: new Date() } }, { upsert: true }).catch(() => {});
-  return found;
 }
 
 // Turn a LinkedIn company URL (…/company/finn-app-co/…) into its username.
