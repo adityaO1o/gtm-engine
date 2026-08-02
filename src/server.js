@@ -9,8 +9,7 @@ import { connect } from "./db/mongo.js";
 import { enrichRouter } from "./routes/enrich.js";
 import { apiRouter } from "./routes/api.js";
 import { mcpRouter } from "./routes/mcp.js";
-import { internalRouter } from "./routes/internal.js";
-import { basicAuth, internalAuth } from "./lib/auth.js";
+import { basicAuth } from "./lib/auth.js";
 import { poolSize } from "./lib/proxies.js";
 import { startAutoLoop } from "./pipeline/autoScrape.js";
 import { meterFlush } from "./services/apiMeter.js";
@@ -80,20 +79,6 @@ app.use("/", enrichLimiter, enrichRouter);
 // Hosted MCP — public URL, guarded by per-teammate secret keys (checked INSIDE the router, not by
 // basic-auth), so it is mounted BEFORE /api. No IP allowlist: teammates connect from anywhere.
 app.use("/mcp", mcpRouter);
-
-// /internal — the personal internal-tool tool. Its OWN login (internalAuth), mounted BEFORE the main /api and
-// the catch-all so the dashboard's basic-auth never applies to it and vice-versa.
-//
-// The API lives UNDER the page's own prefix (/internal/api, not /api/internal) on purpose: browsers only
-// send cached basic-auth credentials proactively to paths at or below where auth succeeded. With
-// the API on a different prefix, every poll fired a credential-less request first (401, then a
-// 200 retry) — and the 401s tripped the 25-per-15-min auth limiter within a minute, which is the
-// "too many requests" you saw. Same prefix = creds sent up front = no 401 storm. And this surface
-// is gated by internalAuth + the 150/min apiLimiter, so the strict auth limiter isn't needed here.
-app.use("/internal/api", ipAllow, apiLimiter, internalAuth, internalRouter);
-app.use("/internal", ipAllow, internalAuth, express.static(path.join(publicDir, "internal"), {
-  setHeaders: (res) => res.setHeader("Cache-Control", "no-store"),
-}));
 
 // Dashboard API — IP allowlist + brute-force guard + basic-auth + rate-limit.
 app.use("/api", ipAllow, authLimiter, apiLimiter, basicAuth, apiRouter);

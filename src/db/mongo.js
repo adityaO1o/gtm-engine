@@ -67,11 +67,6 @@ export async function connect() {
   await db.collection("bounceban_cache").createIndex({ email: 1 }, { unique: true });
   await db.collection("bounceban_cache").createIndex({ at: 1 }, { expireAfterSeconds: 30 * 24 * 3600 });
   await db.collection("scraped_posts").createIndex({ postUrl: 1 }, { unique: true });
-  // /internal internal-tool tool — one doc per job/hiring-post, deduped by a stable key.
-  await db.collection("internal_jobs").createIndex({ dedup_key: 1 }, { unique: true });
-  await db.collection("internal_jobs").createIndex({ created_at: -1 });
-  await db.collection("internal_jobs").createIndex({ status: 1 });
-  await db.collection("internal_searches").createIndex({ query: 1 }, { unique: true });
   // Per-campaign switches (currently just paused). Small and rarely written.
   await db.collection("campaign_state").createIndex({ key: 1 }, { unique: true });
   // Durable engager queue for the resumable "Scrape via post" job — scraped engagers are parked
@@ -166,8 +161,6 @@ export const reprocessRuns = () => db.collection("reprocess_runs");
 // computed live from leads.posts_seen, so they stay current as retries recover emails.
 export const scrapedPosts = () => db.collection("scraped_posts");
 export const scrapeEngagers = () => db.collection("scrape_engagers");
-export const internalJobs = () => db.collection("internal_jobs");
-export const internalSearches = () => db.collection("internal_searches");
 export const campaignState = () => db.collection("campaign_state");
 // Auto engine's persisted switch + schedule stamps ({_id:"auto", enabled, sweepLastAt,
 // rotationLastDay}). Persisted so a deploy can't silently pause automation — the exact failure
