@@ -39,14 +39,40 @@ async function appendResult(jobId, domain, verdict) {
 // Batches confirmed (redirect-verified) domains into the blacklist API instead of pushing one at a
 // time — keeps well under its 120 req/min limit even if dozens confirm in the same second — while
 // still polling+streaming results every ~1s so the UI doesn't wait for the whole batch to finish.
+//
+// A domain only ever enters `awaiting` once we KNOW the push actually landed — a push that throws or
+// gets rejected (e.g. bad BLACKLIST_API_KEY/BLACKLIST_WORKSPACE_ID) used to add it to `awaiting`
+// anyway, which meant polling for a domain that was never really pushed: it would never appear in the
+// API's list, verdicts.size would stay 0 forever, and the whole scan hung in "running" indefinitely.
+// Now a failed push is recorded immediately as a result with status "error" instead, and a hard
+// deadline guarantees the loop (and therefore the scan) always terminates even if the blacklist API
+// itself is unreachable or stuck.
 async function pushPollLoop(jobId, queue, isDone) {
   const awaiting = new Map();
+  const deadline = Date.now() + 5 * 60_000;
+
   while (!isDone() || queue.length || awaiting.size) {
+    if (Date.now() > deadline) {
+      log.warn("domainScan push/poll loop hit its hard deadline", { jobId: String(jobId), stillAwaiting: awaiting.size, stillQueued: queue.length });
+      for (const d of [...awaiting.keys(), ...queue.splice(0)]) await appendResult(jobId, d, { status: "error" });
+      break;
+    }
     try {
       if (queue.length) {
         const batch = queue.splice(0, queue.length);
-        await pushDomains(batch);
-        batch.forEach((d) => awaiting.set(d, true));
+        let result = null;
+        try { result = await pushDomains(batch); }
+        catch (e) { log.error("domainScan blacklist push threw", { err: e.message, batchSize: batch.length }); }
+
+        const rejected = !result || ((result.added || 0) === 0 && (result.skipped || 0) === 0 && (result.invalid || []).length === batch.length);
+        if (rejected) {
+          log.error("domainScan: blacklist push failed for the whole batch — check BLACKLIST_API_KEY/BLACKLIST_WORKSPACE_ID", { jobId: String(jobId), batchSize: batch.length });
+          await domainScans().updateOne({ _id: jobId },
+            { $set: { blacklistPushError: "push failed — check BLACKLIST_API_KEY / BLACKLIST_WORKSPACE_ID env vars", updatedAt: new Date() } });
+          for (const d of batch) await appendResult(jobId, d, { status: "error" });
+        } else {
+          batch.forEach((d) => awaiting.set(d, true));
+        }
       }
       if (awaiting.size) {
         const verdicts = await pollUntilChecked([...awaiting.keys()], { intervalMs: 1000, maxWaitMs: 10_000 });
