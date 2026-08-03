@@ -21,5 +21,9 @@ ARG GIT_SHA=unknown
 ENV GIT_SHA=$GIT_SHA
 
 ENV PORT=3001
+# Raised from Node's default of 4: dns.lookup() (used by the domain-prospecting scan's DNS
+# pre-filter, and by every outbound HTTP call) runs on libuv's threadpool, so the default would
+# silently cap DNS concurrency at 4 regardless of the scan's own concurrency settings.
+ENV UV_THREADPOOL_SIZE=128
 EXPOSE 3001
 CMD ["node", "src/server.js"]

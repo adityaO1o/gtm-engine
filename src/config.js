@@ -77,6 +77,21 @@ export const config = {
     base: process.env.SENDKIT_BASE || "https://api.sendkit.ai",
   },
 
+  // The Blacklist Project — InboxKit's own DNSBL checker (used by the domain-prospecting scan:
+  // find live sending-domains that redirect into a seed company's site, then flag which are
+  // already blacklisted so sales can pitch "your infra is broken, use InboxKit instead").
+  blacklistProject: {
+    key: process.env.BLACKLIST_API_KEY || "",
+    base: process.env.BLACKLIST_API_BASE || "http://163.123.236.189:4400",
+    workspaceId: process.env.BLACKLIST_WORKSPACE_ID || "",
+  },
+
+  // Domain-prospecting scan tunables
+  scanDnsConcurrency: parseInt(process.env.SCAN_DNS_CONCURRENCY || "400", 10),
+  scanRedirectConcurrency: parseInt(process.env.SCAN_REDIRECT_CONCURRENCY || "150", 10),
+  scanRedirectTimeoutMs: parseInt(process.env.SCAN_REDIRECT_TIMEOUT_MS || "5000", 10),
+  scanDnsTimeoutMs: parseInt(process.env.SCAN_DNS_TIMEOUT_MS || "3000", 10),
+
   // Proxies: newline list of http://user:pass@host:port  (loaded from PROXIES env or proxies.txt)
   proxiesRaw: process.env.PROXIES || "",
 

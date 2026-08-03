@@ -144,6 +144,11 @@ export async function connect() {
     }
   } catch (e) { log.warn("email_campaign seed failed", { err: e.message }); }
 
+  // Domain-prospecting scan jobs — one doc per seed domain scan, updated incrementally as each
+  // candidate's DNS/redirect/blacklist verdict lands (the dashboard polls this same doc for live results).
+  await db.collection("domain_scans").createIndex({ createdAt: -1 });
+  await db.collection("domain_scans").createIndex({ status: 1 });
+
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
@@ -182,3 +187,4 @@ export const bouncebanRuns = () => db.collection("bounceban_runs");      // audi
 export const verifyCache = () => db.collection("bounceban_cache");       // email -> {v: verdict, at}
 export const mcpKeys = () => db.collection("mcp_keys");                   // remote-MCP access keys
 export const mcpAudit = () => db.collection("mcp_audit");                 // per-request IP/tool log
+export const domainScans = () => db.collection("domain_scans");           // domain-prospecting scan jobs

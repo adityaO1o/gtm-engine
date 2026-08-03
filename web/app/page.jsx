@@ -9,6 +9,7 @@ import Review from "@/components/Review";
 import Competitors from "@/components/Competitors";
 import Campaigns from "@/components/Campaigns";
 import Sources from "@/components/Sources";
+import DomainScan from "@/components/DomainScan";
 import LeadDrawer from "@/components/LeadDrawer";
 import ReverifyMenu from "@/components/ReverifyMenu";
 import CommandPalette from "@/components/CommandPalette";
@@ -25,9 +26,10 @@ const TABS = [
   { id: "competitors", label: "Competitors", icon: "flag", cnt: (s) => s.competitor },
   { id: "campaigns", label: "Campaigns", icon: "mega" },
   { id: "sources", label: "Sources", icon: "radio" },
+  { id: "domainscan", label: "Domain Prospecting", icon: "search" },
 ];
-const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", review: "Review · Decide these emails", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources" };
-const BODIES = { overview: Overview, leads: Leads, handoff: Handoff, review: Review, competitors: Competitors, campaigns: Campaigns, sources: Sources };
+const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", review: "Review · Decide these emails", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources", domainscan: "Domain Prospecting" };
+const BODIES = { overview: Overview, leads: Leads, handoff: Handoff, review: Review, competitors: Competitors, campaigns: Campaigns, sources: Sources, domainscan: DomainScan };
 
 export default function Dashboard() {
   const [view, setView] = useState("overview");

@@ -25,6 +25,7 @@ import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
 import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign, listCampaigns, campaignSummary } from "../services/sendkit.js";
 import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revokeMcpKey, recentAudit as recentMcpAudit } from "../services/mcpKeys.js";
+import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/domainScan.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -861,4 +862,22 @@ apiRouter.post("/leads/bulk-email-update", async (req, res) => {
     updated += r.modifiedCount || 0;
   }
   res.json({ ok: true, received: rows.length, matchedOps: ops.length, updated });
+});
+
+// ── Domain prospecting — seed domain -> prefix/suffix/TLD permutations -> per-candidate streaming
+// pipeline (DNS -> redirect-to-seed check -> blacklist verdict). Returns a jobId immediately;
+// GET /:id streams live progress + results as they land (no barrier waits on the client side).
+apiRouter.post("/domainscan", async (req, res) => {
+  const domain = String(req.body?.domain || "").trim();
+  if (!domain) return res.status(400).json({ error: "domain required" });
+  try {
+    const job = await startDomainScan(domain);
+    res.json({ started: true, ...job });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+apiRouter.get("/domainscan", async (_req, res) => res.json({ items: await listDomainScans() }));
+apiRouter.get("/domainscan/:id", async (req, res) => {
+  const job = await getDomainScan(req.params.id);
+  if (!job) return res.status(404).json({ error: "not found" });
+  res.json(job);
 });
