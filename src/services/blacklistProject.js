@@ -71,3 +71,30 @@ export async function pollUntilChecked(domains, { intervalMs = 1500, maxWaitMs =
   }
   return verdicts; // Map<domain, DomainRecord> — domains left in `want` timed out and are just absent
 }
+
+// Self-test the deployed config: is the key set, is the workspace id set, and does a live call
+// actually succeed — without ever exposing the key itself. Exists because a bad env var on the
+// deploy host and a network/firewall block that prevents reaching 163.123.236.189 both look
+// identical from the scan's side (push just fails) but need completely different fixes.
+export async function diagnose() {
+  const keySet = !!config.blacklistProject.key;
+  const workspaceIdSet = !!config.blacklistProject.workspaceId;
+  const out = {
+    keySet, keyPrefix: keySet ? config.blacklistProject.key.slice(0, 7) + "…" : null,
+    workspaceIdSet, workspaceId: config.blacklistProject.workspaceId || null,
+    base: config.blacklistProject.base,
+  };
+  if (!keySet || !workspaceIdSet) return { ...out, reachable: false, error: "missing env var(s) — see keySet/workspaceIdSet above" };
+
+  try {
+    const r = await axios.get(`${base()}/projects/${ws()}`, { headers: h(), timeout: 15000, validateStatus: () => true });
+    if (r.status >= 300) {
+      return { ...out, reachable: true, ok: false, status: r.status, error: r.data?.error?.message || r.data?.error?.code || JSON.stringify(r.data).slice(0, 200) };
+    }
+    return { ...out, reachable: true, ok: true, status: r.status, workspaceName: r.data?.name, domainCount: r.data?.domainCount };
+  } catch (e) {
+    // Network-level failure (ECONNREFUSED/ETIMEDOUT/ENOTFOUND) — the deploy host can't reach the
+    // blacklist API's host:port at all, which is a firewall/routing problem, not a bad key.
+    return { ...out, reachable: false, error: e.code || e.message };
+  }
+}

@@ -26,6 +26,7 @@ import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_
 import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign, listCampaigns, campaignSummary } from "../services/sendkit.js";
 import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revokeMcpKey, recentAudit as recentMcpAudit } from "../services/mcpKeys.js";
 import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/domainScan.js";
+import { diagnose as diagnoseBlacklistProject } from "../services/blacklistProject.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -876,6 +877,7 @@ apiRouter.post("/domainscan", async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 apiRouter.get("/domainscan", async (_req, res) => res.json({ items: await listDomainScans() }));
+apiRouter.get("/domainscan/diag", async (_req, res) => res.json(await diagnoseBlacklistProject()));
 apiRouter.get("/domainscan/:id", async (req, res) => {
   const job = await getDomainScan(req.params.id);
   if (!job) return res.status(404).json({ error: "not found" });
