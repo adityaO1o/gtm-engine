@@ -8,14 +8,23 @@ const stripWww = (host) => String(host || "").toLowerCase().replace(/^www\./, ""
 
 // axios (via the follow-redirects lib on its default Node adapter) exposes the final URL the chain
 // landed on at response.request.res.responseUrl — that's the only reliable way to read it post-redirect.
+//
+// responseType: "stream" + immediately destroying the body: we only need the final redirect URL, not
+// the page content, and axios's promise already resolves once the (fully-redirected) response headers
+// arrive — nothing here waits on the body. A previous version capped maxContentLength at 200KB to
+// "avoid pulling down full pages", but real landing pages routinely exceed that (verified: inboxkit.com
+// itself is 223KB) — axios aborted mid-download on every real hit and got silently swallowed as "no
+// redirect", a false negative on every single real lead. Not buffering the body at all fixes both the
+// correctness bug and is faster than the capped-buffer version ever was.
 async function fetchFinalHost(url) {
   const r = await axios.get(url, {
     maxRedirects: 5,
     timeout: config.scanRedirectTimeoutMs,
     validateStatus: () => true,
-    maxContentLength: 200_000, // don't pull down full pages, just enough to complete the redirect chain
+    responseType: "stream",
     headers: { "User-Agent": "Mozilla/5.0 (compatible; InboxKitScan/1.0)" },
   });
+  r.data.destroy();
   const finalUrl = r.request?.res?.responseUrl || url;
   try { return new URL(finalUrl).hostname; } catch { return null; }
 }
