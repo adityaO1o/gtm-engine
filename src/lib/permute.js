@@ -2,28 +2,38 @@
 // email typically own a handful of ALT domains purely for sending (never browsed, just redirect back
 // to the real site once opened) — this generates the plausible candidates for a seed domain so the
 // pipeline can find out which ones are actually live + redirecting + blacklisted.
+//
+// Wordlists + weighting below are calibrated against a real reverse-redirect sample (host.io's list
+// of 557 domains actually redirecting into inboxkit.com) rather than guessed:
+//   - almost every real one is .com — orgs barely vary TLD, so that tier is now small/secondary
+//     (was previously the single biggest tier — backwards)
+//   - the dominant real pattern is PREFIX + brand + SUFFIX COMBINED on the same domain
+//     ("ignite" + "inboxkit" + "-ai" -> ignitedinboxkit-ai.com), almost always hyphenated before the
+//     suffix. The old generator only ever did prefix-OR-suffix, never both together — that was the
+//     single biggest gap vs what real cold-email infra domains look like.
 
-const TLDS = [
-  "io", "co", "net", "org", "us", "email", "app", "dev", "xyz", "site", "online", "info", "biz",
-  "me", "cc", "pro", "agency", "group", "team", "hq", "inc", "in", "ai", "cloud", "tech",
+// Drawn directly from the real observed pattern (ignite/ultra/go/sky/easy/global/glide/promote/
+// click/true/hello/fast/direct/outreach/bright/mailhub/try/all/power/hyper/share/boost/hi/email/
+// grow/clear/pure/skyhigh/funnel/spark/join/vivid/express/lead/peak all appear in the sample).
+const PREFIXES = [
+  "ignite", "ultra", "go", "sky", "easy", "global", "glide", "promote", "click", "true", "hello",
+  "fast", "direct", "outreach", "bright", "mailhub", "try", "all", "power", "hyper", "share",
+  "boost", "hi", "email", "grow", "clear", "pure", "skyhigh", "funnel", "spark", "join", "vivid",
+  "express", "lead", "peak",
 ];
-// Smaller set for the heavier prefix/suffix x TLD cross product — keeps total candidates in the
-// ~500-1000 sweet spot instead of exploding into the tens of thousands.
-const CORE_TLDS = ["com", "io", "co", "net", "app", "mail", "email", "org", "xyz", "online"];
-
+// "-ai/-hq/-setup/-inc/-web/-labs/-zone/-bridge" are all in the real sample; the rest are the same
+// family of words (kept from the original list since they fit the same pattern).
+const SUFFIXES = [
+  "ai", "hq", "setup", "inc", "web", "labs", "zone", "bridge", "mail", "app", "co", "team", "now",
+  "send", "pro", "group", "online", "hub", "suite", "cloud",
+];
 const SEND_SUBDOMAINS = [
-  "mail", "smtp", "send", "email", "outbound", "outreach", "campaign", "mg", "em", "go", "link",
-  "click", "hello", "news", "updates", "info", "noreply", "no-reply", "notifications", "newsletter",
-  "alerts", "account", "accounts", "contact", "support",
+  "mail", "smtp", "send", "email", "outbound", "outreach", "campaign", "mg", "em", "hello", "news",
+  "noreply", "notifications", "newsletter", "contact",
 ];
-const BRAND_PREFIXES = [
-  "get", "try", "use", "hi", "hey", "go", "the", "my", "join", "we", "team", "meet", "hello",
-  "start", "choose", "with",
-];
-const BRAND_SUFFIXES = [
-  "hq", "app", "mail", "inc", "co", "team", "now", "labs", "send", "pro", "group", "io", "online",
-  "hub", "suite", "cloud",
-];
+// Orgs rarely swap TLD on their brand name (the real sample is ~100% .com) — kept as a small tier,
+// not the dominant one.
+const RARE_TLDS = ["io", "co", "net", "org", "in", "ai"];
 
 const TWO_PART_TLDS = new Set(["co.in", "co.uk", "com.au", "co.nz", "com.br", "co.za"]);
 
@@ -40,27 +50,38 @@ export function splitDomain(input) {
   return { label: parts.slice(0, -1).join("."), tld: parts[parts.length - 1] };
 }
 
-// seedDomain -> ~500-1000 deduped candidate domains (never includes the seed itself)
+// seedDomain -> ~700-900 deduped candidate domains (never includes the seed itself)
 export function generateCandidates(seedInput) {
   const { label, tld } = splitDomain(seedInput);
   if (!label) return [];
   const seedDomain = `${label}.${tld}`;
   const out = new Set();
 
-  for (const t of TLDS) if (t !== tld) out.add(`${label}.${t}`);
+  // Dominant tier: prefix + brand + suffix COMBINED, hyphenated, .com — the real-world pattern.
+  // PREFIXES x SUFFIXES already lands ~700, i.e. most of the budget, on purpose.
+  for (const p of PREFIXES) {
+    for (const s of SUFFIXES) {
+      out.add(`${p}${label}-${s}.com`);
+      // Non-hyphenated only reads naturally when both words are short (matches the real sample:
+      // peakinboxkithq.com, tryinboxkithq.com, pureinboxkithq.com — all short+short).
+      if (p.length + s.length <= 7) out.add(`${p}${label}${s}.com`);
+    }
+  }
+
+  // Prefix alone (no suffix) — also seen for real (hiinboxkit.com, growinboxkit.com).
+  for (const p of PREFIXES) out.add(`${p}${label}.com`);
+
+  // Suffix alone (no prefix) — also seen for real (inboxkitzone.com, inboxkitbridge.com).
+  for (const s of SUFFIXES) {
+    out.add(`${label}-${s}.com`);
+    out.add(`${label}${s}.com`);
+  }
+
+  // Send-subdomains on the real seed domain.
   for (const sub of SEND_SUBDOMAINS) out.add(`${sub}.${seedDomain}`);
-  for (const p of BRAND_PREFIXES) {
-    for (const t of CORE_TLDS) {
-      out.add(`${p}${label}.${t}`);
-      out.add(`${p}-${label}.${t}`);
-    }
-  }
-  for (const s of BRAND_SUFFIXES) {
-    for (const t of CORE_TLDS) {
-      out.add(`${label}${s}.${t}`);
-      out.add(`${label}-${s}.${t}`);
-    }
-  }
+
+  // Small TLD-swap tier — kept minor since real orgs rarely do this.
+  for (const t of RARE_TLDS) if (t !== tld) out.add(`${label}.${t}`);
 
   out.delete(seedDomain);
   return [...out];
