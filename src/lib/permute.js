@@ -12,20 +12,28 @@
 //     suffix. The old generator only ever did prefix-OR-suffix, never both together — that was the
 //     single biggest gap vs what real cold-email infra domains look like.
 
-// Drawn directly from the real observed pattern (ignite/ultra/go/sky/easy/global/glide/promote/
-// click/true/hello/fast/direct/outreach/bright/mailhub/try/all/power/hyper/share/boost/hi/email/
-// grow/clear/pure/skyhigh/funnel/spark/join/vivid/express/lead/peak all appear in the sample).
+// First 35 are drawn directly from the real observed pattern (ignite/ultra/go/sky/easy/global/
+// glide/promote/click/true/hello/fast/direct/outreach/bright/mailhub/try/all/power/hyper/share/
+// boost/hi/email/grow/clear/pure/skyhigh/funnel/spark/join/vivid/express/lead/peak all appear in
+// the sample). The rest are the same growth/SaaS-naming family, added to widen coverage — host.io
+// reports 557 total redirecting domains for inboxkit.com and the original 35x20 wordlist only
+// turned up 148 of them, so the word LIST itself (not the combination logic) was the ceiling.
 const PREFIXES = [
   "ignite", "ultra", "go", "sky", "easy", "global", "glide", "promote", "click", "true", "hello",
   "fast", "direct", "outreach", "bright", "mailhub", "try", "all", "power", "hyper", "share",
   "boost", "hi", "email", "grow", "clear", "pure", "skyhigh", "funnel", "spark", "join", "vivid",
   "express", "lead", "peak",
+  "swift", "prime", "elite", "apex", "nova", "zen", "core", "next", "flow", "reach", "scale",
+  "wave", "sync", "pulse", "quick", "launch", "smart", "top", "max", "one", "rapid", "rocket",
+  "dash", "flash", "instant", "ace", "star", "gold", "super", "turbo", "crisp", "keen", "agile",
+  "fresh", "live", "active",
 ];
-// "-ai/-hq/-setup/-inc/-web/-labs/-zone/-bridge" are all in the real sample; the rest are the same
-// family of words (kept from the original list since they fit the same pattern).
+// First 20 are in the real sample ("-ai/-hq/-setup/-inc/-web/-labs/-zone/-bridge" all appear); the
+// rest widen coverage the same way as the prefix expansion above.
 const SUFFIXES = [
   "ai", "hq", "setup", "inc", "web", "labs", "zone", "bridge", "mail", "app", "co", "team", "now",
   "send", "pro", "group", "online", "hub", "suite", "cloud",
+  "tech", "base", "works", "spot", "link", "edge", "core", "kit",
 ];
 const SEND_SUBDOMAINS = [
   "mail", "smtp", "send", "email", "outbound", "outreach", "campaign", "mg", "em", "hello", "news",
@@ -50,7 +58,7 @@ export function splitDomain(input) {
   return { label: parts.slice(0, -1).join("."), tld: parts[parts.length - 1] };
 }
 
-// seedDomain -> ~700-900 deduped candidate domains (never includes the seed itself)
+// seedDomain -> ~1700-1900 deduped candidate domains (never includes the seed itself)
 export function generateCandidates(seedInput) {
   const { label, tld } = splitDomain(seedInput);
   if (!label) return [];
