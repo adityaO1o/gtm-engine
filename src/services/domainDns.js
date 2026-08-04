@@ -1,20 +1,35 @@
 // Cheap DNS pre-filter for the domain-prospecting scan — "does this candidate have a web-reachable
 // address at all" before spending an HTTP round-trip on it.
 //
-// Uses dns.lookup (getaddrinfo, the SAME system resolver path axios/HTTP uses) rather than
-// dns.resolve4 (raw c-ares UDP query direct to a DNS server). Verified empirically: some network
-// environments (this one included) allow normal outbound DNS-via-getaddrinfo but block raw UDP:53 to
-// arbitrary resolvers, which makes dns.resolve4 fail with ECONNREFUSED across the board — a false
-// "nothing is registered" reading. dns.lookup is the portable choice. It also happens to be the
-// semantically correct check here: a domain with only an MX record and no A/AAAA can't serve HTTP
-// anyway, so it's out of scope for the redirect-check stage regardless of whether it "exists".
-//
-// The tradeoff: dns.lookup runs on libuv's threadpool (default size 4), so raw concurrency is capped
-// unless UV_THREADPOOL_SIZE is raised — set it (e.g. 128) in the process environment / Dockerfile.
-// See .env.example.
+// Queries big public resolvers (8.8.8.8 / 1.1.1.1) DIRECTLY over raw UDP:53 via dns.resolve4, NOT
+// dns.lookup. Why this matters, learned the hard way:
+//   - dns.lookup (getaddrinfo) funnels every query through the ONE resolver in /etc/resolv.conf — on
+//     a Docker/Dokploy host that's the tiny embedded forwarder at 127.0.0.11. It also runs on libuv's
+//     threadpool. At the scan's concurrency (hundreds) that forwarder + threadpool choked and started
+//     TIMING OUT on real domains, i.e. reporting "doesn't exist" for domains that do — a 24k-candidate
+//     scan confirmed 0 redirects when ~500 were real. The bottleneck was never DNS itself; it was
+//     hammering one small resolver we don't control.
+//   - dns.resolve4 with a custom Resolver talks straight to 8.8.8.8 / 1.1.1.1 (raw UDP:53). Those are
+//     industrial resolvers that never choke at this volume, and c-ares does NOT use the threadpool, so
+//     concurrency isn't capped. The deploy host's /api/domainscan/dnstest confirmed raw UDP:53 to
+//     these is open here (it isn't everywhere — hence the self-test before committing to this).
+// Queries are spread across both providers (by candidate index) to halve the per-resolver load, with
+// one cheap retry on the other provider before giving up.
 import dns from "node:dns";
 import axios from "axios";
 import { config } from "../config.js";
+
+// Two independent Resolver instances, one per provider, each pinned to its own servers. Reused across
+// all lookups (creating one per query would leak sockets). tries:1 — we do our own cross-provider retry.
+const RESOLVERS = [
+  { name: "google", r: makeResolver(["8.8.8.8", "8.8.4.4"]) },
+  { name: "cloudflare", r: makeResolver(["1.1.1.1", "1.0.0.1"]) },
+];
+function makeResolver(servers) {
+  const r = new dns.promises.Resolver({ timeout: Math.max(1500, config.scanDnsTimeoutMs), tries: 1 });
+  r.setServers(servers);
+  return r;
+}
 
 function withTimeout(promise, ms) {
   return Promise.race([
@@ -77,14 +92,29 @@ export async function dnsSelfTest() {
   return { osLookup, caresDefault, udp53_google: udpGoogle, udp53_cloudflare: udpCloudflare, doh_google: dohGoogle, doh_cloudflare: dohCloudflare, udpOpen, dohOpen, recommendation };
 }
 
+// NXDOMAIN / NODATA are AUTHORITATIVE "this name has no A record" answers — a definite false, no point
+// retrying on the other provider. Everything else (timeout, SERVFAIL, refused) is a transient/transport
+// failure worth one retry elsewhere before we conclude "dead".
+const AUTHORITATIVE_MISS = new Set(["ENOTFOUND", "ENODATA", "NXDOMAIN"]);
+
+async function resolveOnce(resolver, domain) {
+  await withTimeout(resolver.resolve4(domain), config.scanDnsTimeoutMs);
+}
+
 // true = resolves to an address -> worth an HTTP redirect check. false = unregistered / no web
-// presence / ambiguous (timeout etc — dropped rather than retried; this is a discovery scan, not a
-// deliverability audit, so occasionally missing a slow-resolving domain is an acceptable speed trade).
-export async function domainHasDns(domain) {
-  try {
-    await withTimeout(dns.promises.lookup(domain), config.scanDnsTimeoutMs);
-    return true;
-  } catch {
-    return false;
+// presence. `index` spreads load across the two providers (even -> google first, odd -> cloudflare
+// first); on a transient failure we try the OTHER provider once before giving up. A definite
+// NXDOMAIN/NODATA short-circuits to false immediately.
+export async function domainHasDns(domain, index = 0) {
+  const order = index % 2 === 0 ? [RESOLVERS[0], RESOLVERS[1]] : [RESOLVERS[1], RESOLVERS[0]];
+  for (let i = 0; i < order.length; i++) {
+    try {
+      await resolveOnce(order[i].r, domain);
+      return true;
+    } catch (e) {
+      if (AUTHORITATIVE_MISS.has(e.code)) return false; // definite "no such record" — don't retry
+      // transient (timeout/SERVFAIL/refused) — fall through to the other provider, then give up
+    }
   }
+  return false;
 }

@@ -95,8 +95,8 @@ async function runScan(jobId, seedDomain, candidates) {
 
   const redirectLimit = createLimiter(config.scanRedirectConcurrency);
 
-  await runPool(candidates, async (candidate) => {
-    const hasDns = await domainHasDns(candidate);
+  await runPool(candidates, async (candidate, i) => {
+    const hasDns = await domainHasDns(candidate, i);
     await bump(jobId, { dnsChecked: 1 });
     if (!hasDns) return;
     await bump(jobId, { dnsPassed: 1 });
