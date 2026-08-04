@@ -86,9 +86,11 @@ export const config = {
     workspaceId: process.env.BLACKLIST_WORKSPACE_ID || "",
   },
 
-  // Domain-prospecting scan tunables
-  scanDnsConcurrency: parseInt(process.env.SCAN_DNS_CONCURRENCY || "400", 10),
-  scanRedirectConcurrency: parseInt(process.env.SCAN_REDIRECT_CONCURRENCY || "150", 10),
+  // Domain-prospecting scan tunables. DNS concurrency is high on purpose: lookups now go to public
+  // resolvers (8.8.8.8/1.1.1.1) that don't choke, and DNS-checking ~24k mostly-fake candidates is the
+  // scan's biggest time sink, so this is the main speed lever. Raise further if the host allows it.
+  scanDnsConcurrency: parseInt(process.env.SCAN_DNS_CONCURRENCY || "1000", 10),
+  scanRedirectConcurrency: parseInt(process.env.SCAN_REDIRECT_CONCURRENCY || "250", 10),
   scanRedirectTimeoutMs: parseInt(process.env.SCAN_REDIRECT_TIMEOUT_MS || "5000", 10),
   scanDnsTimeoutMs: parseInt(process.env.SCAN_DNS_TIMEOUT_MS || "3000", 10),
 
