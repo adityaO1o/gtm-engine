@@ -115,7 +115,8 @@ function downloadCsv(job) {
 export default function DomainScan() {
   const toast = useToast();
   const [domain, setDomain] = useState("");
-  const [job, setJob] = useState(null);
+  const [view, setView] = useState("list");        // "list" (scans + input) | "detail" (one scan's results)
+  const [job, setJob] = useState(null);            // the scan currently open in detail view
   const [history, setHistory] = useState([]);
   const [listedOnly, setListedOnly] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -135,58 +136,119 @@ export default function DomainScan() {
 
   const loadHistory = useCallback(() => { j("/api/domainscan").then((d) => setHistory(d.items || [])).catch(() => {}); }, []);
   useEffect(() => { loadHistory(); }, [loadHistory]);
+  // Keep the scans list fresh while sitting on it (a running scan's counts climb without a manual refresh).
+  useEffect(() => {
+    if (view !== "list") return;
+    const t = setInterval(loadHistory, 3000);
+    return () => clearInterval(t);
+  }, [view, loadHistory]);
 
-  const poll = useCallback(async function p(id) {
+  // Poll one scan's live progress into `job`. Stops when it finishes.
+  const poll = useCallback(function p(id) {
     clearTimeout(timer.current);
-    const s = await j(`/api/domainscan/${id}`).catch(() => null);
-    if (!s) return;
-    setJob(s);
-    if (s.status === "running") timer.current = setTimeout(() => p(id), 1200);
-    else loadHistory();
+    j(`/api/domainscan/${id}`).then((s) => {
+      if (!s || s.error) return;
+      setJob(s);
+      if (s.status === "running") timer.current = setTimeout(() => p(id), 1200);
+      else loadHistory();
+    }).catch(() => {});
   }, [loadHistory]);
   useEffect(() => () => clearTimeout(timer.current), []);
 
+  // Open a scan (from the list, or a freshly-started one) in detail view and start polling it.
+  const openScan = useCallback((id, seed) => {
+    setView("detail");
+    setListedOnly(false);
+    setJob({ status: "running", seedDomain: seed, redirectConfirmed: 0, blacklistChecked: 0, listedCount: 0, results: [] });
+    poll(id);
+  }, [poll]);
+
+  const backToList = useCallback(() => {
+    clearTimeout(timer.current);
+    setView("list");
+    setJob(null);
+    loadHistory();
+  }, [loadHistory]);
+
   async function startScan() {
     const d = domain.trim().toLowerCase();
-    if (!d) return;
+    if (!d || starting) return;
     setStarting(true);
     try {
       const r = await post("/api/domainscan", { domain: d });
-      if (r.error) { toast(r.error, "bad"); return; }
+      if (r.error) { toast(r.error, "bad"); setStarting(false); return; }
       toast(`Scanning ${r.seedDomain} via host.io`, "info");
-      setJob({ status: "running", mode: r.mode, seedDomain: r.seedDomain, totalCandidates: r.totalCandidates, hostioTotal: 0, dnsChecked: 0, dnsPassed: 0, redirectChecked: 0, redirectConfirmed: 0, blacklistChecked: 0, listedCount: 0, results: [] });
-      poll(r.id);
+      setDomain("");
+      openScan(r.id, r.seedDomain);   // jump straight into the live detail view — no refresh needed
     } catch { toast("Scan failed to start", "bad"); }
     setStarting(false);
   }
 
   const running = job?.status === "running";
   const isHostio = job?.mode !== "permutation";
-  // host.io mode: progress tracks blacklist-checked / total found. permutation mode: DNS-checked / candidates.
   const pct = isHostio
     ? (job?.redirectConfirmed ? Math.min(100, Math.round((job.blacklistChecked / job.redirectConfirmed) * 100)) : (running ? 3 : 100))
     : (job?.totalCandidates ? Math.min(100, Math.round((job.dnsChecked / job.totalCandidates) * 100)) : 0);
   const rows = (job?.results || []).filter((r) => !listedOnly || r.status === "listed")
     .slice().sort((a, b) => (b.status === "listed") - (a.status === "listed") || (b.riskScore || 0) - (a.riskScore || 0));
 
+  // ── LIST VIEW: the input + every scan so far ────────────────────────────────────────────────
+  if (view === "list") {
+    return (
+      <>
+        <div className="note"><Icon name="search" /><div>
+          Enter a company's domain. We pull every domain that <b>redirects into it</b> from host.io's index
+          (the real sending-infra a company runs — including names no guesser could produce), then check each
+          against our own blacklist checker. A <b>listed</b> result is a company whose sending infra is
+          broken — the outreach angle writes itself.
+        </div></div>
+
+        <div className="toolbar">
+          <input
+            className="search" style={{ maxWidth: 320 }} placeholder="acme.com — enter a domain to scan"
+            value={domain} onChange={(e) => setDomain(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && startScan()}
+          />
+          <button className="btn" disabled={starting || !domain.trim()} onClick={startScan}>
+            <Icon name={starting ? "refresh" : "search"} />{starting ? "Starting…" : "Scan"}
+          </button>
+        </div>
+
+        <div className="section-t"><Icon name="refresh" />Scans</div>
+        {history.length ? (
+          <div className="tablewrap">
+            <table>
+              <thead><tr><th>Seed domain</th><th>Status</th><th>Redirects found</th><th>Listed</th><th>Started</th></tr></thead>
+              <tbody>
+                {history.map((h) => (
+                  <tr key={h._id} className="click" onClick={() => openScan(h._id, h.seedDomain)}>
+                    <td><span className="nm mono">{h.seedDomain}</span></td>
+                    <td>
+                      <span className={`pill ${h.status === "running" ? "p-review" : h.status === "error" ? "p-review" : h.listedCount ? "p-competitor" : "p-verified"}`}>
+                        {h.status === "running" ? <><span className="spin" style={{ width: 11, height: 11 }} /> running</> : h.status === "error" ? "error" : "done"}
+                      </span>
+                    </td>
+                    <td className="num-c">{num(h.redirectConfirmed)}</td>
+                    <td className="num-c" style={{ color: h.listedCount ? "var(--hot)" : "inherit" }}>{num(h.listedCount)}</td>
+                    <td className="tstamp">{ts(h.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="tablewrap"><div className="empty"><Icon name="search" /><b>No scans yet</b>Enter a domain above to run your first scan.</div></div>
+        )}
+      </>
+    );
+  }
+
+  // ── DETAIL VIEW: one scan's live progress + results ─────────────────────────────────────────
   return (
     <>
-      <div className="note"><Icon name="search" /><div>
-        Enter a company's domain. We pull every domain that <b>redirects into it</b> from host.io's index
-        (the real sending-infra a company runs — including names no guesser could produce), then check each
-        against our own blacklist checker. A <b>listed</b> result is a company whose sending infra is
-        broken — the outreach angle writes itself.
-      </div></div>
-
       <div className="toolbar">
-        <input
-          className="search" style={{ maxWidth: 320 }} placeholder="acme.com"
-          value={domain} onChange={(e) => setDomain(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !running && startScan()}
-        />
-        <button className="btn" disabled={running || starting || !domain.trim()} onClick={startScan}>
-          <Icon name={running ? "refresh" : "search"} />{running ? "Scanning…" : "Scan"}
-        </button>
+        <button className="btn btn-ghost btn-sm" onClick={backToList}><Icon name="back" />All scans</button>
+        <span className="resn"><b className="mono">{job?.seedDomain}</b></span>
         <div className="grow" />
         {job?.results?.length ? (
           <>
@@ -203,18 +265,18 @@ export default function DomainScan() {
           <div className="jobh">
             <Icon name={running ? "refresh" : job.status === "error" ? "warn" : "check"} />
             <span>
-              <b>{job.seedDomain}</b>
+              {running && !job.blacklistChecked ? <b>Starting scan…</b> : null}
               {isHostio ? (
                 <>
-                  {" · "}redirecting domains found <b className="ok">{num(job.redirectConfirmed)}</b>
+                  redirecting domains found <b className="ok">{num(job.redirectConfirmed)}</b>
                   {job.hostioTotal ? <span className="muted">/{num(job.hostioTotal)}</span> : null}
                   {" · "}blacklist checked <b>{num(job.blacklistChecked)}</b>
                 </>
               ) : (
                 <>
-                  {" · "}DNS <b>{num(job.dnsChecked)}</b>/{num(job.totalCandidates)}
+                  DNS <b>{num(job.dnsChecked)}</b>/{num(job.totalCandidates)}
                   {" · "}live <b>{num(job.dnsPassed)}</b>
-                  {" · "}redirects to seed <b className="ok">{num(job.redirectConfirmed)}</b>
+                  {" · "}redirects <b className="ok">{num(job.redirectConfirmed)}</b>
                   {" · "}blacklist checked <b>{num(job.blacklistChecked)}</b>
                 </>
               )}
@@ -248,32 +310,11 @@ export default function DomainScan() {
             </tbody>
           </table>
         </div>
-      ) : job && !running ? (
-        <div className="tablewrap"><div className="empty"><Icon name="search" /><b>No redirecting domains found</b>host.io has no domains redirecting into {job.seedDomain}.</div></div>
-      ) : null}
-
-      {history.length ? (
-        <>
-          <div className="section-t"><Icon name="refresh" />Past scans</div>
-          <div className="tablewrap">
-            <table>
-              <thead><tr><th>Seed domain</th><th>Status</th><th>Candidates</th><th>Confirmed</th><th>Listed</th><th>Started</th></tr></thead>
-              <tbody>
-                {history.map((h) => (
-                  <tr key={h._id} className="click" onClick={() => poll(h._id)}>
-                    <td><span className="nm">{h.seedDomain}</span></td>
-                    <td><span className={`pill ${h.status === "listed" ? "p-competitor" : h.status === "error" ? "p-review" : "p-verified"}`}>{h.status}</span></td>
-                    <td className="num-c">{num(h.totalCandidates)}</td>
-                    <td className="num-c">{num(h.redirectConfirmed)}</td>
-                    <td className="num-c" style={{ color: h.listedCount ? "var(--hot)" : "inherit" }}>{num(h.listedCount)}</td>
-                    <td className="tstamp">{ts(h.createdAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      ) : null}
+      ) : running ? (
+        <div className="tablewrap"><div className="loading"><span className="spin" />Pulling redirecting domains…</div></div>
+      ) : (
+        <div className="tablewrap"><div className="empty"><Icon name="search" /><b>No redirecting domains found</b>host.io has no domains redirecting into {job?.seedDomain}.</div></div>
+      )}
 
       {detailFor ? <div className="drawer-scrim" onClick={() => setDetailFor(null)} /> : null}
       <DetailDrawer open={!!detailFor} domain={detailFor} detail={detail} loading={detailLoading} onClose={() => setDetailFor(null)} />
