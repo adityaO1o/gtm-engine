@@ -35,6 +35,21 @@ export async function listDomains({ search, status, page = 1, limit = 100, sort,
   return r.data;
 }
 
+// Full per-domain detail for the "where is it blacklisted" drawer: current verdict + which exact
+// DNSBL zones list it + DNS/WHOIS enrichment (registrar, MX, SPF/DMARC...) + the listing-event
+// history. The scan doesn't store the blacklist-API's own domain id, so we look it up by search
+// first (exact-match preferred), then fetch its detail. Returns null if the domain isn't tracked.
+export async function domainDetail(domain) {
+  const key = String(domain || "").trim().toLowerCase();
+  if (!key) return null;
+  const { items = [] } = await listDomains({ search: key, limit: 10 });
+  const match = items.find((d) => String(d.domain || "").toLowerCase() === key) || items[0];
+  if (!match?.id) return null;
+  const r = await axios.get(`${base()}/domains/${match.id}`, { headers: h(), timeout: 20000, validateStatus: () => true });
+  if (r.status >= 300) { log.warn("blacklist project domain detail failed", { domain: key, status: r.status }); return null; }
+  return r.data; // { domain: {...summary.listedZones, riskScore, status}, enrichment, events }
+}
+
 // Poll until every one of `domains` has left pending/checking (benchmarked: typically 1-2s for a
 // batch of a few dozen). Bounded by maxWaitMs so a stuck domain can't hang the whole scan forever —
 // whatever hasn't resolved by then is reported back as still-pending and the scan moves on.

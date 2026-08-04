@@ -7,6 +7,98 @@ import { useToast } from "@/lib/toast";
 
 const STATUS_PILL = { clean: "p-verified", listed: "p-competitor", error: "p-review", pending: "p-review", checking: "p-review" };
 
+// Fields worth surfacing from the blacklist API's DNS/WHOIS enrichment blob, in display order.
+const ENRICH_FIELDS = [
+  ["registrar", "Registrar"], ["nsProvider", "Nameserver"], ["mxProvider", "Mail (MX)"],
+  ["spf", "SPF"], ["dmarc", "DMARC"], ["asn", "ASN"], ["registrantCountry", "Country"],
+  ["createdDate", "Registered"], ["ageBucket", "Domain age"],
+];
+
+// Click a result row -> slide-in drawer showing WHERE the domain is blacklisted: every DNSBL zone
+// listing it (with provider family + why), its risk score, DNS/WHOIS enrichment, and listing history.
+function DetailDrawer({ open, domain, detail, loading, onClose }) {
+  const d = detail?.domain || {};
+  const zones = d.summary?.listedZones || [];
+  const events = detail?.events || [];
+  // zone -> family, harvested from the listing events so each zone row can show who runs it.
+  const familyOf = {};
+  for (const e of events) if (e.zone && e.family) familyOf[e.zone] = e.family;
+  const enr = detail?.enrichment || {};
+  const enrRows = ENRICH_FIELDS.filter(([k]) => enr[k] != null && enr[k] !== "");
+
+  return (
+    <div className={`drawer${open ? " open" : ""}`}>
+      <span className="x" onClick={onClose}><Icon name="x" style={{ width: 20, height: 20, stroke: "var(--dim)" }} /></span>
+      <h3 className="mono" style={{ wordBreak: "break-all" }}>{domain}</h3>
+
+      {loading ? (
+        <div className="muted" style={{ marginTop: "var(--s4)" }}><span className="spin" /> Loading blacklist detail…</div>
+      ) : !detail ? (
+        <div className="muted" style={{ marginTop: "var(--s4)" }}>No blacklist record found for this domain.</div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 6 }}>
+            <span className={`pill ${STATUS_PILL[d.status] || ""}`}>
+              <Icon name={d.status === "listed" ? "warn" : "check"} />{d.status}
+            </span>
+            <span className="resn">Risk score <b style={{ color: d.riskScore >= 40 ? "var(--hot)" : d.riskScore ? "var(--warm)" : "var(--good)" }}>{d.riskScore ?? 0}</b>/100</span>
+            <span className="resn muted">{d.summary?.checkedZones ?? 0} zones checked</span>
+          </div>
+
+          <div className="section-t" style={{ marginTop: "var(--s4)" }}>
+            <Icon name="warn" />Blacklisted on {zones.length} {zones.length === 1 ? "list" : "lists"}
+          </div>
+          {zones.length ? (
+            <div className="tablewrap">
+              <table>
+                <thead><tr><th>Blacklist zone</th><th>Provider</th></tr></thead>
+                <tbody>
+                  {zones.map((z) => (
+                    <tr key={z}>
+                      <td><span className="mono sm">{z}</span></td>
+                      <td><span className="sm muted">{familyOf[z] || "—"}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="note ok"><Icon name="check" /><div>Clean — not listed on any of the {d.summary?.checkedZones ?? 0} DNSBL zones checked.</div></div>
+          )}
+
+          {enrRows.length ? (
+            <>
+              <div className="section-t"><Icon name="radio" />Domain intel</div>
+              <div className="tablewrap"><table><tbody>
+                {enrRows.map(([k, label]) => (
+                  <tr key={k}><td className="muted" style={{ width: 130 }}>{label}</td><td className="sm">{String(enr[k])}</td></tr>
+                ))}
+              </tbody></table></div>
+            </>
+          ) : null}
+
+          {events.length ? (
+            <>
+              <div className="section-t"><Icon name="refresh" />Listing history</div>
+              <div style={{ marginTop: 4 }}>
+                {events.slice(0, 20).map((e, i) => (
+                  <div key={i} className="tl">
+                    <div>
+                      <span className={`pill ${e.type === "listed" ? "p-competitor" : "p-verified"}`} style={{ marginRight: 6 }}>{e.type}</span>
+                      <strong className="mono sm">{e.zone}</strong>
+                    </div>
+                    <div className="c">{e.family || ""}{e.reason ? ` · ${e.reason}` : ""} · {ts(e.at)}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
 function csvEscape(v) { return `"${String(v ?? "").replace(/"/g, '""')}"`; }
 function downloadCsv(job) {
   const rows = [["domain", "status", "riskScore", "listedZones"]];
@@ -27,7 +119,19 @@ export default function DomainScan() {
   const [history, setHistory] = useState([]);
   const [listedOnly, setListedOnly] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [detailFor, setDetailFor] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const timer = useRef(null);
+
+  const openDetail = useCallback(async (dom) => {
+    setDetailFor(dom);
+    setDetail(null);
+    setDetailLoading(true);
+    try { setDetail(await j(`/api/domainscan/domain-detail?domain=${encodeURIComponent(dom)}`)); }
+    catch { setDetail(null); }
+    setDetailLoading(false);
+  }, []);
 
   const loadHistory = useCallback(() => { j("/api/domainscan").then((d) => setHistory(d.items || [])).catch(() => {}); }, []);
   useEffect(() => { loadHistory(); }, [loadHistory]);
@@ -116,11 +220,14 @@ export default function DomainScan() {
             </tr></thead>
             <tbody>
               {rows.map((r) => (
-                <tr key={r.domain}>
+                <tr key={r.domain} className="click" onClick={() => openDetail(r.domain)}>
                   <td><span className="nm mono">{r.domain}</span></td>
                   <td><span className={`pill ${STATUS_PILL[r.status] || ""}`}><Icon name={r.status === "listed" ? "warn" : "check"} />{r.status}</span></td>
                   <td className="num-c">{r.riskScore ?? <span className="muted">—</span>}</td>
-                  <td><span className="trunc sm muted" title={(r.listedZones || []).join(", ")}>{(r.listedZones || []).slice(0, 3).join(", ") || "—"}</span></td>
+                  <td>
+                    <span className="trunc sm muted" title={(r.listedZones || []).join(", ")}>{(r.listedZones || []).slice(0, 3).join(", ") || "—"}</span>
+                    {(r.listedZones || []).length > 3 ? <span className="sm muted"> +{r.listedZones.length - 3}</span> : null}
+                  </td>
                   <td className="tstamp">{ts(r.checkedAt)}</td>
                 </tr>
               ))}
@@ -153,6 +260,9 @@ export default function DomainScan() {
           </div>
         </>
       ) : null}
+
+      {detailFor ? <div className="drawer-scrim" onClick={() => setDetailFor(null)} /> : null}
+      <DetailDrawer open={!!detailFor} domain={detailFor} detail={detail} loading={detailLoading} onClose={() => setDetailFor(null)} />
     </>
   );
 }

@@ -248,6 +248,8 @@ th.chkcol,td.chkcol{width:40px;padding-left:16px;padding-right:6px}
 .note.bad{background:var(--hot-soft);border-color:var(--hot);color:var(--hot)}
 .note.bad .ico{stroke:var(--hot)}
 
+.drawer-scrim{position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:65;animation:fade .18s ease}
+@keyframes fade{from{opacity:0}to{opacity:1}}
 .drawer{position:fixed;top:0;right:0;width:448px;max-width:92vw;height:100vh;background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);transition:transform .22s cubic-bezier(.4,0,.2,1);overflow-y:auto;z-index:70;padding:var(--s5);box-shadow:var(--sh-lg)}
 .drawer.open{transform:translateX(0)}
 .drawer h3{margin:0 0 3px;font-weight:600}
