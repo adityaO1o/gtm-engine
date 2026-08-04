@@ -7,6 +7,7 @@ import { generateCandidates, splitDomain } from "../lib/permute.js";
 import { runPool, createLimiter } from "../lib/pool.js";
 import { domainHasDns } from "../services/domainDns.js";
 import { redirectsToSeed } from "../services/redirectCheck.js";
+import { fetchRedirectDomains } from "../services/hostio.js";
 import { pushDomains, pollUntilChecked } from "../services/blacklistProject.js";
 import { domainScans } from "../db/mongo.js";
 import { config } from "../config.js";
@@ -115,29 +116,60 @@ async function runScan(jobId, seedDomain, candidates) {
   log.info("domain scan finished", { jobId: String(jobId), seedDomain });
 }
 
+// host.io mode: pull the real redirecting domains from host.io's index and blacklist-check them —
+// no permutation, no DNS, no HTTP redirect check. Domains stream into the blacklist stage per page.
+async function runScanHostio(jobId, seedDomain) {
+  const queue = [];
+  let fetchDone = false;
+  const poller = pushPollLoop(jobId, queue, () => fetchDone);
+
+  try {
+    const { total } = await fetchRedirectDomains(seedDomain, {
+      onBatch: async (domains) => {
+        queue.push(...domains);
+        await domainScans().updateOne({ _id: jobId },
+          { $inc: { redirectConfirmed: domains.length }, $set: { updatedAt: new Date() } });
+      },
+    });
+    await domainScans().updateOne({ _id: jobId },
+      { $set: { hostioTotal: total, totalCandidates: total, updatedAt: new Date() } });
+  } finally {
+    fetchDone = true;
+  }
+
+  await poller;
+  await domainScans().updateOne({ _id: jobId }, { $set: { status: "done", finishedAt: new Date(), updatedAt: new Date() } });
+  log.info("domain scan finished (hostio)", { jobId: String(jobId), seedDomain });
+}
+
 // Kicks off a scan in the background and returns immediately with the job id — the dashboard polls
 // GET /api/domainscan/:id (which just reads this same Mongo doc) for live progress + streamed results.
-export async function startDomainScan(seedInput) {
+// mode "hostio" (default) uses host.io's reverse-redirect index; "permutation" uses the guesser+DNS+
+// HTTP pipeline (kept for when host.io quota is exhausted or a seed isn't in its index).
+export async function startDomainScan(seedInput, { mode = "hostio" } = {}) {
   const { label, tld } = splitDomain(seedInput);
   if (!label || !tld) throw new Error("enter a valid domain, e.g. acme.com");
   const seedDomain = `${label}.${tld}`;
-  const candidates = generateCandidates(seedDomain);
+  const useHostio = mode === "hostio";
+  const candidates = useHostio ? [] : generateCandidates(seedDomain);
 
   const doc = {
-    seedDomain, status: "running", totalCandidates: candidates.length,
+    seedDomain, mode, status: "running",
+    totalCandidates: candidates.length, hostioTotal: 0,
     dnsChecked: 0, dnsPassed: 0, redirectChecked: 0, redirectConfirmed: 0,
     blacklistChecked: 0, listedCount: 0, results: [],
     createdAt: new Date(), updatedAt: new Date(), finishedAt: null,
   };
   const { insertedId } = await domainScans().insertOne(doc);
 
-  runScan(insertedId, seedDomain, candidates).catch((e) => {
-    log.error("domain scan crashed", { err: e.message, seedDomain });
+  const run = useHostio ? runScanHostio(insertedId, seedDomain) : runScan(insertedId, seedDomain, candidates);
+  run.catch((e) => {
+    log.error("domain scan crashed", { err: e.message, seedDomain, mode });
     domainScans().updateOne({ _id: insertedId },
       { $set: { status: "error", error: e.message, finishedAt: new Date() } }).catch(() => {});
   });
 
-  return { id: String(insertedId), seedDomain, totalCandidates: candidates.length };
+  return { id: String(insertedId), seedDomain, mode, totalCandidates: candidates.length };
 }
 
 export async function getDomainScan(id) {

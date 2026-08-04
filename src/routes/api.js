@@ -28,6 +28,7 @@ import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revoke
 import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/domainScan.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
+import { diagnose as diagnoseHostio } from "../services/hostio.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -872,13 +873,15 @@ apiRouter.post("/leads/bulk-email-update", async (req, res) => {
 apiRouter.post("/domainscan", async (req, res) => {
   const domain = String(req.body?.domain || "").trim();
   if (!domain) return res.status(400).json({ error: "domain required" });
+  // mode: "hostio" (default, reverse-redirect index) | "permutation" (guesser+DNS+HTTP fallback)
+  const mode = req.body?.mode === "permutation" ? "permutation" : "hostio";
   try {
-    const job = await startDomainScan(domain);
+    const job = await startDomainScan(domain, { mode });
     res.json({ started: true, ...job });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 apiRouter.get("/domainscan", async (_req, res) => res.json({ items: await listDomainScans() }));
-apiRouter.get("/domainscan/diag", async (_req, res) => res.json(await diagnoseBlacklistProject()));
+apiRouter.get("/domainscan/diag", async (_req, res) => res.json({ blacklist: await diagnoseBlacklistProject(), hostio: await diagnoseHostio() }));
 apiRouter.get("/domainscan/dnstest", async (_req, res) => res.json(await dnsSelfTest()));
 // Live per-domain blacklist detail for the results drawer — which zones list it, enrichment, history.
 apiRouter.get("/domainscan/domain-detail", async (req, res) => {

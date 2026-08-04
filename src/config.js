@@ -86,6 +86,13 @@ export const config = {
     workspaceId: process.env.BLACKLIST_WORKSPACE_ID || "",
   },
 
+  // host.io — reverse-redirect data source. domain -> the domains that redirect INTO it, pulled from
+  // host.io's crawled index instead of guessing permutations + DNS + HTTP-checking them ourselves.
+  hostio: {
+    token: process.env.HOSTIO_TOKEN || "",
+    pageConcurrency: parseInt(process.env.HOSTIO_PAGE_CONCURRENCY || "10", 10),
+  },
+
   // Domain-prospecting scan tunables. DNS concurrency is high on purpose: lookups now go to public
   // resolvers (8.8.8.8/1.1.1.1) that don't choke, and DNS-checking ~24k mostly-fake candidates is the
   // scan's biggest time sink, so this is the main speed lever. Raise further if the host allows it.

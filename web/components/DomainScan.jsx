@@ -153,25 +153,29 @@ export default function DomainScan() {
     try {
       const r = await post("/api/domainscan", { domain: d });
       if (r.error) { toast(r.error, "bad"); return; }
-      toast(`Scanning ${r.seedDomain} — ${num(r.totalCandidates)} candidates`, "info");
-      setJob({ status: "running", seedDomain: r.seedDomain, totalCandidates: r.totalCandidates, dnsChecked: 0, dnsPassed: 0, redirectChecked: 0, redirectConfirmed: 0, blacklistChecked: 0, listedCount: 0, results: [] });
+      toast(`Scanning ${r.seedDomain} via host.io`, "info");
+      setJob({ status: "running", mode: r.mode, seedDomain: r.seedDomain, totalCandidates: r.totalCandidates, hostioTotal: 0, dnsChecked: 0, dnsPassed: 0, redirectChecked: 0, redirectConfirmed: 0, blacklistChecked: 0, listedCount: 0, results: [] });
       poll(r.id);
     } catch { toast("Scan failed to start", "bad"); }
     setStarting(false);
   }
 
   const running = job?.status === "running";
-  const pctDns = job?.totalCandidates ? Math.min(100, Math.round((job.dnsChecked / job.totalCandidates) * 100)) : 0;
+  const isHostio = job?.mode !== "permutation";
+  // host.io mode: progress tracks blacklist-checked / total found. permutation mode: DNS-checked / candidates.
+  const pct = isHostio
+    ? (job?.redirectConfirmed ? Math.min(100, Math.round((job.blacklistChecked / job.redirectConfirmed) * 100)) : (running ? 3 : 100))
+    : (job?.totalCandidates ? Math.min(100, Math.round((job.dnsChecked / job.totalCandidates) * 100)) : 0);
   const rows = (job?.results || []).filter((r) => !listedOnly || r.status === "listed")
     .slice().sort((a, b) => (b.status === "listed") - (a.status === "listed") || (b.riskScore || 0) - (a.riskScore || 0));
 
   return (
     <>
       <div className="note"><Icon name="search" /><div>
-        Enter a company's domain. We generate ~500-1000 plausible alt-domains (send-subdomains, TLD swaps,
-        brand prefixes/suffixes), find which ones are <b>live and actually redirect back into the seed domain</b>
-        (real sending-infra, not noise), then check each against our own blacklist checker. A <b>listed</b> result
-        is a company whose sending infra is broken — the outreach angle writes itself.
+        Enter a company's domain. We pull every domain that <b>redirects into it</b> from host.io's index
+        (the real sending-infra a company runs — including names no guesser could produce), then check each
+        against our own blacklist checker. A <b>listed</b> result is a company whose sending infra is
+        broken — the outreach angle writes itself.
       </div></div>
 
       <div className="toolbar">
@@ -200,15 +204,25 @@ export default function DomainScan() {
             <Icon name={running ? "refresh" : job.status === "error" ? "warn" : "check"} />
             <span>
               <b>{job.seedDomain}</b>
-              {" · "}DNS <b>{num(job.dnsChecked)}</b>/{num(job.totalCandidates)}
-              {" · "}live <b>{num(job.dnsPassed)}</b>
-              {" · "}redirects to seed <b className="ok">{num(job.redirectConfirmed)}</b>
-              {" · "}blacklist checked <b>{num(job.blacklistChecked)}</b>
+              {isHostio ? (
+                <>
+                  {" · "}redirecting domains found <b className="ok">{num(job.redirectConfirmed)}</b>
+                  {job.hostioTotal ? <span className="muted">/{num(job.hostioTotal)}</span> : null}
+                  {" · "}blacklist checked <b>{num(job.blacklistChecked)}</b>
+                </>
+              ) : (
+                <>
+                  {" · "}DNS <b>{num(job.dnsChecked)}</b>/{num(job.totalCandidates)}
+                  {" · "}live <b>{num(job.dnsPassed)}</b>
+                  {" · "}redirects to seed <b className="ok">{num(job.redirectConfirmed)}</b>
+                  {" · "}blacklist checked <b>{num(job.blacklistChecked)}</b>
+                </>
+              )}
               {" · "}<b style={{ color: job.listedCount ? "var(--hot)" : "inherit" }}>{num(job.listedCount)}</b> listed
               {job.status === "error" ? <> · <b style={{ color: "var(--hot)" }}>failed: {job.error}</b></> : null}
             </span>
           </div>
-          <div className={`prog${running ? " on" : ""}`}><i style={{ width: `${running ? Math.max(pctDns, 3) : 100}%` }} /></div>
+          <div className={`prog${running ? " on" : ""}`}><i style={{ width: `${running ? Math.max(pct, 3) : 100}%` }} /></div>
         </div>
       ) : null}
 
@@ -235,7 +249,7 @@ export default function DomainScan() {
           </table>
         </div>
       ) : job && !running ? (
-        <div className="tablewrap"><div className="empty"><Icon name="search" /><b>No live redirecting domains found</b>Nothing in the permutation set both resolved and redirected back to {job.seedDomain}.</div></div>
+        <div className="tablewrap"><div className="empty"><Icon name="search" /><b>No redirecting domains found</b>host.io has no domains redirecting into {job.seedDomain}.</div></div>
       ) : null}
 
       {history.length ? (
