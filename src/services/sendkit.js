@@ -266,6 +266,39 @@ export async function campaignMembers(campaignId) {
   return out;
 }
 
+// One member's ACTIVITY in one campaign: which sequence step they are on and every email actually
+// sent to them (with opened / clicked / bounced). This is the only place SendKit exposes a lead's
+// timeline, and it is keyed by CAMPAIGN — there is no lead->campaigns lookup anywhere in the API,
+// so you can only ask this once you already know they are in the campaign (i.e. after
+// campaignMembers gave you the campaignLeadId).
+//
+// Used by the overlap cleanup to decide WHICH of two memberships to keep: pulling someone out of
+// the campaign they are actually engaging with would be worse than the duplication.
+export async function campaignLeadDetail(campaignId, campaignLeadId) {
+  if (!campaignId || !campaignLeadId) return null;
+  try {
+    const r = await withRetry(() => axios.get(`${base}/v1/campaigns/${campaignId}/leads/${campaignLeadId}`, {
+      headers: h(), timeout: 20000, validateStatus: () => true,
+    }));
+    if (r.status >= 300) return null;
+    const d = r.data?.data || r.data || {};
+    const sent = Array.isArray(d.emailsSent) ? d.emailsSent : [];
+    return {
+      status: d.status,
+      step: d.currentSequenceStep ?? null,
+      replied: !!d.replied,
+      repliedAt: d.repliedAt || null,
+      sent: sent.length,
+      opened: sent.filter((e) => e?.opened).length,
+      clicked: sent.filter((e) => e?.clicked).length,
+      bounced: sent.filter((e) => e?.bounced).length,
+    };
+  } catch (e) {
+    log.warn("sendkit campaign lead detail threw", { campaignId, campaignLeadId, err: e.message });
+    return null;
+  }
+}
+
 // Is this address blocked — either directly, or because its whole domain is?
 export function isBlockedBy(dnc, email) {
   const e = String(email || "").trim().toLowerCase();
