@@ -12,26 +12,42 @@
 import { ObjectId } from "mongodb";
 import { splitDomain } from "../lib/permute.js";
 import { runPool } from "../lib/pool.js";
-import { redirectCount, scrapeRedirectDomains } from "../services/hostio.js";
+import { scrapeRedirectPage, apiRedirectPage } from "../services/hostio.js";
 import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, getWorkspaceVerdicts } from "../services/blacklistProject.js";
-import { campaigns, campaignTargets, hostioCounts } from "../db/mongo.js";
+import { campaigns, campaignTargets, hostioPages, hostioUsage } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const PAGE_TTL_MS = 7 * 86400000; // cached redirect pages are reused for 7 days
 
-// host.io redirect count with a Mongo cache — reuse a recent count instead of re-spending a host.io
-// API call on every re-run of the same domain (the one place a re-run burns host.io quota). Default
-// reuse window 7 days; a domain's redirect footprint barely moves day to day.
-async function cachedRedirectCount(seed, maxAgeDays = 7) {
-  const hit = await hostioCounts().findOne({ _id: seed }).catch(() => null);
-  if (hit && hit.count != null && Date.now() - new Date(hit.at).getTime() < maxAgeDays * 86400000) {
-    return { count: hit.count, cached: true };
+// Page 1 = FREE web scrape (gives total count + ~48 domains). Cached so a re-run never re-scrapes.
+async function cachedPage1(seed) {
+  const _id = `${seed}:1`;
+  const hit = await hostioPages().findOne({ _id }).catch(() => null);
+  if (hit && Date.now() - new Date(hit.at).getTime() < PAGE_TTL_MS) return { total: hit.total, domains: hit.domains || [] };
+  const page = await scrapeRedirectPage(seed);
+  if (page.domains.length || page.total != null) {
+    await hostioPages().updateOne({ _id }, { $set: { seed, page: 1, source: "scrape", total: page.total, domains: page.domains, at: new Date() } }, { upsert: true }).catch(() => {});
   }
-  const count = await redirectCount(seed);
-  if (count != null) await hostioCounts().updateOne({ _id: seed }, { $set: { count, at: new Date() } }, { upsert: true }).catch(() => {});
-  return { count, cached: false };
+  return page;
+}
+
+// Page >=2 = PAID API (50/page). Cached; a real call is logged to hostio_usage + increments the
+// campaign's apiCallsUsed counter (a cache hit does neither — that's the saving).
+async function cachedApiPage(campaignId, seed, page) {
+  const _id = `${seed}:${page}`;
+  const hit = await hostioPages().findOne({ _id }).catch(() => null);
+  if (hit && Date.now() - new Date(hit.at).getTime() < PAGE_TTL_MS) return hit.domains || [];
+  const res = await apiRedirectPage(seed, page, {
+    onApiCall: async ({ count }) => {
+      await campaigns().updateOne({ _id: campaignId }, { $inc: { apiCallsUsed: 1 } }).catch(() => {});
+      await hostioUsage().insertOne({ at: new Date(), campaignId, seed, page, count, source: "api" }).catch(() => {});
+    },
+  });
+  if (res.ok) await hostioPages().updateOne({ _id }, { $set: { seed, page, source: "api", domains: res.domains, at: new Date() } }, { upsert: true }).catch(() => {});
+  return res.domains;
 }
 
 // Normalize + dedupe a pasted blob of seed domains (newline/comma/space separated).
@@ -49,76 +65,82 @@ async function setTarget(id, fields) {
     log.warn("campaign setTarget failed", { err: e.message }));
 }
 
-// Stage 2+3 for one seed: scrape host.io for its REAL redirect domains (free, ~48, no API quota),
-// then blacklist-check them. Returns { confirmedCount, blacklisted: [{domain, riskScore, zones}] }.
-// (Replaced the old permutation-guesser: on coldoutbound.com it found 48 real domains vs guessing's 3,
-// because most real redirect domains are generic names that contain no part of the brand.)
-async function discoverAndBlacklist(seed) {
-  const domains = await scrapeRedirectDomains(seed);
-  if (!domains.length) return { confirmedCount: 0, blacklisted: [] };
-
-  await pushDomains(domains); // queues any not-yet-seen domains for checking (idempotent otherwise)
-
-  // Read verdicts from the cached workspace-wide map (order-independent — correct even for domains
-  // checked in an earlier run). Wait, refreshing the map, until our domains are all checked or the
-  // deadline hits; whatever's still pending/checking by then is simply treated as not-listed.
+// Push a fresh batch of domains to the blacklist checker and wait (via the shared workspace-verdict
+// map) until they're checked — then return which are listed. The wait is bounded and the map is
+// shared across all seeds, so concurrent seeds' domains get checked together.
+async function blacklistOf(domains) {
+  if (!domains.length) return [];
+  await pushDomains(domains);
   const want = new Set(domains);
+  const deadline = Date.now() + 20_000;
   let map = await getWorkspaceVerdicts();
-  const deadline = Date.now() + 30_000;
   for (;;) {
     const pending = [...want].filter((d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; });
     if (!pending.length || Date.now() >= deadline) break;
     await sleep(2500);
     map = await getWorkspaceVerdicts();
   }
-
-  const blacklisted = [];
-  for (const d of domains) {
-    const v = map.get(d);
-    if (v && v.status === "listed") blacklisted.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] });
-  }
-  blacklisted.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
-  return { confirmedCount: domains.length, blacklisted };
+  const out = [];
+  for (const d of domains) { const v = map.get(d); if (v && v.status === "listed") out.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] }); }
+  return out;
 }
 
-async function runCampaign(campaignId, targets, gates) {
-  const done = (extra) => campaigns().updateOne({ _id: campaignId }, { $set: { updatedAt: new Date(), ...extra } });
-
-  // ── Stage 1: host.io count (cheap gate) — all seeds in parallel ───────────────────────────────
-  await done({ stage: "counting" });
-  await runPool(targets, async (t) => {
-    await setTarget(t._id, { stage: "counting" });
-    const { count } = await cachedRedirectCount(t.seed);
-    const pass = count != null && count >= gates.countGate;
-    await setTarget(t._id, { redirectCount: count, stage: pass ? "discovery_queued" : "dropped_count" });
-  }, { concurrency: 8 });
-
-  // ── Stage 2+3+4 PIPELINED per seed: each company runs discovery -> blacklist -> (if it clears the
-  // gate) Prospeo, all in one pass, so contacts stream in as companies qualify instead of the whole
-  // campaign waiting for every seed's discovery to finish before any enrichment starts. The shared
-  // Prospeo spacer keeps the concurrent enrich calls under the plan's rate limit.
-  const qualified = await campaignTargets().find({ campaignId, stage: "discovery_queued" }).toArray();
-  await done({ stage: "discovering" });
-  await runPool(qualified, async (t) => {
-    try {
-      await setTarget(t._id, { stage: "discovering" });
-      const { confirmedCount, blacklisted } = await discoverAndBlacklist(t.seed);
-      if (blacklisted.length < gates.blacklistGate) {
-        await setTarget(t._id, { confirmedCount, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted, stage: "dropped_blacklist" });
-        return;
-      }
-      await setTarget(t._id, { confirmedCount, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted, stage: "enriching" });
-      const { people, total, free, error } = await searchPeople(t.seed);
-      await setTarget(t._id, {
-        people, peopleCount: people.length, peopleTotal: total, prospeoFree: !!free,
-        prospeoError: error || null, stage: "done",
-      });
-    } catch (e) {
-      await setTarget(t._id, { stage: "error", error: e.message });
+// One seed's WHOLE independent pipeline: free page-1 (count gate) -> blacklist it -> if < gate,
+// lazily pull API pages one at a time, checking each, stopping the instant blacklistGate is reached
+// (so a company whose bad domains are on page 1 costs ZERO API calls). Then Prospeo if it qualifies.
+async function processSeed(campaignId, t, gates) {
+  try {
+    await setTarget(t._id, { stage: "scraping", activity: "fetching redirects (free)" });
+    const p1 = await cachedPage1(t.seed);
+    const count = p1.total;
+    await setTarget(t._id, { redirectCount: count });
+    if (count == null || count < gates.countGate) {
+      await setTarget(t._id, { stage: "dropped_count", activity: null });
+      return;
     }
-  }, { concurrency: config.campaign.seedConcurrency });
 
-  await done({ stage: "done", status: "done", finishedAt: new Date() });
+    const seen = new Set();
+    const blacklisted = [];
+    const feed = async (domains) => {
+      const fresh = domains.filter((d) => d && !seen.has(d));
+      fresh.forEach((d) => seen.add(d));
+      if (fresh.length) blacklisted.push(...await blacklistOf(fresh));
+    };
+
+    await setTarget(t._id, { stage: "blacklisting", activity: "checking page 1 (free)" });
+    await feed(p1.domains);
+
+    // lazy paid pagination — only if page 1 didn't already clear the gate
+    let page = 2, apiPages = 0;
+    while (blacklisted.length < gates.blacklistGate && (page - 1) * 50 < count && page <= config.campaign.maxApiPages + 1) {
+      await setTarget(t._id, { activity: `checking page ${page} (api)`, apiPagesUsed: apiPages + 1 });
+      const domains = await cachedApiPage(campaignId, t.seed, page);
+      if (!domains.length) break;
+      await feed(domains);
+      apiPages++; page++;
+    }
+
+    blacklisted.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
+    const common = { confirmedCount: seen.size, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted, apiPagesUsed: apiPages };
+    if (blacklisted.length < gates.blacklistGate) {
+      await setTarget(t._id, { ...common, stage: "dropped_blacklist", activity: null });
+      return;
+    }
+
+    await setTarget(t._id, { ...common, stage: "enriching", activity: "finding contacts (prospeo)" });
+    const { people, total, free, error } = await searchPeople(t.seed);
+    await setTarget(t._id, { ...common, people, peopleCount: people.length, peopleTotal: total, prospeoFree: !!free, prospeoError: error || null, stage: "done", activity: null });
+  } catch (e) {
+    await setTarget(t._id, { stage: "error", error: e.message, activity: null });
+  }
+}
+
+// Fully independent, single-pool run — every seed flows through its whole pipeline on its own, at
+// high concurrency, no stage barriers. Contacts stream in as companies qualify.
+async function runCampaign(campaignId, targets, gates) {
+  await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "running", startedAt: new Date(), updatedAt: new Date() } });
+  await runPool(targets, (t) => processSeed(campaignId, t, gates), { concurrency: config.campaign.seedConcurrency });
+  await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "done", status: "done", finishedAt: new Date(), updatedAt: new Date() } });
   log.info("campaign finished", { campaignId: String(campaignId) });
 }
 
@@ -131,8 +153,8 @@ export async function startCampaign(rawSeeds, opts = {}) {
   };
 
   const { insertedId } = await campaigns().insertOne({
-    seedCount: seeds.length, gates, status: "running", stage: "queued",
-    createdAt: new Date(), updatedAt: new Date(), finishedAt: null,
+    seedCount: seeds.length, gates, status: "running", stage: "queued", apiCallsUsed: 0,
+    createdAt: new Date(), startedAt: null, updatedAt: new Date(), finishedAt: null,
   });
 
   const targetDocs = seeds.map((seed) => ({
@@ -151,7 +173,9 @@ export async function startCampaign(rawSeeds, opts = {}) {
   return { id: String(insertedId), seedCount: seeds.length, gates };
 }
 
-// Funnel tallies + the campaign doc, for the dashboard poll.
+// Funnel tallies + live activity for the dashboard poll: stage counts, how many seeds are SETTLED vs
+// still working (for a real progress bar + ETA), and a sample of what's being processed right now.
+const SETTLED = new Set(["done", "dropped_count", "dropped_blacklist", "error", "interrupted"]);
 export async function getCampaign(id) {
   if (!ObjectId.isValid(id)) return null;
   const _id = new ObjectId(id);
@@ -162,7 +186,13 @@ export async function getCampaign(id) {
     { $group: { _id: "$stage", n: { $sum: 1 } } },
   ]).toArray();
   const stages = Object.fromEntries(byStage.map((s) => [s._id, s.n]));
-  return { ...campaign, id, stages };
+  const processed = Object.entries(stages).reduce((a, [k, n]) => a + (SETTLED.has(k) ? n : 0), 0);
+  // a few seeds actively being worked, with their current step — the "it's alive" ticker
+  const active = await campaignTargets().find(
+    { campaignId: _id, stage: { $nin: [...SETTLED, "queued"] } },
+    { projection: { seed: 1, stage: 1, activity: 1, blacklistedCount: 1 }, limit: 12, sort: { updatedAt: -1 } },
+  ).toArray();
+  return { ...campaign, id, stages, processed, active };
 }
 
 // EVERY seed's full funnel result (not just qualified ones) — so you can see each domain's whole
@@ -202,4 +232,14 @@ export async function revealCompanyEmails(campaignId, seed) {
   await campaignTargets().updateOne({ _id: target._id },
     { $set: { people, emailsRevealed: true, updatedAt: new Date() } });
   return people;
+}
+
+// host.io PAID API usage — totals + recent calls, for the tracking view.
+export async function hostioUsageReport() {
+  const [total, today, recent] = await Promise.all([
+    hostioUsage().countDocuments({}),
+    hostioUsage().countDocuments({ at: { $gte: new Date(Date.now() - 86400000) } }),
+    hostioUsage().find({}, { projection: { _id: 0 } }).sort({ at: -1 }).limit(50).toArray(),
+  ]);
+  return { totalApiCalls: total, last24h: today, recent };
 }

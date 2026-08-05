@@ -8,8 +8,8 @@ import { useToast } from "@/lib/toast";
 // The funnel stages, in order, with how to read each tally off the campaign's stage counts.
 const FUNNEL = [
   { key: "seeds", label: "Seed domains", of: (c) => c.seedCount, hint: "companies you pasted in" },
-  { key: "qualified", label: "Passed count gate", of: (c, s) => sum(s, ["discovery_queued", "discovering", "dropped_blacklist", "enrich_queued", "enriching", "done"]), hint: (c) => `≥ ${c.gates?.countGate} redirect domains` },
-  { key: "blacklisted", label: "Have blacklisted infra", of: (c, s) => sum(s, ["enrich_queued", "enriching", "done"]), hint: (c) => `≥ ${c.gates?.blacklistGate} blacklisted domains` },
+  { key: "qualified", label: "Passed count gate", of: (c, s) => sum(s, ["scraping", "blacklisting", "enriching", "dropped_blacklist", "error", "done"]), hint: (c) => `≥ ${c.gates?.countGate} redirect domains` },
+  { key: "blacklisted", label: "Have blacklisted infra", of: (c, s) => sum(s, ["enriching", "done"]), hint: (c) => `≥ ${c.gates?.blacklistGate} blacklisted domains` },
   { key: "enriched", label: "Contacts pulled", of: (c, s) => sum(s, ["done"]), hint: "Prospeo search-person run" },
 ];
 function sum(stages, keys) { return keys.reduce((a, k) => a + (stages?.[k] || 0), 0); }
@@ -17,13 +17,11 @@ function sum(stages, keys) { return keys.reduce((a, k) => a + (stages?.[k] || 0)
 // Human-readable label + pill colour for each per-seed funnel stage.
 const STAGE_META = {
   queued: { label: "queued", cls: "p-review" },
-  counting: { label: "counting…", cls: "p-review" },
+  scraping: { label: "scraping…", cls: "p-review" },
+  blacklisting: { label: "checking blacklist…", cls: "p-review" },
   dropped_count: { label: "below count gate", cls: "p-role-based" },
-  discovery_queued: { label: "queued", cls: "p-review" },
-  discovering: { label: "discovering…", cls: "p-review" },
   dropped_blacklist: { label: "not enough blacklisted", cls: "p-role-based" },
-  enrich_queued: { label: "queued", cls: "p-review" },
-  enriching: { label: "enriching…", cls: "p-review" },
+  enriching: { label: "finding contacts…", cls: "p-review" },
   done: { label: "done", cls: "p-verified" },
   error: { label: "error", cls: "p-competitor" },
   interrupted: { label: "interrupted (redeploy)", cls: "p-role-based" },
@@ -52,8 +50,10 @@ export default function Campaign() {
   const toast = useToast();
   const [view, setView] = useState("list");
   const [seeds, setSeeds] = useState("");
-  const [countGate, setCountGate] = useState(50);
-  const [blacklistGate, setBlacklistGate] = useState(3);
+  const [countGate, setCountGate] = useState(10);
+  const [blacklistGate, setBlacklistGate] = useState(5);
+  const [etaText, setEtaText] = useState("");
+  const rateRef = useRef({ at: 0, processed: 0 });
   const [campaign, setCampaign] = useState(null);
   const [results, setResults] = useState([]);
   const [history, setHistory] = useState([]);
@@ -84,13 +84,26 @@ export default function Campaign() {
     Promise.all([j(`/api/campaign/${id}`), j(`/api/campaign/${id}/results`)]).then(([c, r]) => {
       if (!c || c.error) return;
       setCampaign(c); setResults(r.items || []);
-      if (c.status === "running") timer.current = setTimeout(() => p(id), 2000);
+      // ETA from the processing rate (seeds settled per second) between polls.
+      if (c.status === "running" && c.seedCount) {
+        const now = Date.now(), prev = rateRef.current;
+        if (prev.at && c.processed > prev.processed) {
+          const rate = (c.processed - prev.processed) / ((now - prev.at) / 1000); // seeds/sec
+          const remaining = c.seedCount - c.processed;
+          if (rate > 0) {
+            const secs = Math.round(remaining / rate);
+            setEtaText(secs > 90 ? `~${Math.ceil(secs / 60)} min left` : `~${secs}s left`);
+          }
+        }
+        if (!prev.at || now - prev.at > 4000) rateRef.current = { at: now, processed: c.processed };
+      } else setEtaText("");
+      if (c.status === "running") timer.current = setTimeout(() => p(id), 1500);
       else loadHistory();
     }).catch(() => {});
   }, [loadHistory]);
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  const openCampaign = useCallback((id) => { setView("detail"); setCampaign(null); setResults([]); setOpenRow(null); poll(id); }, [poll]);
+  const openCampaign = useCallback((id) => { setView("detail"); setCampaign(null); setResults([]); setOpenRow(null); setEtaText(""); rateRef.current = { at: 0, processed: 0 }; poll(id); }, [poll]);
 
   async function start() {
     if (!seeds.trim() || starting) return;
@@ -176,6 +189,30 @@ export default function Campaign() {
         <div className="grow" />
         {results.length ? <button className="btn btn-ghost btn-sm" onClick={() => exportCsv(results)}><Icon name="download" />Export CSV</button> : null}
       </div>
+
+      {campaign && running ? (
+        <div className="jobbox on" style={{ marginBottom: "var(--s4)" }}>
+          <div className="jobh">
+            <span className="spin" />
+            <span>
+              Processing <b>{num(campaign.processed || 0)}</b> / {num(campaign.seedCount)}
+              {" · "}<b className="ok">{num(sum(stages, ["done"]))}</b> prospects
+              {" · host.io API used "}<b>{num(campaign.apiCallsUsed || 0)}</b>
+              {etaText ? <> · <b>{etaText}</b></> : null}
+            </span>
+          </div>
+          <div className="prog on"><i style={{ width: `${campaign.seedCount ? Math.max(2, Math.round((campaign.processed / campaign.seedCount) * 100)) : 2}%` }} /></div>
+          {campaign.active?.length ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+              {campaign.active.map((a) => (
+                <span key={a.seed} className="pill p-review" style={{ fontSize: 11 }}>
+                  <span className="spin" style={{ width: 9, height: 9 }} />{a.seed} · {a.activity || a.stage}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {campaign ? (
         <div className="grid g-hero" style={{ marginBottom: "var(--s4)" }}>

@@ -165,6 +165,11 @@ export async function connect() {
   // host.io redirect-count cache (domain -> count). Re-running the same seeds reuses these instead of
   // re-spending host.io API quota (1 call/seed). _id is the domain; `at` gates freshness in code.
   await db.collection("hostio_counts").createIndex({ at: 1 });
+  // Cached redirect PAGES (free scrape page 1 + paid API pages). _id = "domain:page". Re-runs reuse
+  // these so no scrape/API is repeated.
+  await db.collection("hostio_pages").createIndex({ at: 1 });
+  // Audit log of every PAID host.io API call, for the Usage view / cost tracking.
+  await db.collection("hostio_usage").createIndex({ at: -1 });
 
   log.info("mongo connected", { db: config.mongoDb });
   return db;
@@ -208,3 +213,5 @@ export const domainScans = () => db.collection("domain_scans");           // dom
 export const campaigns = () => db.collection("campaigns");                 // outreach funnel batches
 export const campaignTargets = () => db.collection("campaign_targets");    // per-seed funnel state
 export const hostioCounts = () => db.collection("hostio_counts");          // cached host.io redirect counts
+export const hostioPages = () => db.collection("hostio_pages");            // cached redirect pages (scrape + api)
+export const hostioUsage = () => db.collection("hostio_usage");            // paid API call audit log

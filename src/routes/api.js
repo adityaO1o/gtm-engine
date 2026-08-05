@@ -29,7 +29,7 @@ import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/dom
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio } from "../services/hostio.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport } from "../pipeline/campaign.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -904,6 +904,7 @@ apiRouter.post("/campaign", async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 apiRouter.get("/campaign", async (_req, res) => res.json({ items: await listOutreachCampaigns() }));
+apiRouter.get("/hostio/usage", async (_req, res) => res.json(await hostioUsageReport()));
 apiRouter.get("/campaign/:id", async (req, res) => {
   const c = await getCampaign(req.params.id);
   if (!c) return res.status(404).json({ error: "not found" });

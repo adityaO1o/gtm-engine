@@ -140,13 +140,19 @@ function nextProxy() {
 
 export function scrapePoolSize() { return SCRAPE_POOL.length; }
 
-// The page returns a 404 status but a fully-populated body; parse regardless of status.
-function parseRedirectDomains(html) {
+// The page returns a 404 status but a fully-populated body; parse regardless of status. Returns BOTH
+// the total count ("There are 756 domains redirecting to...") and the ~48 domains listed — so one
+// free fetch covers the Stage-1 count gate AND the first page of domains, zero API quota.
+function parseRedirectPage(html) {
+  const s = String(html || "");
   const out = new Set();
   const re = /<a\s+href="\/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})"[^>]*border-gray-400[^>]*>/gi;
   let m;
-  while ((m = re.exec(String(html || "")))) out.add(m[1].toLowerCase());
-  return [...out];
+  while ((m = re.exec(s))) out.add(m[1].toLowerCase());
+  const text = s.replace(/<[^>]+>/g, " ");
+  const cm = text.match(/There\s+are\s+([0-9,]+)\s+domains?\s+redirecting/i);
+  const total = cm ? parseInt(cm[1].replace(/,/g, ""), 10) : (out.size || null);
+  return { total, domains: [...out] };
 }
 
 async function fetchScrape(seed, agent) {
@@ -157,28 +163,56 @@ async function fetchScrape(seed, agent) {
     ...(agent ? { httpsAgent: agent, proxy: false } : {}),
     headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36" },
   });
-  return parseRedirectDomains(r.data);
+  return parseRedirectPage(r.data);
 }
 
-// -> string[] of redirect domains (deduped, lowercased). Never throws — returns [] on total failure.
-// Tries up to 4 proxies from the pool (benching dead ones ~2 min), then one direct attempt.
-export async function scrapeRedirectDomains(seed) {
+// FREE web scrape of page 1 -> { total, domains }. Tries up to 4 pool proxies (benching dead ones
+// ~2 min), then one direct attempt. Never throws — returns { total: null, domains: [] } on failure.
+export async function scrapeRedirectPage(seed) {
   const tries = Math.min(4, SCRAPE_POOL.length);
   for (let i = 0; i < tries; i++) {
     const url = nextProxy();
     if (!url) break;
     try {
-      const domains = await fetchScrape(seed, agentFor(url));
-      if (domains.length) return domains;
-      // reachable but empty — could be a soft block from this IP; bench it briefly and rotate.
-      benchedUntil.set(url, Date.now() + 120_000);
+      const page = await fetchScrape(seed, agentFor(url));
+      if (page.domains.length || page.total != null) return page;
+      benchedUntil.set(url, Date.now() + 120_000); // reachable but empty — soft block; rotate
     } catch (e) {
       benchedUntil.set(url, Date.now() + 120_000);
       log.warn("hostio scrape proxy failed — rotating", { seed, proxy: url.split("@")[1], err: e.message });
     }
   }
   try { return await fetchScrape(seed, null); }        // direct fallback
-  catch (e) { log.warn("hostio scrape failed (direct too)", { seed, err: e.message }); return []; }
+  catch (e) { log.warn("hostio scrape failed (direct too)", { seed, err: e.message }); return { total: null, domains: [] }; }
+}
+
+// back-compat: just the domains (used by the old Domain Prospecting hostio mode).
+export async function scrapeRedirectDomains(seed) {
+  return (await scrapeRedirectPage(seed)).domains;
+}
+
+// ── PAID API page (Basic plan: 50 domains/page) — used ONLY when page-1 (free) didn't yield enough
+// blacklisted domains, fetched lazily page by page. Every call is spaced + 429-retried + LOGGED via
+// the onApiCall callback so usage is trackable. Returns { domains, ok }.
+export async function apiRedirectPage(seed, page, { onApiCall } = {}) {
+  if (!config.hostio.token) return { domains: [], ok: false };
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await hostioSlot();
+      const r = await axios.get(`https://host.io/api/domains/redirects/${encodeURIComponent(seed)}`, {
+        params: { token: config.hostio.token, limit: 50, page },
+        timeout: 15000, validateStatus: () => true,
+      });
+      if (r.status === 429) { await sleep(1500 * 2 ** attempt); continue; }
+      if (r.status >= 300) { log.warn("hostio api page failed", { seed, page, status: r.status }); return { domains: [], ok: false }; }
+      const domains = (r.data?.domains || []).map((d) => String(d).toLowerCase());
+      if (onApiCall) await onApiCall({ seed, page, count: domains.length });
+      return { domains, ok: true };
+    } catch (e) {
+      log.warn("hostio api page threw", { seed, page, attempt, err: e.message });
+    }
+  }
+  return { domains: [], ok: false };
 }
 
 // Config/connectivity self-test for the diag endpoint — is the token set and does a live call work,

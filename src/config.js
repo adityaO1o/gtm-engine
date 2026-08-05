@@ -108,16 +108,19 @@ export const config = {
     port: process.env.WEBSHARE_PROXY_PORT || "80",
   },
 
-  // Campaign funnel gates (100 seeds -> qualified prospects). Both tunable per-run from the UI.
+  // Campaign funnel gates (seed domains -> qualified prospects). Tunable per-run from the UI.
   campaign: {
-    // Stage 1: a seed needs at least this many redirect domains (host.io count) to be worth pursuing.
-    countGate: parseInt(process.env.CAMPAIGN_COUNT_GATE || "50", 10),
-    // Stage 3: a company needs at least this many BLACKLISTED domains to qualify for Prospeo enrichment.
-    blacklistGate: parseInt(process.env.CAMPAIGN_BLACKLIST_GATE || "3", 10),
-    // How many seeds run their discovery+blacklist+enrich pipeline at once. Mostly I/O (scrape +
-    // blacklist API + Prospeo), so this can be fairly high; the shared Prospeo spacer still caps the
-    // enrich rate globally regardless of this.
-    seedConcurrency: parseInt(process.env.CAMPAIGN_SEED_CONCURRENCY || "8", 10),
+    // A seed needs at least this many redirect domains (from the FREE page-1 scrape) to be pursued.
+    countGate: parseInt(process.env.CAMPAIGN_COUNT_GATE || "10", 10),
+    // A company needs at least this many BLACKLISTED domains to qualify (also the stop condition for
+    // the lazy paid pagination — we stop pulling API pages the moment this many are found).
+    blacklistGate: parseInt(process.env.CAMPAIGN_BLACKLIST_GATE || "5", 10),
+    // Safety cap on paid API pages per seed (each = 50 domains). Big seeds page deeper to hit the
+    // blacklist gate; this just stops a runaway when a seed never reaches it.
+    maxApiPages: parseInt(process.env.CAMPAIGN_MAX_API_PAGES || "20", 10),
+    // How many seeds run their whole independent pipeline at once. Mostly I/O (free scrape + blacklist
+    // + occasional API/Prospeo); the shared host.io/Prospeo spacers still cap the paid rates globally.
+    seedConcurrency: parseInt(process.env.CAMPAIGN_SEED_CONCURRENCY || "20", 10),
   },
 
   // Domain-prospecting scan tunables. DNS concurrency is high on purpose: lookups now go to public
