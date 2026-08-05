@@ -114,8 +114,10 @@ export const config = {
     countGate: parseInt(process.env.CAMPAIGN_COUNT_GATE || "50", 10),
     // Stage 3: a company needs at least this many BLACKLISTED domains to qualify for Prospeo enrichment.
     blacklistGate: parseInt(process.env.CAMPAIGN_BLACKLIST_GATE || "3", 10),
-    // How many seeds run their (heavier) discovery+blacklist stage at once.
-    seedConcurrency: parseInt(process.env.CAMPAIGN_SEED_CONCURRENCY || "4", 10),
+    // How many seeds run their discovery+blacklist+enrich pipeline at once. Mostly I/O (scrape +
+    // blacklist API + Prospeo), so this can be fairly high; the shared Prospeo spacer still caps the
+    // enrich rate globally regardless of this.
+    seedConcurrency: parseInt(process.env.CAMPAIGN_SEED_CONCURRENCY || "8", 10),
   },
 
   // Domain-prospecting scan tunables. DNS concurrency is high on purpose: lookups now go to public

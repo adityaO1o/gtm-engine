@@ -43,7 +43,7 @@ async function discoverAndBlacklist(seed) {
   if (!domains.length) return { confirmedCount: 0, blacklisted: [] };
 
   await pushDomains(domains);
-  const verdicts = await pollUntilChecked(domains, { intervalMs: 1000, maxWaitMs: 60_000 });
+  const verdicts = await pollUntilChecked(domains, { intervalMs: 1000, maxWaitMs: 30_000 });
   const blacklisted = [];
   for (const [domain, v] of verdicts) {
     if (v.status === "listed") blacklisted.push({ domain, riskScore: v.riskScore ?? null, zones: v.summary?.listedZones || [] });
@@ -64,34 +64,30 @@ async function runCampaign(campaignId, targets, gates) {
     await setTarget(t._id, { redirectCount: count, stage: pass ? "discovery_queued" : "dropped_count" });
   }, { concurrency: 8 });
 
-  // ── Stage 2+3: discovery + blacklist on seeds that passed the count gate ──────────────────────
+  // ── Stage 2+3+4 PIPELINED per seed: each company runs discovery -> blacklist -> (if it clears the
+  // gate) Prospeo, all in one pass, so contacts stream in as companies qualify instead of the whole
+  // campaign waiting for every seed's discovery to finish before any enrichment starts. The shared
+  // Prospeo spacer keeps the concurrent enrich calls under the plan's rate limit.
   const qualified = await campaignTargets().find({ campaignId, stage: "discovery_queued" }).toArray();
   await done({ stage: "discovering" });
   await runPool(qualified, async (t) => {
-    await setTarget(t._id, { stage: "discovering" });
     try {
+      await setTarget(t._id, { stage: "discovering" });
       const { confirmedCount, blacklisted } = await discoverAndBlacklist(t.seed);
-      const pass = blacklisted.length >= gates.blacklistGate;
+      if (blacklisted.length < gates.blacklistGate) {
+        await setTarget(t._id, { confirmedCount, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted, stage: "dropped_blacklist" });
+        return;
+      }
+      await setTarget(t._id, { confirmedCount, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted, stage: "enriching" });
+      const { people, total, free, error } = await searchPeople(t.seed);
       await setTarget(t._id, {
-        confirmedCount, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted,
-        stage: pass ? "enrich_queued" : "dropped_blacklist",
+        people, peopleCount: people.length, peopleTotal: total, prospeoFree: !!free,
+        prospeoError: error || null, stage: "done",
       });
     } catch (e) {
       await setTarget(t._id, { stage: "error", error: e.message });
     }
   }, { concurrency: config.campaign.seedConcurrency });
-
-  // ── Stage 4: Prospeo search-person on companies with enough blacklisted domains ───────────────
-  const toEnrich = await campaignTargets().find({ campaignId, stage: "enrich_queued" }).toArray();
-  await done({ stage: "enriching" });
-  await runPool(toEnrich, async (t) => {
-    await setTarget(t._id, { stage: "enriching" });
-    const { people, total, free, error } = await searchPeople(t.seed);
-    await setTarget(t._id, {
-      people, peopleCount: people.length, peopleTotal: total, prospeoFree: !!free,
-      prospeoError: error || null, stage: "done",
-    });
-  }, { concurrency: 4 });
 
   await done({ stage: "done", status: "done", finishedAt: new Date() });
   log.info("campaign finished", { campaignId: String(campaignId) });
