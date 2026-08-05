@@ -87,25 +87,44 @@ export async function redirectCount(seed) {
 // guessing can never produce. This is the campaign's discovery source: free, no host.io API token/
 // quota, and 15x the coverage of permutation (coldoutbound.com: 48 scraped vs 3 guessed).
 //
-// Requests optionally route through the Webshare rotating proxy so host.io sees fresh IPs and won't
-// rate-limit us. Webshare keeps one exit IP per "session" (username-<id>); we bump the session id
-// every `scrapePerProxy` requests so no single IP makes more than ~that many host.io hits. If the
-// proxy is unset or errors (e.g. out of bandwidth), the scrape falls back to a direct request.
-let scrapeSeq = 0;
+// Requests route through a rotating pool of proxies so host.io sees fresh IPs and won't rate-limit
+// us: the residential pool (HOSTIO_SCRAPE_PROXIES) plus the Webshare rotating endpoint if configured.
+// Round-robin; a proxy that errors is benched for a cooldown and the next one is tried; if the whole
+// pool fails the scrape falls back to a DIRECT request, so a dead pool never blocks discovery.
 
-function webshareAgent() {
+// One-time build of the pool: the residential proxy URLs + (optionally) the Webshare endpoint.
+const SCRAPE_POOL = (() => {
+  const pool = [...config.hostio.scrapeProxies];
   const w = config.webshare;
-  if (!w.username || !w.host) return null;
-  const session = Math.floor(scrapeSeq / Math.max(1, config.hostio.scrapePerProxy));
-  scrapeSeq++;
-  const user = `${w.username}-${session}`; // webshare sticky-session id -> stable IP per session
-  return new HttpsProxyAgent(`http://${encodeURIComponent(user)}:${encodeURIComponent(w.password)}@${w.host}:${w.port}`);
+  if (w.username && w.host) pool.push(`http://${encodeURIComponent(w.username)}:${encodeURIComponent(w.password)}@${w.host}:${w.port}`);
+  return pool;
+})();
+let poolCursor = 0;
+const benchedUntil = new Map(); // proxyUrl -> timestamp it becomes usable again
+const agentCache = new Map();   // proxyUrl -> HttpsProxyAgent (reused)
+
+function agentFor(url) {
+  let a = agentCache.get(url);
+  if (!a) { a = new HttpsProxyAgent(url); agentCache.set(url, a); }
+  return a;
 }
+
+// Next live proxy url (round-robin, skipping benched ones), or null if none available right now.
+function nextProxy() {
+  const now = Date.now();
+  for (let i = 0; i < SCRAPE_POOL.length; i++) {
+    const url = SCRAPE_POOL[poolCursor % SCRAPE_POOL.length];
+    poolCursor++;
+    if ((benchedUntil.get(url) || 0) <= now) return url;
+  }
+  return null;
+}
+
+export function scrapePoolSize() { return SCRAPE_POOL.length; }
 
 // The page returns a 404 status but a fully-populated body; parse regardless of status.
 function parseRedirectDomains(html) {
   const out = new Set();
-  // Redirect links carry a distinctive class; match the href of any <a> in that list.
   const re = /<a\s+href="\/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})"[^>]*border-gray-400[^>]*>/gi;
   let m;
   while ((m = re.exec(String(html || "")))) out.add(m[1].toLowerCase());
@@ -121,20 +140,25 @@ async function fetchScrape(seed, agent) {
   return parseRedirectDomains(r.data);
 }
 
-// -> string[] of redirect domains (deduped, lowercased). Never throws — returns [] on failure.
+// -> string[] of redirect domains (deduped, lowercased). Never throws — returns [] on total failure.
+// Tries up to 4 proxies from the pool (benching dead ones ~2 min), then one direct attempt.
 export async function scrapeRedirectDomains(seed) {
-  const agent = webshareAgent();
-  if (agent) {
+  const tries = Math.min(4, SCRAPE_POOL.length);
+  for (let i = 0; i < tries; i++) {
+    const url = nextProxy();
+    if (!url) break;
     try {
-      const domains = await fetchScrape(seed, agent);
+      const domains = await fetchScrape(seed, agentFor(url));
       if (domains.length) return domains;
-      // empty via proxy — could be a proxy hiccup; fall through to a direct retry.
+      // reachable but empty — could be a soft block from this IP; bench it briefly and rotate.
+      benchedUntil.set(url, Date.now() + 120_000);
     } catch (e) {
-      log.warn("hostio scrape via proxy failed — retrying direct", { seed, err: e.message });
+      benchedUntil.set(url, Date.now() + 120_000);
+      log.warn("hostio scrape proxy failed — rotating", { seed, proxy: url.split("@")[1], err: e.message });
     }
   }
-  try { return await fetchScrape(seed, null); }
-  catch (e) { log.warn("hostio scrape failed", { seed, err: e.message }); return []; }
+  try { return await fetchScrape(seed, null); }        // direct fallback
+  catch (e) { log.warn("hostio scrape failed (direct too)", { seed, err: e.message }); return []; }
 }
 
 // Config/connectivity self-test for the diag endpoint — is the token set and does a live call work,

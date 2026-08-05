@@ -94,10 +94,13 @@ export const config = {
     // Campaign discovery scrapes host.io's public web page (free, ~48 real domains/seed, no API quota)
     // instead of guessing. Rotate the exit IP every N scrapes so host.io doesn't rate-limit one IP.
     scrapePerProxy: parseInt(process.env.HOSTIO_SCRAPE_PER_PROXY || "10", 10),
+    // Rotating pool of proxies for the scrape — a newline/comma list of http://user:pass@ip:port.
+    // Round-robined, dead ones skipped, direct fallback if the whole pool fails. The Webshare
+    // rotating endpoint (below) is appended as one more pool entry when configured.
+    scrapeProxies: (process.env.HOSTIO_SCRAPE_PROXIES || "").split(/[\n,]+/).map((s) => s.replace(/\s+/g, "")).filter((s) => s.startsWith("http")),
   },
 
-  // Webshare rotating proxy — used (when set) to route host.io web-page scrapes through fresh IPs so
-  // host.io won't rate-limit or block us. Optional: if unset or unreachable, scrapes go direct.
+  // Webshare rotating proxy — an additional scrape-pool exit (fresh IP per request). Optional.
   webshare: {
     username: process.env.WEBSHARE_PROXY_USERNAME || "",
     password: process.env.WEBSHARE_PROXY_PASSWORD || "",
