@@ -29,7 +29,7 @@ import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/dom
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio } from "../services/hostio.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails } from "../pipeline/campaign.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -910,3 +910,9 @@ apiRouter.get("/campaign/:id", async (req, res) => {
   res.json(c);
 });
 apiRouter.get("/campaign/:id/results", async (req, res) => res.json({ items: await getCampaignResults(req.params.id) }));
+// On-demand email reveal for one company's contacts (spends Prospeo credits — ~1 per person).
+apiRouter.post("/campaign/:id/reveal", async (req, res) => {
+  const people = await revealCompanyEmails(req.params.id, S(req.body?.seed));
+  if (!people) return res.status(404).json({ error: "not found" });
+  res.json({ people });
+});

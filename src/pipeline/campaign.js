@@ -13,7 +13,7 @@ import { ObjectId } from "mongodb";
 import { splitDomain } from "../lib/permute.js";
 import { runPool } from "../lib/pool.js";
 import { redirectCount, scrapeRedirectDomains } from "../services/hostio.js";
-import { searchPeople } from "../services/prospeo.js";
+import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, pollUntilChecked } from "../services/blacklistProject.js";
 import { campaigns, campaignTargets } from "../db/mongo.js";
 import { config } from "../config.js";
@@ -153,4 +153,28 @@ export async function getCampaignResults(id) {
 
 export async function listCampaigns(limit = 20) {
   return campaigns().find({}).sort({ createdAt: -1 }).limit(limit).toArray();
+}
+
+// On-demand Stage 5a: reveal the actual emails for ONE company's contacts. search-person returns
+// people with MASKED emails (to save credits); this enriches each via Prospeo enrich-person (~1
+// credit per person that resolves) — run only when you actually want to contact that company, so
+// credits aren't burned revealing everyone up front. Returns the updated people list.
+export async function revealCompanyEmails(campaignId, seed) {
+  if (!ObjectId.isValid(campaignId)) return null;
+  const target = await campaignTargets().findOne({ campaignId: new ObjectId(campaignId), seed });
+  if (!target) return null;
+  const people = (target.people || []).map((p) => ({ ...p }));
+
+  await runPool(people, async (p, i) => {
+    const ids = p.linkedin_url
+      ? { linkedin_url: p.linkedin_url }
+      : { first_name: p.first_name, last_name: p.last_name, company_domain: seed };
+    const r = await findEmail(ids);
+    people[i].email = r.email || null;
+    people[i].email_status = r.email_status || null;
+  }, { concurrency: 5 });
+
+  await campaignTargets().updateOne({ _id: target._id },
+    { $set: { people, emailsRevealed: true, updatedAt: new Date() } });
+  return people;
 }

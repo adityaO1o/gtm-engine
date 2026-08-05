@@ -30,13 +30,13 @@ const STAGE_META = {
 
 function csvEscape(v) { return `"${String(v ?? "").replace(/"/g, '""')}"`; }
 function exportCsv(rows) {
-  const out = [["company", "redirectCount", "blacklistedCount", "blacklistedDomains", "person", "title", "seniority", "department", "linkedin"]];
+  const out = [["company", "redirectCount", "blacklistedCount", "blacklistedDomains", "person", "title", "seniority", "department", "email", "email_status", "linkedin"]];
   for (const r of rows) {
     const bl = (r.blacklistedDomains || []).map((d) => d.domain).join("|");
     if (r.people?.length) {
-      for (const p of r.people) out.push([r.seed, r.redirectCount, r.blacklistedCount, bl, p.name, p.job_title, p.seniority, p.department, p.linkedin_url]);
+      for (const p of r.people) out.push([r.seed, r.redirectCount, r.blacklistedCount, bl, p.name, p.job_title, p.seniority, p.department, p.email || "", p.email_status || "", p.linkedin_url]);
     } else {
-      out.push([r.seed, r.redirectCount, r.blacklistedCount, bl, "", "", "", "", ""]);
+      out.push([r.seed, r.redirectCount, r.blacklistedCount, bl, "", "", "", "", "", "", ""]);
     }
   }
   const csv = out.map((r) => r.map(csvEscape).join(",")).join("\n");
@@ -58,7 +58,22 @@ export default function Campaign() {
   const [history, setHistory] = useState([]);
   const [starting, setStarting] = useState(false);
   const [openRow, setOpenRow] = useState(null);
+  const [revealing, setRevealing] = useState(null);
   const timer = useRef(null);
+
+  async function revealEmails(seed) {
+    if (revealing) return;
+    setRevealing(seed);
+    try {
+      const r = await post(`/api/campaign/${campaign.id || campaign._id}/reveal`, { seed });
+      if (r.people) {
+        setResults((rows) => rows.map((x) => (x.seed === seed ? { ...x, people: r.people, emailsRevealed: true } : x)));
+        const got = r.people.filter((p) => p.email).length;
+        toast(got ? `Revealed ${got} email${got === 1 ? "" : "s"}` : "No emails found for these contacts", got ? "good" : "bad");
+      }
+    } catch { toast("Reveal failed", "bad"); }
+    setRevealing(null);
+  }
 
   const loadHistory = useCallback(() => { j("/api/campaign").then((d) => setHistory(d.items || [])).catch(() => {}); }, []);
   useEffect(() => { loadHistory(); }, [loadHistory]);
@@ -232,7 +247,17 @@ export default function Campaign() {
 
                             {r.stage === "done" || r.people?.length ? (
                               <>
-                                <div className="resn" style={{ marginBottom: 8 }}><b>Contacts</b> ({num(r.peopleCount)}{r.peopleTotal > r.peopleCount ? ` of ${num(r.peopleTotal)}` : ""}){r.people?.length ? " — emails revealed at send time" : ""}</div>
+                                <div className="resn" style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
+                                  <b>Contacts</b> ({num(r.peopleCount)}{r.peopleTotal > r.peopleCount ? ` of ${num(r.peopleTotal)}` : ""})
+                                  {r.people?.length && !r.emailsRevealed ? (
+                                    <button className="btn btn-ghost btn-sm" disabled={revealing === r.seed}
+                                      onClick={(e) => { e.stopPropagation(); revealEmails(r.seed); }}
+                                      title={`Enriches each contact via Prospeo — ~${r.peopleCount} credits`}>
+                                      <Icon name={revealing === r.seed ? "refresh" : "mail"} />{revealing === r.seed ? "Revealing…" : `Reveal emails (~${num(r.peopleCount)} credits)`}
+                                    </button>
+                                  ) : null}
+                                  {r.emailsRevealed ? <span className="resn muted">emails revealed</span> : null}
+                                </div>
                                 {r.people?.length ? (
                                   <table><tbody>
                                     {r.people.map((p, i) => (
@@ -240,6 +265,9 @@ export default function Campaign() {
                                         <td><b className="sm">{p.name || "—"}</b></td>
                                         <td className="sm muted">{p.job_title || "—"}</td>
                                         <td className="sm muted">{p.department || ""}</td>
+                                        <td className="sm">{p.email
+                                          ? <span className="mono" style={{ color: p.email_status === "VERIFIED" ? "var(--good)" : "var(--ink)" }}>{p.email}</span>
+                                          : r.emailsRevealed ? <span className="muted">—</span> : <span className="muted">hidden</span>}</td>
                                         <td>{p.linkedin_url ? <a href={p.linkedin_url} target="_blank" rel="noopener" className="sm">in ↗</a> : null}</td>
                                       </tr>
                                     ))}
