@@ -35,6 +35,57 @@ export async function listDomains({ search, status, page = 1, limit = 100, sort,
   return r.data;
 }
 
+// A cached snapshot of EVERY domain's verdict in the workspace: domain -> {status, riskScore, zones}.
+// The campaign reads this instead of the lastCheckedAt-sorted per-seed poll, which silently missed
+// domains that were checked in an earlier run (old lastCheckedAt -> buried deep in a now-4000+ domain
+// workspace -> the poll's early-termination gave up before reaching them -> 0 blacklisted for domains
+// that were actually listed). Membership here is order-independent and correct. Cached briefly and
+// de-duped across concurrent seeds so it's ~10 list calls per refresh, not per seed.
+let verdictCache = { at: 0, map: new Map() };
+let verdictRefreshing = null;
+
+// One page of the workspace, with 429/5xx backoff — a transient rate limit must NOT look like an
+// empty page (that would cache an incomplete verdict map and wrongly report domains as not-listed).
+async function verdictPage(page) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const r = await axios.get(`${base()}/projects/${ws()}/domains`, {
+      // sort by DOMAIN NAME (stable) — the default riskScore sort shifts between page fetches as
+      // enrichment/rechecks change scores, so domains fall through the cracks of pagination and go
+      // missing from the map. Alphabetical is immutable, so every domain is read exactly once.
+      headers: h(), timeout: 25000, validateStatus: () => true, params: { page, limit: 500, sort: "domain", dir: "asc" },
+    });
+    if (r.status === 200) return { ok: true, items: r.data?.items || [] };
+    if (r.status !== 429 && r.status < 500) return { ok: false, items: [] }; // hard error — don't retry
+    await new Promise((s) => setTimeout(s, 800 * 2 ** attempt)); // 0.8s,1.6s,3.2s,6.4s,12.8s
+  }
+  return { ok: false, items: [] };
+}
+
+export async function getWorkspaceVerdicts({ maxAgeMs = 10000 } = {}) {
+  if (verdictCache.map.size && Date.now() - verdictCache.at < maxAgeMs) return verdictCache.map;
+  if (verdictRefreshing) return verdictRefreshing;
+  verdictRefreshing = (async () => {
+    const map = new Map();
+    let complete = true;
+    for (let page = 1; page <= 400; page++) {
+      const { ok, items } = await verdictPage(page);
+      if (!ok) { complete = false; break; } // a page failed — the map is partial, don't trust it
+      if (!items.length) break;
+      for (const it of items) {
+        const d = String(it.domain || "").toLowerCase();
+        if (d) map.set(d, { status: it.status, riskScore: it.riskScore ?? null, zones: it.summary?.listedZones || [] });
+      }
+      if (items.length < 500) break;
+    }
+    // Only replace the cache with a COMPLETE read; on a partial failure keep the last good map so a
+    // transient rate limit can't erase everyone's verdicts.
+    if (complete && map.size) verdictCache = { at: Date.now(), map };
+    verdictRefreshing = null;
+    return complete && map.size ? map : verdictCache.map;
+  })();
+  return verdictRefreshing;
+}
+
 // Full per-domain detail for the "where is it blacklisted" drawer: current verdict + which exact
 // DNSBL zones list it + DNS/WHOIS enrichment (registrar, MX, SPF/DMARC...) + the listing-event
 // history. The scan doesn't store the blacklist-API's own domain id, so we look it up by search

@@ -14,10 +14,12 @@ import { splitDomain } from "../lib/permute.js";
 import { runPool } from "../lib/pool.js";
 import { redirectCount, scrapeRedirectDomains } from "../services/hostio.js";
 import { searchPeople, findEmail } from "../services/prospeo.js";
-import { pushDomains, pollUntilChecked } from "../services/blacklistProject.js";
+import { pushDomains, getWorkspaceVerdicts } from "../services/blacklistProject.js";
 import { campaigns, campaignTargets } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Normalize + dedupe a pasted blob of seed domains (newline/comma/space separated).
 export function parseSeeds(raw) {
@@ -42,11 +44,25 @@ async function discoverAndBlacklist(seed) {
   const domains = await scrapeRedirectDomains(seed);
   if (!domains.length) return { confirmedCount: 0, blacklisted: [] };
 
-  await pushDomains(domains);
-  const verdicts = await pollUntilChecked(domains, { intervalMs: 1000, maxWaitMs: 30_000 });
+  await pushDomains(domains); // queues any not-yet-seen domains for checking (idempotent otherwise)
+
+  // Read verdicts from the cached workspace-wide map (order-independent — correct even for domains
+  // checked in an earlier run). Wait, refreshing the map, until our domains are all checked or the
+  // deadline hits; whatever's still pending/checking by then is simply treated as not-listed.
+  const want = new Set(domains);
+  let map = await getWorkspaceVerdicts();
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const pending = [...want].filter((d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; });
+    if (!pending.length || Date.now() >= deadline) break;
+    await sleep(2500);
+    map = await getWorkspaceVerdicts();
+  }
+
   const blacklisted = [];
-  for (const [domain, v] of verdicts) {
-    if (v.status === "listed") blacklisted.push({ domain, riskScore: v.riskScore ?? null, zones: v.summary?.listedZones || [] });
+  for (const d of domains) {
+    const v = map.get(d);
+    if (v && v.status === "listed") blacklisted.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] });
   }
   blacklisted.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
   return { confirmedCount: domains.length, blacklisted };
