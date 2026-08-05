@@ -16,6 +16,19 @@ import { runPool } from "../lib/pool.js";
 import { log } from "../lib/logger.js";
 
 const PER_PAGE = 5; // this tier's hard cap per list page, regardless of any `limit` param
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Shared spacer across host.io API calls so a big campaign's count burst (800 rapid calls) doesn't
+// trip host.io's rate limit — that dropped 424/800 domains to a null count in one run, wrongly
+// gating them out. ~250ms ≈ 240/min.
+const HOSTIO_MIN_GAP_MS = parseInt(process.env.HOSTIO_MIN_GAP_MS || "250", 10);
+let hostioNextSlot = 0;
+async function hostioSlot() {
+  const now = Date.now();
+  const wait = Math.max(0, hostioNextSlot - now);
+  hostioNextSlot = Math.max(now, hostioNextSlot) + HOSTIO_MIN_GAP_MS;
+  if (wait > 0) await sleep(wait);
+}
 
 async function fetchPage(seed, page) {
   const r = await axios.get(`https://host.io/api/domains/redirects/${encodeURIComponent(seed)}`, {
@@ -68,17 +81,22 @@ export async function fetchRedirectDomains(seed, { onBatch } = {}) {
 // Returns the count, or null if host.io errored (so the caller can tell "0 redirects" from "failed").
 export async function redirectCount(seed) {
   if (!config.hostio.token) throw new Error("HOSTIO_TOKEN not set");
-  try {
-    const r = await axios.get(`https://host.io/api/domains/redirects/${encodeURIComponent(seed)}`, {
-      params: { token: config.hostio.token, limit: 0 },
-      timeout: 15000, validateStatus: () => true,
-    });
-    if (r.status >= 300) { log.warn("hostio count failed", { seed, status: r.status }); return null; }
-    return r.data?.total ?? 0;
-  } catch (e) {
-    log.warn("hostio count threw", { seed, err: e.message });
-    return null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await hostioSlot();
+      const r = await axios.get(`https://host.io/api/domains/redirects/${encodeURIComponent(seed)}`, {
+        params: { token: config.hostio.token, limit: 0 },
+        timeout: 15000, validateStatus: () => true,
+      });
+      if (r.status === 429) { await sleep(1500 * 2 ** attempt); continue; } // rate limit — back off + retry
+      if (r.status >= 300) { log.warn("hostio count failed", { seed, status: r.status }); return null; }
+      return r.data?.total ?? 0;
+    } catch (e) {
+      log.warn("hostio count threw", { seed, attempt, err: e.message });
+    }
   }
+  log.warn("hostio count gave up after retries", { seed });
+  return null;
 }
 
 // ── host.io WEBSITE scrape (free, no API quota) ────────────────────────────────────────────────
