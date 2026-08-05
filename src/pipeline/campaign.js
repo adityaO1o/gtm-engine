@@ -15,11 +15,24 @@ import { runPool } from "../lib/pool.js";
 import { redirectCount, scrapeRedirectDomains } from "../services/hostio.js";
 import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, getWorkspaceVerdicts } from "../services/blacklistProject.js";
-import { campaigns, campaignTargets } from "../db/mongo.js";
+import { campaigns, campaignTargets, hostioCounts } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// host.io redirect count with a Mongo cache — reuse a recent count instead of re-spending a host.io
+// API call on every re-run of the same domain (the one place a re-run burns host.io quota). Default
+// reuse window 7 days; a domain's redirect footprint barely moves day to day.
+async function cachedRedirectCount(seed, maxAgeDays = 7) {
+  const hit = await hostioCounts().findOne({ _id: seed }).catch(() => null);
+  if (hit && hit.count != null && Date.now() - new Date(hit.at).getTime() < maxAgeDays * 86400000) {
+    return { count: hit.count, cached: true };
+  }
+  const count = await redirectCount(seed);
+  if (count != null) await hostioCounts().updateOne({ _id: seed }, { $set: { count, at: new Date() } }, { upsert: true }).catch(() => {});
+  return { count, cached: false };
+}
 
 // Normalize + dedupe a pasted blob of seed domains (newline/comma/space separated).
 export function parseSeeds(raw) {
@@ -75,7 +88,7 @@ async function runCampaign(campaignId, targets, gates) {
   await done({ stage: "counting" });
   await runPool(targets, async (t) => {
     await setTarget(t._id, { stage: "counting" });
-    const count = await redirectCount(t.seed);
+    const { count } = await cachedRedirectCount(t.seed);
     const pass = count != null && count >= gates.countGate;
     await setTarget(t._id, { redirectCount: count, stage: pass ? "discovery_queued" : "dropped_count" });
   }, { concurrency: 8 });

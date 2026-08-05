@@ -162,6 +162,9 @@ export async function connect() {
   await db.collection("campaign_targets").updateMany(
     { stage: { $in: ["queued", "counting", "discovery_queued", "discovering", "enrich_queued", "enriching"] } },
     { $set: { stage: "interrupted" } });
+  // host.io redirect-count cache (domain -> count). Re-running the same seeds reuses these instead of
+  // re-spending host.io API quota (1 call/seed). _id is the domain; `at` gates freshness in code.
+  await db.collection("hostio_counts").createIndex({ at: 1 });
 
   log.info("mongo connected", { db: config.mongoDb });
   return db;
@@ -204,3 +207,4 @@ export const mcpAudit = () => db.collection("mcp_audit");                 // per
 export const domainScans = () => db.collection("domain_scans");           // domain-prospecting scan jobs
 export const campaigns = () => db.collection("campaigns");                 // outreach funnel batches
 export const campaignTargets = () => db.collection("campaign_targets");    // per-seed funnel state
+export const hostioCounts = () => db.collection("hostio_counts");          // cached host.io redirect counts
