@@ -154,6 +154,14 @@ export async function connect() {
   await db.collection("campaigns").createIndex({ createdAt: -1 });
   await db.collection("campaign_targets").createIndex({ campaignId: 1 });
   await db.collection("campaign_targets").createIndex({ campaignId: 1, stage: 1 });
+  // A campaign marked "running" when the process died (deploy/crash) is not actually running — the
+  // in-memory pipeline is gone. Mark it (and any mid-flight targets) interrupted on boot so it
+  // stops showing as forever-running; its already-computed results stay intact and viewable.
+  await db.collection("campaigns").updateMany({ status: "running" },
+    { $set: { status: "interrupted", stage: "interrupted", finishedAt: new Date() } });
+  await db.collection("campaign_targets").updateMany(
+    { stage: { $in: ["queued", "counting", "discovery_queued", "discovering", "enrich_queued", "enriching"] } },
+    { $set: { stage: "interrupted" } });
 
   log.info("mongo connected", { db: config.mongoDb });
   return db;

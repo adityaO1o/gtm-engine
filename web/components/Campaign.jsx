@@ -26,6 +26,7 @@ const STAGE_META = {
   enriching: { label: "enriching…", cls: "p-review" },
   done: { label: "done", cls: "p-verified" },
   error: { label: "error", cls: "p-competitor" },
+  interrupted: { label: "interrupted (redeploy)", cls: "p-role-based" },
 };
 
 function csvEscape(v) { return `"${String(v ?? "").replace(/"/g, '""')}"`; }
