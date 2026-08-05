@@ -14,6 +14,20 @@ const FUNNEL = [
 ];
 function sum(stages, keys) { return keys.reduce((a, k) => a + (stages?.[k] || 0), 0); }
 
+// Human-readable label + pill colour for each per-seed funnel stage.
+const STAGE_META = {
+  queued: { label: "queued", cls: "p-review" },
+  counting: { label: "counting…", cls: "p-review" },
+  dropped_count: { label: "below count gate", cls: "p-role-based" },
+  discovery_queued: { label: "queued", cls: "p-review" },
+  discovering: { label: "discovering…", cls: "p-review" },
+  dropped_blacklist: { label: "not enough blacklisted", cls: "p-role-based" },
+  enrich_queued: { label: "queued", cls: "p-review" },
+  enriching: { label: "enriching…", cls: "p-review" },
+  done: { label: "done", cls: "p-verified" },
+  error: { label: "error", cls: "p-competitor" },
+};
+
 function csvEscape(v) { return `"${String(v ?? "").replace(/"/g, '""')}"`; }
 function exportCsv(rows) {
   const out = [["company", "redirectCount", "blacklistedCount", "blacklistedDomains", "person", "title", "seniority", "department", "linkedin"]];
@@ -165,54 +179,81 @@ export default function Campaign() {
 
       {results.length ? (
         <>
-          <div className="section-t"><Icon name="warn" />Prospects — companies with blacklisted sending infra</div>
+          <div className="section-t"><Icon name="spark" />Every seed — full funnel</div>
           <div className="tablewrap">
             <table>
               <thead><tr>
-                <th>Company</th><th>Redirects</th><th>Blacklisted</th><th>Contacts</th><th>Stage</th>
+                <th>Company</th>
+                <th title="Redirect domains host.io knows about (Stage 1 count)">Redirects</th>
+                <th title="Redirecting domains our own discovery confirmed (Stage 2)">Confirmed</th>
+                <th title="Of the confirmed, how many are blacklisted (Stage 3)">Blacklisted</th>
+                <th title="People Prospeo returned (Stage 4)">Contacts</th>
+                <th>Stage</th>
               </tr></thead>
               <tbody>
-                {results.map((r) => (
+                {results.map((r) => {
+                  const st = STAGE_META[r.stage] || { label: r.stage, cls: "p-review" };
+                  return (
                   <Fragment key={r._id}>
                     <tr className="click" onClick={() => setOpenRow(openRow === r._id ? null : r._id)}>
-                      <td><Icon name={openRow === r._id ? "chev" : "chev"} style={{ width: 13, height: 13, opacity: .5, marginRight: 4 }} /><span className="nm mono">{r.seed}</span></td>
-                      <td className="num-c">{num(r.redirectCount)}</td>
-                      <td className="num-c"><b style={{ color: "var(--hot)" }}>{num(r.blacklistedCount)}</b></td>
-                      <td className="num-c">{num(r.peopleCount)}</td>
-                      <td><span className={`pill ${r.stage === "done" ? "p-verified" : r.stage === "error" ? "p-review" : "p-review"}`}>{r.stage}</span></td>
+                      <td><Icon name="chev" style={{ width: 13, height: 13, opacity: .5, marginRight: 4 }} /><span className="nm mono">{r.seed}</span></td>
+                      <td className="num-c">{r.redirectCount == null ? <span className="muted">—</span> : num(r.redirectCount)}</td>
+                      <td className="num-c">{num(r.confirmedCount)}</td>
+                      <td className="num-c">{r.blacklistedCount ? <b style={{ color: "var(--hot)" }}>{num(r.blacklistedCount)}</b> : <span className="muted">0</span>}</td>
+                      <td className="num-c">{r.peopleCount ? num(r.peopleCount) : <span className="muted">0</span>}</td>
+                      <td><span className={`pill ${st.cls}`}>{st.label}</span></td>
                     </tr>
                     {openRow === r._id ? (
                       <tr>
-                        <td colSpan={5} style={{ background: "var(--bg)" }}>
+                        <td colSpan={6} style={{ background: "var(--bg)" }}>
                           <div style={{ padding: "10px 14px" }}>
-                            <div className="resn" style={{ marginBottom: 8 }}><b>Blacklisted domains</b> ({num(r.blacklistedCount)})</div>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-                              {(r.blacklistedDomains || []).slice(0, 10).map((d) => (
-                                <span key={d.domain} className="pill p-competitor" title={(d.zones || []).join(", ")}>
-                                  {d.domain}{d.riskScore != null ? ` · ${d.riskScore}` : ""}
-                                </span>
-                              ))}
-                              {(r.blacklistedDomains || []).length > 10 ? <span className="resn muted">+{r.blacklistedDomains.length - 10} more</span> : null}
+                            {/* funnel breakdown for this seed */}
+                            <div className="resn muted" style={{ marginBottom: 10 }}>
+                              host.io redirects <b className="mono">{r.redirectCount == null ? "—" : num(r.redirectCount)}</b>
+                              {" → "}we confirmed <b className="mono">{num(r.confirmedCount)}</b> redirecting to seed
+                              {" → "}<b className="mono" style={{ color: r.blacklistedCount ? "var(--hot)" : "inherit" }}>{num(r.blacklistedCount)}</b> blacklisted
+                              {r.stage === "dropped_count" ? <> · <span style={{ color: "var(--warm)" }}>stopped: below the count gate</span></> : null}
+                              {r.stage === "dropped_blacklist" ? <> · <span style={{ color: "var(--warm)" }}>stopped: fewer than the blacklist gate</span></> : null}
                             </div>
-                            <div className="resn" style={{ marginBottom: 8 }}><b>Contacts</b> ({num(r.peopleCount)}{r.peopleTotal > r.peopleCount ? ` of ${num(r.peopleTotal)}` : ""}) — emails revealed at send time</div>
-                            {r.people?.length ? (
-                              <table><tbody>
-                                {r.people.map((p, i) => (
-                                  <tr key={i}>
-                                    <td><b className="sm">{p.name || "—"}</b></td>
-                                    <td className="sm muted">{p.job_title || "—"}</td>
-                                    <td className="sm muted">{p.department || ""}</td>
-                                    <td>{p.linkedin_url ? <a href={p.linkedin_url} target="_blank" rel="noopener" className="sm">in ↗</a> : null}</td>
-                                  </tr>
-                                ))}
-                              </tbody></table>
-                            ) : <div className="resn muted">{r.prospeoError ? `Prospeo: ${r.prospeoError}` : "no contacts found"}</div>}
+
+                            {r.blacklistedDomains?.length ? (
+                              <>
+                                <div className="resn" style={{ marginBottom: 8 }}><b>Blacklisted domains</b> ({num(r.blacklistedCount)})</div>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+                                  {r.blacklistedDomains.slice(0, 10).map((d) => (
+                                    <span key={d.domain} className="pill p-competitor" title={(d.zones || []).join(", ")}>
+                                      {d.domain}{d.riskScore != null ? ` · ${d.riskScore}` : ""}
+                                    </span>
+                                  ))}
+                                  {r.blacklistedDomains.length > 10 ? <span className="resn muted">+{r.blacklistedDomains.length - 10} more</span> : null}
+                                </div>
+                              </>
+                            ) : null}
+
+                            {r.stage === "done" || r.people?.length ? (
+                              <>
+                                <div className="resn" style={{ marginBottom: 8 }}><b>Contacts</b> ({num(r.peopleCount)}{r.peopleTotal > r.peopleCount ? ` of ${num(r.peopleTotal)}` : ""}){r.people?.length ? " — emails revealed at send time" : ""}</div>
+                                {r.people?.length ? (
+                                  <table><tbody>
+                                    {r.people.map((p, i) => (
+                                      <tr key={i}>
+                                        <td><b className="sm">{p.name || "—"}</b></td>
+                                        <td className="sm muted">{p.job_title || "—"}</td>
+                                        <td className="sm muted">{p.department || ""}</td>
+                                        <td>{p.linkedin_url ? <a href={p.linkedin_url} target="_blank" rel="noopener" className="sm">in ↗</a> : null}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody></table>
+                                ) : <div className="resn muted">Prospeo returned no contacts{r.prospeoError ? ` (${r.prospeoError})` : ""}.</div>}
+                              </>
+                            ) : null}
                           </div>
                         </td>
                       </tr>
                     ) : null}
                   </Fragment>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

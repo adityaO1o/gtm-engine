@@ -148,13 +148,15 @@ export async function getCampaign(id) {
   return { ...campaign, id, stages };
 }
 
-// The qualified prospects (companies that reached Prospeo) with their blacklisted domains + people.
+// EVERY seed's full funnel result (not just qualified ones) — so you can see each domain's whole
+// journey: host.io redirect count, how many our discovery confirmed, how many were blacklisted, and
+// what Prospeo returned. Sorted so the most-qualified prospects surface first, dropped ones last.
 export async function getCampaignResults(id) {
   if (!ObjectId.isValid(id)) return [];
   return campaignTargets().find(
-    { campaignId: new ObjectId(id), blacklistedCount: { $gte: 1 } },
+    { campaignId: new ObjectId(id) },
     { projection: { campaignId: 0 } },
-  ).sort({ blacklistedCount: -1 }).toArray();
+  ).sort({ blacklistedCount: -1, confirmedCount: -1, redirectCount: -1 }).toArray();
 }
 
 export async function listCampaigns(limit = 20) {
