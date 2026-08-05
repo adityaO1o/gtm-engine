@@ -17,7 +17,8 @@ import { leads, reprocessRuns } from "../db/mongo.js";
 import { findEmailWaterfall, verifyEmailWaterfall, companyFromHeadline } from "./enrichLead.js";
 import { isRoleBased, findEmailByNameDomain } from "../services/enrich.js";
 import { companyDomainGuarded } from "../services/clearbit.js";
-import { upsertLead, addToCampaign, intakeCampaign } from "../services/sendkit.js";
+import { upsertLead } from "../services/sendkit.js";
+import { enrollOnce } from "./campaignLocks.js";
 import { bumpUsage } from "../services/usage.js";
 import { meterFlush } from "../services/apiMeter.js";
 import { CAMPAIGN_ID, isCompetitor, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
@@ -190,8 +191,11 @@ async function pushRecovered(d, email, domain, vr) {
   const [first, ...rest] = (d.name || "").split(" ");
   await upsertLead({ email, firstName: first, lastName: rest.join(" "), companyName: d.company || "", jobTitle: d.headline || "", linkedinUrl: d.linkedin_url, tags });
   const landed = [];
-  const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
-  if (desired) { const cid = await intakeCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
+  // A recovered lead may ALREADY be enrolled (the retry only ever failed to find their email, not
+  // to enrol them). enrollOnce pushes only when there is no active enrolment, so a retry can never
+  // open a second membership.
+  const { campaignId, pushed } = await enrollOnce(email, INTAKE_SENDKIT_ID, d.sendkit_campaigns);
+  if (pushed && campaignId) landed.push(campaignId);
   await leads().updateOne({ linkedin_url: d.linkedin_url }, {
     $set: {
       email, company_domain: domain || null, email_status: "verified", unverified: false, needs_email: false,

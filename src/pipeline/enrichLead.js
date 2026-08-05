@@ -16,7 +16,8 @@ import { profileCompany } from "../services/linkedinProfile.js";
 import { pndExactDomain } from "../services/pnd.js";
 import { bouncebanVerify } from "../services/bounceban.js";
 import { meter } from "../services/apiMeter.js";
-import { findOurLead, upsertLead, addToCampaign, addToDnc, intakeCampaign } from "../services/sendkit.js";
+import { findOurLead, upsertLead, addToDnc } from "../services/sendkit.js";
+import { enrollOnce } from "./campaignLocks.js";
 import { scoreFromHistory } from "../services/score.js";
 import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor, desiredCampaignId } from "../services/campaigns.js";
 import { isCompanyPage, isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
@@ -254,20 +255,26 @@ export async function enrichLead(input) {
       },
       $addToSet: add,
     });
-    // keep SendKit in step with the new score / categories / campaign — and make sure they are
-    // in EVERY campaign they now belong to (this engagement may have added a new one)
+    // Keep SendKit's copy of the person current — the score/category tags drive their segmentation
+    // there. This refreshes the LEAD RECORD only; it does not touch campaign membership.
     if (known.email_status === "verified") {
       const [f, ...r] = (name || known.name || "").split(" ");
       await upsertLead({ email: known.email, firstName: f, lastName: r.join(" "), companyName: known.company || "", jobTitle: headline || known.headline || "", linkedinUrl: key, tags });
+
+      // A repeat engager is BY DEFINITION already enrolled — this block used to re-push anyway, on
+      // every single engagement ("make sure they are in EVERY campaign they now belong to"), and
+      // that is what put 703 people into both 1.0 and 2.0. enrollOnce() pushes only when there is
+      // no evidence of an active enrolment.
+      //
+      // The engagement itself is still fully recorded above (score, status, categories, times_seen,
+      // campaigns[], posts_seen), so warm/hot/cold scoring is unaffected — only the redundant
+      // SendKit write is skipped.
       const fresh = await leads().findOne({ linkedin_url: key });
-      const landed = [];
-      // Route the first-campaign choice through the global email→campaign lock so the same email
-      // (even from a different profile) never lands in a second campaign.
       const desired = desiredCampaignId(campaign); // manual 1.0/2.0 pick wins, else default 2.0
-      if (desired) { const cid = await intakeCampaign(known.email, desired); if (await addToCampaign(cid, known.email)) landed.push(cid); }
-      // ADD to the membership record, never overwrite: a transient push failure leaves `landed` empty
+      const { campaignId, pushed } = await enrollOnce(known.email, desired, fresh?.sendkit_campaigns);
+      // ADD to the membership record, never overwrite: a transient push failure leaves this empty
       // and a $set would wipe a membership SendKit still holds (breaks the DNC safety net).
-      if (landed.length) await leads().updateOne({ linkedin_url: key }, { $addToSet: { sendkit_campaigns: { $each: landed } } });
+      if (pushed && campaignId) await leads().updateOne({ linkedin_url: key }, { $addToSet: { sendkit_campaigns: campaignId } });
     }
     await bumpUsage(campaign, { trigify_scraped: 1 }); // scraped only — zero email-provider spend
     log.info("repeat engager (email already known)", { name, email: known.email, status: known.email_status, seen: scored.timesSeen });
@@ -479,12 +486,13 @@ export async function enrichLead(input) {
   // push into EVERY campaign this person now belongs to — they may have engaged with posts
   // from more than one campaign, and the dashboard counts them as verified in each.
   const doc = await leads().findOne({ linkedin_url: key });
-  const landed = [];
   const desired = desiredCampaignId(campaign); // manual 1.0/2.0 pick wins, else default 2.0
-  if (desired) { const cid = await intakeCampaign(email, desired); if (await addToCampaign(cid, email)) landed.push(cid); }
-  // ADD to the membership record, never overwrite: a transient push failure leaves `landed` empty
+  // First enrolment for a freshly verified lead. Still routed through enrollOnce: the SAME email
+  // can arrive from a second LinkedIn profile, and that must not open a second membership.
+  const { campaignId, pushed } = await enrollOnce(email, desired, doc?.sendkit_campaigns);
+  // ADD to the membership record, never overwrite: a transient push failure leaves this empty
   // and a $set would wipe a membership SendKit still holds (breaks the DNC safety net).
-  if (landed.length) await leads().updateOne({ linkedin_url: key }, { $addToSet: { sendkit_campaigns: { $each: landed } } });
+  if (pushed && campaignId) await leads().updateOne({ linkedin_url: key }, { $addToSet: { sendkit_campaigns: campaignId } });
 
   await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0, sendkit_pushed: isRepeat ? 0 : 1 });
 

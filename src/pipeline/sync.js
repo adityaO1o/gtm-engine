@@ -6,7 +6,8 @@
 
 import { leads } from "../db/mongo.js";
 import { findEmailWaterfall } from "./enrichLead.js";
-import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc } from "../services/sendkit.js";
+import { planEnrolment } from "./campaignLocks.js";
 import { reconcileDnc } from "./dncSync.js";
 import { resolveKey, campaignByKey, isCompetitor, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
 import { nameMatchesEmail, emailDomain } from "../services/quality.js";
@@ -100,18 +101,15 @@ export async function syncVerified({ campaign = "" } = {}) {
 
   // Phase 3 — group by campaign, then add each campaign's emails in batches of 100.
   status.phase = "adding to campaigns";
-  const perCampaign = new Map();
-  for (const d of keep) {
-    if (!d.email) continue;
-    const e = d.email.trim().toLowerCase();
-    const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
-    if (!desired) continue;
-    // Route through the global email→campaign lock so bulk sync can't scatter an email either.
-    const cid = await intakeCampaign(e, desired);
-    if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
-    perCampaign.get(cid).add(e);
-  }
-  for (const [cid, set] of perCampaign) {
+  // Sync is idempotent by design and runs over EVERY verified lead, so almost everyone here is
+  // already a campaign member. Only the ones with no active enrolment are pushed — re-adding the
+  // rest is what let a bulk sync scatter an email into a second campaign.
+  const { toPush, skipped } = await planEnrolment(
+    keep.filter((d) => d.email).map((d) => ({ email: d.email, sendkitCampaigns: d.sendkit_campaigns })),
+    INTAKE_SENDKIT_ID,
+  );
+  status.alreadyEnrolled = skipped;
+  for (const [cid, set] of toPush) {
     const r = await addLeadsToCampaign(cid, [...set]);
     status.pushed += r.added;        // genuinely new members
     status.alreadyIn += r.skipped;   // already in that campaign — success, not a failure

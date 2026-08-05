@@ -22,8 +22,9 @@ import { runKeywordSweep, keywordSweepStatus, pauseKeywordSweep, runManualKeywor
 import { autoStatus, setAutoEnabled, rotateNow } from "../pipeline/autoScrape.js";
 import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
+import { syncCampaignLocks, campaignLockStatus, planEnrolment } from "../pipeline/campaignLocks.js";
 import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
-import { upsertLeads, addLeadsToCampaign, addToDnc, intakeCampaign, listCampaigns, campaignSummary } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc, listCampaigns, campaignSummary } from "../services/sendkit.js";
 import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revokeMcpKey, recentAudit as recentMcpAudit } from "../services/mcpKeys.js";
 import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/domainScan.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
@@ -388,18 +389,14 @@ apiRouter.post("/leads/decision", async (req, res) => {
   }
   await upsertLeads([...byEmail.values()]);
 
-  const perCampaign = new Map();
-  const emailToCid = new Map();
-  for (const d of keep) {
-    const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
-    const e = d.email.trim().toLowerCase();
-    const cid = await intakeCampaign(e, desired); // global email→campaign lock + retirement guard
-    emailToCid.set(e, cid);
-    if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
-    perCampaign.get(cid).add(e);
-  }
+  // Manual approval can hit leads that are already enrolled — push only the ones that aren't.
+  // `placed` still covers everyone, so the membership recorded below stays correct either way.
+  const { toPush, placed: emailToCid } = await planEnrolment(
+    keep.map((d) => ({ email: d.email, sendkitCampaigns: d.sendkit_campaigns })),
+    INTAKE_SENDKIT_ID,
+  );
   let pushed = 0;
-  for (const [cid, set] of perCampaign) {
+  for (const [cid, set] of toPush) {
     const r = await addLeadsToCampaign(cid, [...set]);
     pushed += r.added;
   }
@@ -485,6 +482,19 @@ apiRouter.post("/dnc/reconcile", async (_req, res) => {
     res.json({ ok: true, dncEmails: r.emails.size, marked: r.marked, cleared: r.cleared, truncated: r.truncated });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// Teach the lock who SendKit is already emailing. Reads 1.0 + 2.0 membership and records, per
+// email, the ONE campaign it may live in — so a person already in 1.0 is never re-enrolled into
+// 2.0. Runs daily on its own; this is the on-demand trigger (and ?dry=1 to preview).
+apiRouter.post("/campaign-locks/sync", async (req, res) => {
+  try {
+    const apply = req.query.dry !== "1";
+    res.json({ ok: true, ...(await syncCampaignLocks({ apply })) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/campaign-locks/status — last reconcile result + whether one is in flight.
+apiRouter.get("/campaign-locks/status", (_req, res) => res.json(campaignLockStatus()));
 
 // GET /api/reprocess/runs — history of retry runs (recovered per run + why the rest missed)
 apiRouter.get("/reprocess/runs", async (_req, res) => {

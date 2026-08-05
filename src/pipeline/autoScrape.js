@@ -25,6 +25,7 @@ import { pndStats, pndOutOfCredits, pndProfilePosts, pndPostInfo } from "../serv
 import { hubScrape } from "../services/hubScrape.js";
 import { isRelevantPost } from "../services/classify.js";
 import { runKeywordSweep, keywordRunnerBusy, reopenIfGrown, MIN_ENGAGERS } from "./keywordSweep.js";
+import { syncCampaignLocks } from "./campaignLocks.js";
 import { scrapeOneInner, routeText } from "./sources.js";
 import { canonicalPostUrl } from "../services/rapidScrape.js";
 import { meterSinceBoot } from "../services/apiMeter.js";
@@ -242,12 +243,29 @@ export async function autoTick() {
   running = true;
   try {
     const s = await state();
+    const now = new Date();
+    const today = utcDayKey(now);
+
+    // 0) Campaign-lock reconcile — runs BEFORE every other guard, once a day.
+    //
+    // Deliberately not gated on `enabled`, PND credits, or the scrape lane: none of those apply.
+    // It spends no PND credits (SendKit reads only) and pushes nothing. More importantly it is a
+    // SAFETY net, not automation work — it is most needed exactly when the auto engine is off and
+    // someone is scraping by hand, because those pushes go through the same lock.
+    //
+    // Without it the lock only knows the pushes the engine itself made, so any membership created
+    // outside the engine is invisible and gets re-enrolled elsewhere. That is what put 703 people
+    // into both 1.0 and 2.0. Stamp BEFORE running so a failure can't retry every 5 minutes.
+    if (s.lockSyncLastDay !== today) {
+      await patch({ lockSyncLastDay: today });
+      await syncCampaignLocks({ apply: true })
+        .then((r) => log.info("auto: campaign locks reconciled", { emails: r.emails, written: r.written, inMoreThanOne: r.inMoreThanOne }))
+        .catch((e) => log.warn("auto: campaign lock sync failed", { err: e.message }));
+    }
+
     if (s.enabled === false) return;
     if (!creditsOk()) { log.info("auto engine idle — low PND credits", { remaining: pndStats().balance?.creditsRemaining, floor: config.autoMinCredits }); return; }
     if (keywordRunnerBusy()) return; // a manual scrape / sweep holds the single lane — yield
-
-    const now = new Date();
-    const today = utcDayKey(now);
 
     // 1) Daily rotation + hub pass FIRST — these are BOUNDED (once/day, capped by the shared daily
     // budget), so putting them ahead of the open-ended keyword sweep guarantees lists/influencers/hubs

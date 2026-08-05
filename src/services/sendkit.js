@@ -38,6 +38,22 @@ export async function assignEmailCampaign(email, desiredCampaignId) {
   }
 }
 
+// READ-ONLY peek at the lock. Unlike assignEmailCampaign it never writes, so a caller can ask
+// "is this email already enrolled somewhere?" without claiming a campaign for it as a side effect.
+// Returns null when we have no record — which means "unknown", NOT "not enrolled": the lock only
+// knows about pushes the engine itself made (see sync-campaign-locks.js).
+export async function currentEmailCampaign(email) {
+  const key = String(email || "").trim().toLowerCase();
+  if (!key) return null;
+  try {
+    const d = await emailCampaign().findOne({ _id: key });
+    return d?.campaignId || null;
+  } catch (e) {
+    log.warn("currentEmailCampaign failed", { err: e.message });
+    return null;
+  }
+}
+
 // Deliberate MOVE — overwrite the assignment. Used only by the reroute repair tool, which
 // intentionally relocates a lead to a better campaign; first-writer-wins would wrongly pin it to
 // where it already (wrongly) sits. Ordinary pushes must use assignEmailCampaign, never this.

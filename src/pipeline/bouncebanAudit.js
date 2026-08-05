@@ -13,7 +13,8 @@
 
 import { leads, bouncebanRuns } from "../db/mongo.js";
 import { bouncebanVerify } from "../services/bounceban.js";
-import { upsertLead, upsertLeads, addToCampaign, addLeadsToCampaign, addToDnc, fetchDncEmails, isBlockedBy, campaignMembers, intakeCampaign } from "../services/sendkit.js";
+import { upsertLead, upsertLeads, addLeadsToCampaign, addToDnc, fetchDncEmails, isBlockedBy, campaignMembers } from "../services/sendkit.js";
+import { enrollOnce, planEnrolment } from "./campaignLocks.js";
 import { reconcileDnc } from "./dncSync.js";
 import { sendkitIdsFor, CAMPAIGNS, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
 import { log } from "../lib/logger.js";
@@ -73,8 +74,11 @@ async function auditOne(d, dnc) {
           await leads().updateOne({ linkedin_url: d.linkedin_url }, { $set: { bb_push_failed: true } });
         } else {
           const landed = [];
-          const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
-          if (desired) { const cid = await intakeCampaign(d.email, desired); if (await addToCampaign(cid, d.email)) landed.push(cid); }
+          // The audit re-confirms leads that are usually ALREADY enrolled — re-pushing them here is
+          // how an audit run could recreate the 1.0/2.0 overlap. enrollOnce pushes only the ones
+          // with no active enrolment (e.g. a lead whose original push failed).
+          const { campaignId, pushed } = await enrollOnce(d.email, INTAKE_SENDKIT_ID, d.sendkit_campaigns);
+          if (pushed && campaignId) landed.push(campaignId);
           if (landed.length) await leads().updateOne({ linkedin_url: d.linkedin_url }, { $addToSet: { sendkit_campaigns: { $each: landed } } });
           await leads().updateOne({ linkedin_url: d.linkedin_url }, { $unset: { bb_push_failed: "" } });
           status.pushed++;
@@ -196,17 +200,15 @@ export async function runBouncebanRepair() {
 
     // Then put each campaign's addresses in, 100 at a time.
     repairStatus.phase = "adding to campaigns";
-    const perCampaign = new Map();
-    for (const d of docs) {
-      const e = String(d.email).trim().toLowerCase();
-      if (isBlocked(e)) continue;
-      const desired = INTAKE_SENDKIT_ID; // all new leads -> Cold Email Keyword Engagers 2.0
-      if (!desired) continue;
-      const cid = await intakeCampaign(e, desired); // global email→campaign lock + retirement guard
-      if (!perCampaign.has(cid)) perCampaign.set(cid, new Set());
-      perCampaign.get(cid).add(e);
-    }
-    for (const [cid, set] of perCampaign) {
+    // Only the addresses with NO active enrolment are pushed — the rest are already members and
+    // re-adding them is what recreated the 1.0/2.0 overlap.
+    const { toPush, skipped } = await planEnrolment(
+      docs.filter((d) => !isBlocked(String(d.email).trim().toLowerCase()))
+          .map((d) => ({ email: d.email, sendkitCampaigns: d.sendkit_campaigns })),
+      INTAKE_SENDKIT_ID,
+    );
+    repairStatus.alreadyEnrolled = skipped;
+    for (const [cid, set] of toPush) {
       const r = await addLeadsToCampaign(cid, [...set]);
       repairStatus.added += r.added || 0;
       repairStatus.alreadyIn += r.skipped || 0;
