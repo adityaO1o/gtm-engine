@@ -14,12 +14,8 @@ const ENDPOINT = "https://api.prospeo.io/enrich-person";
 const headers = () => ({ "X-KEY": config.prospeoKey, "Content-Type": "application/json" });
 
 async function call(dataObj) {
-  const r = await axios.post(
-    ENDPOINT,
-    { only_verified_email: false, data: dataObj },
-    { headers: headers(), timeout: 20000, validateStatus: () => true }
-  );
-  return r;
+  // routed through the shared spacer + 429-retry so enrich (email reveal) also can't burst the API
+  return prospeoPost(ENDPOINT, { only_verified_email: false, data: dataObj });
 }
 
 function extract(body) {
@@ -81,6 +77,34 @@ export async function prospeoBalance() {
 const SEARCH_ENDPOINT = "https://api.prospeo.io/search-person";
 
 const pick = (...vals) => vals.find((v) => v != null && v !== "") ?? null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Shared spacer across ALL Prospeo calls (search + enrich) so a big campaign doesn't burst the API
+// and trip its plan rate limit — the reason a 30-seed run came back with 0 contacts and
+// "Rate limit exceeded" while the 20-seed run was fine. ~700ms ≈ 85/min, under typical plan caps.
+const PROSPEO_MIN_GAP_MS = parseInt(process.env.PROSPEO_MIN_GAP_MS || "700", 10);
+let prospeoNextSlot = 0;
+async function prospeoSlot() {
+  const now = Date.now();
+  const wait = Math.max(0, prospeoNextSlot - now);
+  prospeoNextSlot = Math.max(now, prospeoNextSlot) + PROSPEO_MIN_GAP_MS;
+  if (wait > 0) await sleep(wait);
+}
+
+// POST to Prospeo with the shared spacer + retry on 429 (rate limit) with exponential backoff.
+async function prospeoPost(url, body) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await prospeoSlot();
+    const r = await axios.post(url, body, { headers: headers(), timeout: 25000, validateStatus: () => true });
+    if (r.status !== 429) return r;
+    const backoff = 1500 * 2 ** attempt; // 1.5s, 3s, 6s, 12s
+    log.warn("prospeo 429 — backing off", { url: url.split("/").pop(), attempt, backoff });
+    await sleep(backoff);
+  }
+  // one final attempt result (still 429) is returned so the caller surfaces the error
+  await prospeoSlot();
+  return axios.post(url, body, { headers: headers(), timeout: 25000, validateStatus: () => true });
+}
 
 function extractPerson(row) {
   const p = row?.person || row || {};
@@ -105,11 +129,7 @@ export async function searchPeople(domain, { page = 1 } = {}) {
   if (!site) return { people: [], total: 0, error: "no domain" };
   meter.inc("prospeo_search_calls");
   try {
-    const r = await axios.post(
-      SEARCH_ENDPOINT,
-      { page, filters: { company: { websites: { include: [site] } } } },
-      { headers: headers(), timeout: 25000, validateStatus: () => true }
-    );
+    const r = await prospeoPost(SEARCH_ENDPOINT, { page, filters: { company: { websites: { include: [site] } } } });
     if (r.status !== 200 || r.data?.error) {
       const code = r.data?.error_code || `http_${r.status}`;
       // NO_MATCH / no results is normal — return empty, never throw.
