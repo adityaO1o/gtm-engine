@@ -10,6 +10,7 @@
 // against host.io's monthly query quota — cheap for a handful of seeds, expensive at 1000-seed scale
 // (that needs a paid host.io plan or the permutation path).
 import axios from "axios";
+import { HttpsProxyAgent } from "https-proxy-agent";
 import { config } from "../config.js";
 import { runPool } from "../lib/pool.js";
 import { log } from "../lib/logger.js";
@@ -78,6 +79,62 @@ export async function redirectCount(seed) {
     log.warn("hostio count threw", { seed, err: e.message });
     return null;
   }
+}
+
+// ── host.io WEBSITE scrape (free, no API quota) ────────────────────────────────────────────────
+// The public page https://host.io/redirects/<domain> lists ~48 REAL redirect domains in its HTML —
+// including generic, non-brand names (findleadsnext.info, teamscaleupadvertise.co) that permutation
+// guessing can never produce. This is the campaign's discovery source: free, no host.io API token/
+// quota, and 15x the coverage of permutation (coldoutbound.com: 48 scraped vs 3 guessed).
+//
+// Requests optionally route through the Webshare rotating proxy so host.io sees fresh IPs and won't
+// rate-limit us. Webshare keeps one exit IP per "session" (username-<id>); we bump the session id
+// every `scrapePerProxy` requests so no single IP makes more than ~that many host.io hits. If the
+// proxy is unset or errors (e.g. out of bandwidth), the scrape falls back to a direct request.
+let scrapeSeq = 0;
+
+function webshareAgent() {
+  const w = config.webshare;
+  if (!w.username || !w.host) return null;
+  const session = Math.floor(scrapeSeq / Math.max(1, config.hostio.scrapePerProxy));
+  scrapeSeq++;
+  const user = `${w.username}-${session}`; // webshare sticky-session id -> stable IP per session
+  return new HttpsProxyAgent(`http://${encodeURIComponent(user)}:${encodeURIComponent(w.password)}@${w.host}:${w.port}`);
+}
+
+// The page returns a 404 status but a fully-populated body; parse regardless of status.
+function parseRedirectDomains(html) {
+  const out = new Set();
+  // Redirect links carry a distinctive class; match the href of any <a> in that list.
+  const re = /<a\s+href="\/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})"[^>]*border-gray-400[^>]*>/gi;
+  let m;
+  while ((m = re.exec(String(html || "")))) out.add(m[1].toLowerCase());
+  return [...out];
+}
+
+async function fetchScrape(seed, agent) {
+  const r = await axios.get(`https://host.io/redirects/${encodeURIComponent(seed)}`, {
+    timeout: 20000, validateStatus: () => true,
+    ...(agent ? { httpsAgent: agent, proxy: false } : {}),
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36" },
+  });
+  return parseRedirectDomains(r.data);
+}
+
+// -> string[] of redirect domains (deduped, lowercased). Never throws — returns [] on failure.
+export async function scrapeRedirectDomains(seed) {
+  const agent = webshareAgent();
+  if (agent) {
+    try {
+      const domains = await fetchScrape(seed, agent);
+      if (domains.length) return domains;
+      // empty via proxy — could be a proxy hiccup; fall through to a direct retry.
+    } catch (e) {
+      log.warn("hostio scrape via proxy failed — retrying direct", { seed, err: e.message });
+    }
+  }
+  try { return await fetchScrape(seed, null); }
+  catch (e) { log.warn("hostio scrape failed", { seed, err: e.message }); return []; }
 }
 
 // Config/connectivity self-test for the diag endpoint — is the token set and does a live call work,

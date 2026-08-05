@@ -184,9 +184,9 @@ export default function Campaign() {
             <table>
               <thead><tr>
                 <th>Company</th>
-                <th title="Redirect domains host.io knows about (Stage 1 count)">Redirects</th>
-                <th title="Redirecting domains our own discovery confirmed (Stage 2)">Confirmed</th>
-                <th title="Of the confirmed, how many are blacklisted (Stage 3)">Blacklisted</th>
+                <th title="Total redirect domains host.io knows about (Stage 1 count)">Redirects</th>
+                <th title="Real redirect domains we pulled from host.io and checked (Stage 2 scrape)">Checked</th>
+                <th title="Of the checked, how many are blacklisted (Stage 3)">Blacklisted</th>
                 <th title="People Prospeo returned (Stage 4)">Contacts</th>
                 <th>Stage</th>
               </tr></thead>
@@ -209,8 +209,8 @@ export default function Campaign() {
                           <div style={{ padding: "10px 14px" }}>
                             {/* funnel breakdown for this seed */}
                             <div className="resn muted" style={{ marginBottom: 10 }}>
-                              host.io redirects <b className="mono">{r.redirectCount == null ? "—" : num(r.redirectCount)}</b>
-                              {" → "}we confirmed <b className="mono">{num(r.confirmedCount)}</b> redirecting to seed
+                              host.io knows <b className="mono">{r.redirectCount == null ? "—" : num(r.redirectCount)}</b> redirects
+                              {" → "}we pulled + checked <b className="mono">{num(r.confirmedCount)}</b>
                               {" → "}<b className="mono" style={{ color: r.blacklistedCount ? "var(--hot)" : "inherit" }}>{num(r.blacklistedCount)}</b> blacklisted
                               {r.stage === "dropped_count" ? <> · <span style={{ color: "var(--warm)" }}>stopped: below the count gate</span></> : null}
                               {r.stage === "dropped_blacklist" ? <> · <span style={{ color: "var(--warm)" }}>stopped: fewer than the blacklist gate</span></> : null}

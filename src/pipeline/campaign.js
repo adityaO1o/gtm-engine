@@ -10,11 +10,9 @@
 //
 // Everything is written incrementally into campaign_targets so the dashboard can poll the live funnel.
 import { ObjectId } from "mongodb";
-import { generateCandidates, splitDomain } from "../lib/permute.js";
-import { runPool, createLimiter } from "../lib/pool.js";
-import { domainHasDns } from "../services/domainDns.js";
-import { redirectsToSeed } from "../services/redirectCheck.js";
-import { redirectCount } from "../services/hostio.js";
+import { splitDomain } from "../lib/permute.js";
+import { runPool } from "../lib/pool.js";
+import { redirectCount, scrapeRedirectDomains } from "../services/hostio.js";
 import { searchPeople } from "../services/prospeo.js";
 import { pushDomains, pollUntilChecked } from "../services/blacklistProject.js";
 import { campaigns, campaignTargets } from "../db/mongo.js";
@@ -36,28 +34,22 @@ async function setTarget(id, fields) {
     log.warn("campaign setTarget failed", { err: e.message }));
 }
 
-// Stage 2+3 for one seed: guess candidates -> DNS filter -> redirect-to-seed check -> blacklist the
-// confirmed ones. Returns { confirmedCount, blacklisted: [{domain, riskScore, zones}] }.
+// Stage 2+3 for one seed: scrape host.io for its REAL redirect domains (free, ~48, no API quota),
+// then blacklist-check them. Returns { confirmedCount, blacklisted: [{domain, riskScore, zones}] }.
+// (Replaced the old permutation-guesser: on coldoutbound.com it found 48 real domains vs guessing's 3,
+// because most real redirect domains are generic names that contain no part of the brand.)
 async function discoverAndBlacklist(seed) {
-  const candidates = generateCandidates(seed);
-  const confirmed = [];
-  const redirectLimit = createLimiter(config.scanRedirectConcurrency);
+  const domains = await scrapeRedirectDomains(seed);
+  if (!domains.length) return { confirmedCount: 0, blacklisted: [] };
 
-  await runPool(candidates, async (candidate, i) => {
-    if (!(await domainHasDns(candidate, i))) return;
-    if (await redirectLimit(() => redirectsToSeed(candidate, seed))) confirmed.push(candidate);
-  }, { concurrency: config.scanDnsConcurrency });
-
-  if (!confirmed.length) return { confirmedCount: 0, blacklisted: [] };
-
-  await pushDomains(confirmed);
-  const verdicts = await pollUntilChecked(confirmed, { intervalMs: 1000, maxWaitMs: 60_000 });
+  await pushDomains(domains);
+  const verdicts = await pollUntilChecked(domains, { intervalMs: 1000, maxWaitMs: 60_000 });
   const blacklisted = [];
   for (const [domain, v] of verdicts) {
     if (v.status === "listed") blacklisted.push({ domain, riskScore: v.riskScore ?? null, zones: v.summary?.listedZones || [] });
   }
   blacklisted.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
-  return { confirmedCount: confirmed.length, blacklisted };
+  return { confirmedCount: domains.length, blacklisted };
 }
 
 async function runCampaign(campaignId, targets, gates) {

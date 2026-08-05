@@ -91,6 +91,18 @@ export const config = {
   hostio: {
     token: process.env.HOSTIO_TOKEN || "",
     pageConcurrency: parseInt(process.env.HOSTIO_PAGE_CONCURRENCY || "10", 10),
+    // Campaign discovery scrapes host.io's public web page (free, ~48 real domains/seed, no API quota)
+    // instead of guessing. Rotate the exit IP every N scrapes so host.io doesn't rate-limit one IP.
+    scrapePerProxy: parseInt(process.env.HOSTIO_SCRAPE_PER_PROXY || "10", 10),
+  },
+
+  // Webshare rotating proxy — used (when set) to route host.io web-page scrapes through fresh IPs so
+  // host.io won't rate-limit or block us. Optional: if unset or unreachable, scrapes go direct.
+  webshare: {
+    username: process.env.WEBSHARE_PROXY_USERNAME || "",
+    password: process.env.WEBSHARE_PROXY_PASSWORD || "",
+    host: process.env.WEBSHARE_PROXY_HOST || "",
+    port: process.env.WEBSHARE_PROXY_PORT || "80",
   },
 
   // Campaign funnel gates (100 seeds -> qualified prospects). Both tunable per-run from the UI.
