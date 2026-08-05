@@ -61,6 +61,25 @@ export async function fetchRedirectDomains(seed, { onBatch } = {}) {
   return { total, domains: [...seen] };
 }
 
+// Stage-1 cheap gate: how many domains redirect into `seed`, in ONE API call. limit=0 makes host.io
+// return just the `total` count with an empty domains array — the cheapest possible signal (1 call,
+// no name-pull), used to rank/triage seeds before spending any discovery/enrichment work on them.
+// Returns the count, or null if host.io errored (so the caller can tell "0 redirects" from "failed").
+export async function redirectCount(seed) {
+  if (!config.hostio.token) throw new Error("HOSTIO_TOKEN not set");
+  try {
+    const r = await axios.get(`https://host.io/api/domains/redirects/${encodeURIComponent(seed)}`, {
+      params: { token: config.hostio.token, limit: 0 },
+      timeout: 15000, validateStatus: () => true,
+    });
+    if (r.status >= 300) { log.warn("hostio count failed", { seed, status: r.status }); return null; }
+    return r.data?.total ?? 0;
+  } catch (e) {
+    log.warn("hostio count threw", { seed, err: e.message });
+    return null;
+  }
+}
+
 // Config/connectivity self-test for the diag endpoint — is the token set and does a live call work,
 // without exposing the token.
 export async function diagnose() {

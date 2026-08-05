@@ -149,6 +149,12 @@ export async function connect() {
   await db.collection("domain_scans").createIndex({ createdAt: -1 });
   await db.collection("domain_scans").createIndex({ status: 1 });
 
+  // Campaign funnel: one `campaigns` doc per batch of seed domains + one `campaign_targets` doc per
+  // seed within it (its funnel stage, redirect count, blacklisted domains, discovered people).
+  await db.collection("campaigns").createIndex({ createdAt: -1 });
+  await db.collection("campaign_targets").createIndex({ campaignId: 1 });
+  await db.collection("campaign_targets").createIndex({ campaignId: 1, stage: 1 });
+
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
@@ -188,3 +194,5 @@ export const verifyCache = () => db.collection("bounceban_cache");       // emai
 export const mcpKeys = () => db.collection("mcp_keys");                   // remote-MCP access keys
 export const mcpAudit = () => db.collection("mcp_audit");                 // per-request IP/tool log
 export const domainScans = () => db.collection("domain_scans");           // domain-prospecting scan jobs
+export const campaigns = () => db.collection("campaigns");                 // outreach funnel batches
+export const campaignTargets = () => db.collection("campaign_targets");    // per-seed funnel state

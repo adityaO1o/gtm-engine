@@ -93,6 +93,16 @@ export const config = {
     pageConcurrency: parseInt(process.env.HOSTIO_PAGE_CONCURRENCY || "10", 10),
   },
 
+  // Campaign funnel gates (100 seeds -> qualified prospects). Both tunable per-run from the UI.
+  campaign: {
+    // Stage 1: a seed needs at least this many redirect domains (host.io count) to be worth pursuing.
+    countGate: parseInt(process.env.CAMPAIGN_COUNT_GATE || "50", 10),
+    // Stage 3: a company needs at least this many BLACKLISTED domains to qualify for Prospeo enrichment.
+    blacklistGate: parseInt(process.env.CAMPAIGN_BLACKLIST_GATE || "3", 10),
+    // How many seeds run their (heavier) discovery+blacklist stage at once.
+    seedConcurrency: parseInt(process.env.CAMPAIGN_SEED_CONCURRENCY || "4", 10),
+  },
+
   // Domain-prospecting scan tunables. DNS concurrency is high on purpose: lookups now go to public
   // resolvers (8.8.8.8/1.1.1.1) that don't choke, and DNS-checking ~24k mostly-fake candidates is the
   // scan's biggest time sink, so this is the main speed lever. Raise further if the host allows it.
