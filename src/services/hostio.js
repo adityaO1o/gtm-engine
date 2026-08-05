@@ -133,7 +133,9 @@ function parseRedirectDomains(html) {
 
 async function fetchScrape(seed, agent) {
   const r = await axios.get(`https://host.io/redirects/${encodeURIComponent(seed)}`, {
-    timeout: 20000, validateStatus: () => true,
+    // short timeout: a dead proxy should fail fast and get benched, not stall the whole pipeline for
+    // 20s per bad IP (that was the main discovery bottleneck at 800-seed scale).
+    timeout: agent ? 8000 : 15000, validateStatus: () => true,
     ...(agent ? { httpsAgent: agent, proxy: false } : {}),
     headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36" },
   });
