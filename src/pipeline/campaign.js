@@ -263,6 +263,31 @@ async function enrichSeed(t) {
 // inline it pinned nearly every discovery slot waiting on it: a 4,598-seed run measured 0.03
 // seeds/sec (~38h ETA) with 19 of 20 slots parked in "enriching". Split like this, discovery runs at
 // its own speed and enrichment trickles along behind it.
+// Campaigns that have been asked to stop. A run whose upstream has started refusing (host.io 429ing
+// every exit) makes no progress but keeps the pressure on, so the block never lifts — there has to
+// be a way to call it off without waiting hours or restarting the container.
+const aborted = new Set();
+export function isAborted(campaignId) { return aborted.has(String(campaignId)); }
+
+export async function stopCampaign(id) {
+  if (!ObjectId.isValid(id)) return { ok: false, error: "bad campaign id" };
+  const _id = new ObjectId(id);
+  const camp = await campaigns().findOne({ _id });
+  if (!camp) return { ok: false, error: "campaign not found" };
+  if (camp.status !== "running") return { ok: false, error: `campaign is ${camp.status}, not running` };
+
+  aborted.add(String(_id));
+  // Seeds still queued never started; the ones mid-flight finish their current attempt and stop.
+  // Everything unsettled stays retryable, so a later resume picks up exactly where this left off.
+  await campaignTargets().updateMany(
+    { campaignId: _id, stage: { $in: ["queued", "scraping", "blacklisting"] } },
+    { $set: { stage: "error", error: "stopped by user", activity: null, updatedAt: new Date() } },
+  );
+  await campaigns().updateOne({ _id }, { $set: { status: "interrupted", stage: "stopped", finishedAt: new Date(), updatedAt: new Date() } });
+  log.warn("campaign stopped by user", { id });
+  return { ok: true };
+}
+
 async function runCampaign(campaignId, targets, gates) {
   await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "running", startedAt: new Date(), updatedAt: new Date() } });
   // Warm the local verdict mirror once up front (first run pulls the existing workspace; after that
@@ -275,6 +300,7 @@ async function runCampaign(campaignId, targets, gates) {
   const enrichLane = (async () => {
     const inFlight = new Set();
     while (!discoveryDone || queue.length || inFlight.size) {
+      if (isAborted(campaignId)) queue.length = 0;
       while (queue.length && inFlight.size < config.campaign.enrichConcurrency) {
         const t = queue.shift();
         const p = enrichSeed(t).finally(() => inFlight.delete(p));
@@ -284,12 +310,13 @@ async function runCampaign(campaignId, targets, gates) {
     }
   })();
 
-  await runPool(targets, (t) => discoverSeed(campaignId, t, gates, (q) => queue.push(q)),
+  await runPool(targets, (t) => (isAborted(campaignId) ? Promise.resolve() : discoverSeed(campaignId, t, gates, (q) => queue.push(q))),
     { concurrency: config.campaign.seedConcurrency });
   discoveryDone = true;
   await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "enriching", updatedAt: new Date() } });
 
   await enrichLane;
+  if (isAborted(campaignId)) { aborted.delete(String(campaignId)); log.warn("campaign run ended after stop", { campaignId: String(campaignId) }); return; }
   await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "done", status: "done", finishedAt: new Date(), updatedAt: new Date() } });
   log.info("campaign finished", { campaignId: String(campaignId) });
 }

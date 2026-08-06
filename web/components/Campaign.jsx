@@ -106,6 +106,14 @@ export default function Campaign() {
     setPushing(false);
   }
 
+  async function stopRun() {
+    try {
+      const r = await post(`/api/campaign/${campId}/stop`, {});
+      if (r.ok) { toast("Stopped — unfinished seeds stay retryable", "good"); poll(campId); }
+      else toast(r.error || "Stop failed", "bad");
+    } catch { toast("Stop failed", "bad"); }
+  }
+
   async function resumeRun() {
     if (resuming) return;
     setResuming(true);
@@ -267,6 +275,12 @@ export default function Campaign() {
         <div className="grow" />
         {/* A run finishes "done" even when seeds errored — a host.io block left 4,764 of 6,140 in
             error on one run — so gate Resume on there being retryable seeds, not on the status. */}
+        {campaign && running ? (
+          <button className="btn btn-ghost btn-sm" onClick={stopRun}
+            title="Stops the run. Seeds without a verdict stay retryable, so a later Resume continues from here.">
+            <Icon name="close" />Stop
+          </button>
+        ) : null}
         {campaign && !running && (retryable > 0 || campaign.status !== "done") ? (
           <button className="btn btn-ghost btn-sm" disabled={resuming} onClick={resumeRun}
             title="Reprocesses only the seeds without a final verdict — already-enriched companies keep their result">
