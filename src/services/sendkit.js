@@ -204,13 +204,23 @@ export async function campaignLeadCount(campaignId) {
   } catch (e) { log.warn("sendkit campaign count threw", { campaignId, err: e.message }); return null; }
 }
 
+// SendKit defaults a new campaign to America/New_York 09:00-17:00 Mon-Fri. Left unset, a campaign
+// started from India sits idle for most of the working day (started 16:17 IST = 06:47 NY, i.e. two
+// hours before its window even opened). Default to IST business hours instead.
+export const DEFAULT_SCHEDULE = {
+  timezone: "Asia/Kolkata",
+  startTime: "09:00",
+  endTime: "18:00",
+  workingDays: [1, 2, 3, 4, 5],
+};
+
 // Create a campaign with its full email sequence. Campaigns are created in DRAFT — SendKit will not
 // send anything until it's started from the SendKit UI, which is deliberate: starting a real cold-
 // email sequence stays a human decision. `sequence` items are {type:"email"|"wait", order, name,
 // subject, body, waitDays}. Mailboxes are left unassigned so they're chosen at start time.
-export async function createCampaign(name, sequence) {
+export async function createCampaign(name, sequence, schedule = DEFAULT_SCHEDULE) {
   try {
-    const r = await withRetry(() => axios.post(`${base}/v1/campaigns`, { name, sequence },
+    const r = await withRetry(() => axios.post(`${base}/v1/campaigns`, { name, sequence, schedule },
       { headers: h(), timeout: 30000, validateStatus: () => true }));
     if (r.status >= 300) {
       log.warn("sendkit createCampaign failed", { name, status: r.status, body: JSON.stringify(r.data || {}).slice(0, 300) });
@@ -220,6 +230,24 @@ export async function createCampaign(name, sequence) {
     return { ok: true, id: c._id || c.id, name: c.name, status: c.status };
   } catch (e) {
     log.warn("sendkit createCampaign threw", { name, err: e.message });
+    return { ok: false, error: e.message };
+  }
+}
+
+// Update a campaign's sending schedule. SendKit defaults a new campaign to America/New_York
+// 09:00-17:00 Mon-Fri, so a campaign started outside that window sits idle until it opens — this is
+// how you point it at your own timezone/hours instead.
+export async function updateCampaignSchedule(campaignId, schedule) {
+  try {
+    const r = await withRetry(() => axios.patch(`${base}/v1/campaigns/${campaignId}`, { schedule },
+      { headers: h(), timeout: 25000, validateStatus: () => true }));
+    if (r.status >= 300) {
+      log.warn("sendkit updateCampaignSchedule failed", { campaignId, status: r.status, body: JSON.stringify(r.data || {}).slice(0, 300) });
+      return { ok: false, error: `http_${r.status}`, detail: r.data };
+    }
+    const c = r.data?.data || r.data || {};
+    return { ok: true, id: c._id || c.id, status: c.status, schedule: c.schedule };
+  } catch (e) {
     return { ok: false, error: e.message };
   }
 }

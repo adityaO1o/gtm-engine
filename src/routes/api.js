@@ -24,7 +24,7 @@ import { reconcileDnc } from "../pipeline/dncSync.js";
 import { syncVerified, syncStatus } from "../pipeline/sync.js";
 import { syncCampaignLocks, campaignLockStatus, planEnrolment } from "../pipeline/campaignLocks.js";
 import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
-import { upsertLeads, addLeadsToCampaign, addToDnc, listCampaigns, campaignSummary } from "../services/sendkit.js";
+import { upsertLeads, addLeadsToCampaign, addToDnc, listCampaigns, campaignSummary, updateCampaignSchedule } from "../services/sendkit.js";
 import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revokeMcpKey, recentAudit as recentMcpAudit } from "../services/mcpKeys.js";
 import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/domainScan.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
@@ -192,6 +192,21 @@ apiRouter.get("/campaigns/list", (_req, res) =>
 
 // GET /api/sendkit/campaigns — LIVE list of every campaign in the SendKit workspace, including any
 // created directly in SendKit (not in our hardcoded config). Read-only; used by the MCP server.
+// PATCH one SendKit campaign's sending schedule (timezone / hours / working days). SendKit defaults
+// new campaigns to America/New_York 09:00-17:00 Mon-Fri, which leaves a campaign idle outside that
+// window; this points it at the hours you actually want to send in.
+apiRouter.post("/sendkit/campaigns/:id/schedule", async (req, res) => {
+  const b = req.body || {};
+  const schedule = {
+    timezone: S(b.timezone) || "Asia/Kolkata",
+    startTime: S(b.startTime) || "09:00",
+    endTime: S(b.endTime) || "21:00",
+    workingDays: Array.isArray(b.workingDays) ? b.workingDays.map(Number).filter((n) => n >= 0 && n <= 6) : [1, 2, 3, 4, 5, 6],
+  };
+  const r = await updateCampaignSchedule(req.params.id, schedule);
+  res.status(r.ok ? 200 : 400).json({ ...r, schedule });
+});
+
 apiRouter.get("/sendkit/campaigns", async (_req, res) => {
   try { res.json({ campaigns: await listCampaigns() }); }
   catch (e) { res.status(502).json({ error: "sendkit unavailable", detail: e.message }); }
