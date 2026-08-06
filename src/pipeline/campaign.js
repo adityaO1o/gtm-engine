@@ -87,10 +87,11 @@ async function blacklistOf(domains) {
   return out;
 }
 
-// One seed's WHOLE independent pipeline: free page-1 (count gate) -> blacklist it -> if < gate,
-// lazily pull API pages one at a time, checking each, stopping the instant blacklistGate is reached
-// (so a company whose bad domains are on page 1 costs ZERO API calls). Then Prospeo if it qualifies.
-async function processSeed(campaignId, t, gates) {
+// DISCOVERY for one seed: free page-1 (count gate) -> blacklist it -> if still under the gate,
+// lazily pull API pages one at a time, stopping the instant blacklistGate is reached (so a company
+// whose bad domains are on page 1 costs ZERO API calls). Qualified seeds are handed to onQualified()
+// rather than enriched here — enrichment runs in its own lane so it can't stall discovery.
+async function discoverSeed(campaignId, t, gates, onQualified) {
   try {
     await setTarget(t._id, { stage: "scraping", activity: "fetching redirects (free)" });
     const p1 = await cachedPage1(t.seed);
@@ -129,14 +130,27 @@ async function processSeed(campaignId, t, gates) {
       return;
     }
 
-    await setTarget(t._id, { ...common, stage: "enriching", activity: "finding decision-makers (prospeo)" });
+    // Qualified — hand off to the enrichment lane and free this slot immediately. Prospeo is globally
+    // rate-limited, so doing it inline would pin a discovery slot for the whole enrich (at 4.6k seeds
+    // that pinned 19/20 slots and pushed the run's ETA to ~38h).
+    await setTarget(t._id, { ...common, stage: "enrich_queued", activity: "waiting for contact lookup" });
+    onQualified(t);
+  } catch (e) {
+    await setTarget(t._id, { stage: "error", error: e.message, activity: null });
+  }
+}
+
+// The Prospeo half, run in its own small lane so it never blocks discovery.
+async function enrichSeed(t) {
+  try {
+    await setTarget(t._id, { stage: "enriching", activity: "finding decision-makers (prospeo)" });
     const { people, total, free, error } = await searchPeople(t.seed);
 
     // Auto-reveal the decision-makers' emails (search-person masks them) — these are already
     // filtered to Founder/C-Suite/VP/Head/Director, so the per-person enrich credits only go to
     // people worth contacting. Without an email they can't be pushed to SendKit at all.
     if (people.length) {
-      await setTarget(t._id, { ...common, people, peopleCount: people.length, activity: `revealing ${people.length} emails (prospeo)` });
+      await setTarget(t._id, { people, peopleCount: people.length, activity: `revealing ${people.length} emails (prospeo)` });
       await runPool(people, async (p, i) => {
         const ids = p.linkedin_url ? { linkedin_url: p.linkedin_url }
           : { first_name: p.first_name, last_name: p.last_name, company_domain: t.seed };
@@ -147,7 +161,7 @@ async function processSeed(campaignId, t, gates) {
     }
     const withEmail = people.filter((p) => p.email).length;
     await setTarget(t._id, {
-      ...common, people, peopleCount: people.length, peopleTotal: total, emailsRevealed: true,
+      people, peopleCount: people.length, peopleTotal: total, emailsRevealed: true,
       contactsWithEmail: withEmail, prospeoFree: !!free, prospeoError: error || null,
       stage: "done", activity: null,
     });
@@ -156,11 +170,37 @@ async function processSeed(campaignId, t, gates) {
   }
 }
 
-// Fully independent, single-pool run — every seed flows through its whole pipeline on its own, at
-// high concurrency, no stage barriers. Contacts stream in as companies qualify.
+// TWO INDEPENDENT LANES, run concurrently:
+//   discovery  — free scrape + blacklist (+ occasional API page), wide concurrency
+//   enrichment — Prospeo search + email reveal, small concurrency
+// They must not share a pool. Prospeo is globally rate-limited (~85/min), so when enrichment ran
+// inline it pinned nearly every discovery slot waiting on it: a 4,598-seed run measured 0.03
+// seeds/sec (~38h ETA) with 19 of 20 slots parked in "enriching". Split like this, discovery runs at
+// its own speed and enrichment trickles along behind it.
 async function runCampaign(campaignId, targets, gates) {
   await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "running", startedAt: new Date(), updatedAt: new Date() } });
-  await runPool(targets, (t) => processSeed(campaignId, t, gates), { concurrency: config.campaign.seedConcurrency });
+
+  const queue = [];
+  let discoveryDone = false;
+
+  const enrichLane = (async () => {
+    const inFlight = new Set();
+    while (!discoveryDone || queue.length || inFlight.size) {
+      while (queue.length && inFlight.size < config.campaign.enrichConcurrency) {
+        const t = queue.shift();
+        const p = enrichSeed(t).finally(() => inFlight.delete(p));
+        inFlight.add(p);
+      }
+      await (inFlight.size ? Promise.race(inFlight) : sleep(500));
+    }
+  })();
+
+  await runPool(targets, (t) => discoverSeed(campaignId, t, gates, (q) => queue.push(q)),
+    { concurrency: config.campaign.seedConcurrency });
+  discoveryDone = true;
+  await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "enriching", updatedAt: new Date() } });
+
+  await enrichLane;
   await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "done", status: "done", finishedAt: new Date(), updatedAt: new Date() } });
   log.info("campaign finished", { campaignId: String(campaignId) });
 }
@@ -208,12 +248,15 @@ export async function getCampaign(id) {
   ]).toArray();
   const stages = Object.fromEntries(byStage.map((s) => [s._id, s.n]));
   const processed = Object.entries(stages).reduce((a, [k, n]) => a + (SETTLED.has(k) ? n : 0), 0);
+  // Discovery is the throughput signal: a seed handed to the (slower) enrichment lane is done being
+  // discovered even though it hasn't settled yet, so progress/ETA should count it.
+  const discovered = processed + (stages.enrich_queued || 0) + (stages.enriching || 0);
   // a few seeds actively being worked, with their current step — the "it's alive" ticker
   const active = await campaignTargets().find(
     { campaignId: _id, stage: { $nin: [...SETTLED, "queued"] } },
     { projection: { seed: 1, stage: 1, activity: 1, blacklistedCount: 1 }, limit: 12, sort: { updatedAt: -1 } },
   ).toArray();
-  return { ...campaign, id, stages, processed, active };
+  return { ...campaign, id, stages, processed, discovered, active };
 }
 
 // EVERY seed's full funnel result (not just qualified ones) — so you can see each domain's whole

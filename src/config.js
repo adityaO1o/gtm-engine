@@ -122,9 +122,12 @@ export const config = {
     // Safety cap on paid API pages per seed (each = 50 domains). Big seeds page deeper to hit the
     // blacklist gate; this just stops a runaway when a seed never reaches it.
     maxApiPages: parseInt(process.env.CAMPAIGN_MAX_API_PAGES || "20", 10),
-    // How many seeds run their whole independent pipeline at once. Mostly I/O (free scrape + blacklist
-    // + occasional API/Prospeo); the shared host.io/Prospeo spacers still cap the paid rates globally.
-    seedConcurrency: parseInt(process.env.CAMPAIGN_SEED_CONCURRENCY || "20", 10),
+    // Discovery lane width (free scrape + blacklist + occasional API page). Pure I/O, so this can be
+    // wide — it no longer waits on Prospeo, which runs in its own lane below.
+    seedConcurrency: parseInt(process.env.CAMPAIGN_SEED_CONCURRENCY || "30", 10),
+    // Enrichment lane width (Prospeo search + email reveal). Small on purpose: Prospeo is globally
+    // rate-limited by its own spacer, so more parallelism here buys nothing and only risks 429s.
+    enrichConcurrency: parseInt(process.env.CAMPAIGN_ENRICH_CONCURRENCY || "4", 10),
   },
 
   // Domain-prospecting scan tunables. DNS concurrency is high on purpose: lookups now go to public

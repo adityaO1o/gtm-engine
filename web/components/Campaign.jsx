@@ -21,6 +21,7 @@ const STAGE_META = {
   blacklisting: { label: "checking blacklist…", cls: "p-review" },
   dropped_count: { label: "below count gate", cls: "p-role-based" },
   dropped_blacklist: { label: "not enough blacklisted", cls: "p-role-based" },
+  enrich_queued: { label: "queued for contacts", cls: "p-review" },
   enriching: { label: "finding contacts…", cls: "p-review" },
   done: { label: "done", cls: "p-verified" },
   error: { label: "error", cls: "p-competitor" },
@@ -112,15 +113,16 @@ export default function Campaign() {
       // ETA from the processing rate (seeds settled per second) between polls.
       if (c.status === "running" && c.seedCount) {
         const now = Date.now(), prev = rateRef.current;
-        if (prev.at && c.processed > prev.processed) {
-          const rate = (c.processed - prev.processed) / ((now - prev.at) / 1000); // seeds/sec
-          const remaining = c.seedCount - c.processed;
+        const done = c.discovered ?? c.processed;   // discovery is the throughput signal
+        if (prev.at && done > prev.processed) {
+          const rate = (done - prev.processed) / ((now - prev.at) / 1000); // seeds/sec
+          const remaining = c.seedCount - done;
           if (rate > 0) {
             const secs = Math.round(remaining / rate);
             setEtaText(secs > 90 ? `~${Math.ceil(secs / 60)} min left` : `~${secs}s left`);
           }
         }
-        if (!prev.at || now - prev.at > 4000) rateRef.current = { at: now, processed: c.processed };
+        if (!prev.at || now - prev.at > 4000) rateRef.current = { at: now, processed: done };
       } else setEtaText("");
       if (c.status === "running") timer.current = setTimeout(() => p(id), 1500);
       else loadHistory();
@@ -231,13 +233,14 @@ export default function Campaign() {
           <div className="jobh">
             <span className="spin" />
             <span>
-              Processing <b>{num(campaign.processed || 0)}</b> / {num(campaign.seedCount)}
+              Scanned <b>{num(campaign.discovered ?? campaign.processed ?? 0)}</b> / {num(campaign.seedCount)}
+              {sum(stages, ["enrich_queued", "enriching"]) ? <> · <b>{num(sum(stages, ["enrich_queued", "enriching"]))}</b> awaiting contacts</> : null}
               {" · "}<b className="ok">{num(sum(stages, ["done"]))}</b> prospects
               {" · host.io API used "}<b>{num(campaign.apiCallsUsed || 0)}</b>
               {etaText ? <> · <b>{etaText}</b></> : null}
             </span>
           </div>
-          <div className="prog on"><i style={{ width: `${campaign.seedCount ? Math.max(2, Math.round((campaign.processed / campaign.seedCount) * 100)) : 2}%` }} /></div>
+          <div className="prog on"><i style={{ width: `${campaign.seedCount ? Math.max(2, Math.round(((campaign.discovered ?? campaign.processed) / campaign.seedCount) * 100)) : 2}%` }} /></div>
           {campaign.active?.length ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
               {campaign.active.map((a) => (
