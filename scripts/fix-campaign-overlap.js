@@ -32,7 +32,23 @@ import { CAMPAIGNS } from "../src/services/campaigns.js";
 import { campaignMembers, campaignLeadDetail, removeFromCampaign } from "../src/services/sendkit.js";
 
 const APPLY = process.argv.includes("--apply");
-const WITH_ACTIVITY = !process.argv.includes("--no-activity");
+const WITH_ACTIVITY = !process.argv.includes("--no-activity") || process.argv.includes("--only-unmailed");
+// Someone who replied in BOTH campaigns is skipped by default — there is no safe automatic answer
+// when both sides hold a live conversation. Pass --resolve-replied-both to decide them like anyone
+// else (engagement, then added-first) once you have read the threads and are happy for that.
+const RESOLVE_REPLIED_BOTH = process.argv.includes("--resolve-replied-both");
+// Never touch these addresses, whatever the rules say: --skip=a@b.com,c@d.com
+const SKIP = new Set(
+  (process.argv.find((a) => a.startsWith("--skip=")) || "").replace("--skip=", "")
+    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+);
+// --only-unmailed: the CONSERVATIVE mode. Only ever drop a membership that has sent this person
+// NOTHING yet. Someone already mailed by both campaigns is left in both — the duplicate mail has
+// already gone out and (per the owner's call) pulling them now is not worth cutting a live
+// sequence for. Note this DOES leave the remaining follow-up steps of both sequences in play.
+// Needs activity data, so it forces the timeline fetch on; a membership whose activity can't be
+// read is treated as "unknown" and never removed.
+const ONLY_UNMAILED = process.argv.includes("--only-unmailed");
 const ACTIVE = CAMPAIGNS.filter((c) => c.manualTarget);
 const DEAD = new Set(["skipped", "removed", "bounced"]);
 
@@ -87,18 +103,63 @@ async function main() {
 
   const removals = new Map();   // campaignId -> { label, leadIds:[], emails:[] }
   const keepOf = new Map();     // email -> campaignId kept
-  const manual = [], alreadyDead = [];
-  const reasons = { replied: 0, engagement: 0, addedFirst: 0 };
+  const manual = [], alreadyDead = [], skipped = [], mailedByBoth = [], unknownActivity = [];
+  const reasons = { replied: 0, engagement: 0, addedFirst: 0, repliedBoth: 0, unmailedSide: 0 };
 
   for (const [email, entries] of dupes) {
+    if (SKIP.has(email)) {
+      skipped.push({ email, in: entries.map((e) => `${e.c.label}:${e.m.status}`) });
+      continue;
+    }
+
+    if (ONLY_UNMAILED) {
+      // Can't tell what was sent -> don't touch them.
+      if (entries.some((e) => !e.activity)) {
+        unknownActivity.push({ email, in: entries.map((e) => `${e.c.label}:${e.m.status}`) });
+        continue;
+      }
+      const unmailed = entries.filter((e) => e.activity.sent === 0);
+      // Already mailed by every campaign they're in — leave the whole thing alone.
+      if (!unmailed.length) {
+        mailedByBoth.push({ email, sent: entries.map((e) => `${e.c.label}:${e.activity.sent}`) });
+        continue;
+      }
+      // Every membership is unmailed: keep one (added first), drop the rest.
+      // Otherwise: keep the mailed one(s), drop only the silent membership(s).
+      const keepHere = unmailed.length === entries.length
+        ? entries.slice().sort((a, b) => new Date(a.m.addedAt || 0).getTime() - new Date(b.m.addedAt || 0).getTime())[0]
+        : null;
+      reasons.unmailedSide++;
+      for (const e of entries) {
+        if (e === keepHere) continue;
+        if (e.activity.sent > 0) continue;                 // has send history — never dropped in this mode
+        if (!removals.has(e.c.sendkitId)) removals.set(e.c.sendkitId, { label: e.c.label, leadIds: [], emails: [] });
+        const g = removals.get(e.c.sendkitId);
+        g.leadIds.push(e.m.campaignLeadId);
+        g.emails.push(email);
+      }
+      const kept = keepHere || entries.find((e) => e.activity.sent > 0);
+      if (kept) keepOf.set(email, kept.c.sendkitId);
+      continue;
+    }
     const repliedIn = entries.filter((e) => e.m.status === "replied" || e.activity?.replied);
-    if (repliedIn.length > 1) {
+    if (repliedIn.length > 1 && !RESOLVE_REPLIED_BOTH) {
       manual.push({ email, in: entries.map((e) => `${e.c.label}:${e.m.status}`) });
       continue;
     }
 
     let keep, why;
     if (repliedIn.length === 1) { keep = repliedIn[0]; why = "replied"; }
+    else if (repliedIn.length > 1) {
+      // --resolve-replied-both: both sides replied, so "replied" tells us nothing. Fall through to
+      // the same engagement/added-first ranking everyone else gets, and count it separately so the
+      // report never hides that a live thread was cut.
+      const ranked = entries.slice().sort((a, b) => engagement(b.activity) - engagement(a.activity));
+      keep = (WITH_ACTIVITY && engagement(ranked[0].activity) > engagement(ranked[1].activity))
+        ? ranked[0]
+        : entries.slice().sort((a, b) => new Date(a.m.addedAt || 0).getTime() - new Date(b.m.addedAt || 0).getTime())[0];
+      why = "repliedBoth";
+    }
     else {
       const ranked = entries.slice().sort((a, b) => engagement(b.activity) - engagement(a.activity));
       if (WITH_ACTIVITY && engagement(ranked[0].activity) > engagement(ranked[1].activity)) {
@@ -125,16 +186,41 @@ async function main() {
     }
   }
 
+  if (ONLY_UNMAILED) {
+    console.log(`\n[overlap] MODE: --only-unmailed — a membership is dropped ONLY if it has sent nothing yet.`);
+    console.log(`[overlap] duplicates with an unmailed side   : ${reasons.unmailedSide}   <- these get cleaned`);
+    console.log(`[overlap] already mailed by BOTH — left alone: ${mailedByBoth.length}`);
+    console.log(`[overlap] activity unknown  — left alone     : ${unknownActivity.length}`);
+    console.log(`[overlap] explicitly skipped (--skip)        : ${skipped.length}`);
+    let t = 0;
+    console.log("");
+    for (const [, g] of removals) { console.log(`[overlap] remove ${String(g.leadIds.length).padStart(5)} unmailed memberships from ${g.label}`); t += g.leadIds.length; }
+    console.log(`[overlap] total memberships to remove: ${t}`);
+    if (skipped.length) {
+      console.log("\n[overlap] SKIPPED by --skip (left in both, untouched):");
+      for (const m of skipped) console.log(`   ${m.email}  (${m.in.join(", ")})`);
+    }
+    if (!APPLY) { console.log("\n[overlap] DRY RUN — nothing changed. Re-run with --apply to remove them."); return; }
+    await applyRemovals(removals, keepOf);
+    return;
+  }
+
   console.log(`\n[overlap] kept because they REPLIED there        : ${reasons.replied}`);
   console.log(`[overlap] kept because they ENGAGE there more    : ${reasons.engagement}`);
   console.log(`[overlap] kept because they were ADDED there first: ${reasons.addedFirst}`);
+  if (reasons.repliedBoth) console.log(`[overlap] replied in BOTH, RESOLVED anyway       : ${reasons.repliedBoth}   <- a live thread is being cut for these`);
   console.log(`[overlap] replied in BOTH — left alone           : ${manual.length}`);
+  console.log(`[overlap] explicitly skipped (--skip)            : ${skipped.length}`);
   console.log(`[overlap] already dead in every campaign (DNC'd/bounced — reported, not fixed here): ${alreadyDead.length}`);
   console.log("");
   let total = 0;
   for (const [, g] of removals) { console.log(`[overlap] remove ${String(g.leadIds.length).padStart(5)} memberships from ${g.label}`); total += g.leadIds.length; }
   console.log(`[overlap] total memberships to remove: ${total}`);
 
+  if (skipped.length) {
+    console.log("\n[overlap] SKIPPED by --skip (left in both campaigns, untouched):");
+    for (const m of skipped) console.log(`   ${m.email}  (${m.in.join(", ")})`);
+  }
   if (manual.length) {
     console.log("\n[overlap] REPLIED IN BOTH — decide these by hand:");
     for (const m of manual) console.log(`   ${m.email}  (${m.in.join(", ")})`);
@@ -149,6 +235,12 @@ async function main() {
     return;
   }
 
+  await applyRemovals(removals, keepOf);
+}
+
+// Drop the surplus memberships, then pin the lock (and our own membership record) to the campaign
+// we kept — so neither a push site nor the next daily reconcile can put them back.
+async function applyRemovals(removals, keepOf) {
   const client = new MongoClient(config.mongoUri, { serverSelectionTimeoutMS: 8000 });
   await client.connect();
   const db = client.db(config.mongoDb);
@@ -160,8 +252,6 @@ async function main() {
     console.log(`[overlap] removed ${r.removed}/${g.leadIds.length} from ${g.label}${r.failed ? ` (failed ${r.failed})` : ""}`);
   }
 
-  // Pin the lock (and our own membership record) to the campaign we kept, so neither a push site
-  // nor the next daily reconcile can put them back.
   const lockOps = [], leadOps = [];
   for (const [email, cid] of keepOf) {
     lockOps.push({ updateOne: { filter: { _id: email }, update: { $set: { campaignId: cid, at: new Date(), reconciled: true } }, upsert: true } });
