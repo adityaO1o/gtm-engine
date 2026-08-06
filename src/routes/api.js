@@ -29,7 +29,7 @@ import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revoke
 import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/domainScan.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
-import { diagnose as diagnoseHostio } from "../services/hostio.js";
+import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
 import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, backfillOwnLeadContacts, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
@@ -912,6 +912,7 @@ apiRouter.post("/domainscan", async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 apiRouter.get("/domainscan", async (_req, res) => res.json({ items: await listDomainScans() }));
+apiRouter.get("/hostio/scrape-health", async (_req, res) => res.json(await scrapeDiagnose()));
 apiRouter.get("/domainscan/diag", async (_req, res) => res.json({ blacklist: await diagnoseBlacklistProject(), hostio: await diagnoseHostio() }));
 apiRouter.get("/domainscan/dnstest", async (_req, res) => res.json(await dnsSelfTest()));
 // Live per-domain blacklist detail for the results drawer — which zones list it, enrichment, history.

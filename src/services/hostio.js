@@ -298,6 +298,31 @@ export async function apiRedirectPage(seed, page, { onApiCall } = {}) {
 
 // Config/connectivity self-test for the diag endpoint — is the token set and does a live call work,
 // without exposing the token.
+// Health of the FREE scrape path: pool size, how much of it is currently rested, whether the global
+// throttle is engaged, and one live fetch through a proxy. Without this the only signal that the
+// scrape lane is wedged is seeds sitting in "scraping" — which looks identical to it being slow.
+export async function scrapeDiagnose() {
+  const now = Date.now();
+  const benched = [...benchedUntil.values()].filter((t) => t > now).length;
+  const out = {
+    poolSize: SCRAPE_POOL.length,
+    benched,
+    usable: SCRAPE_POOL.length - benched,
+    rateLimitedExits: limitHits.size,
+    throttled: now < cooldownUntil,
+    cooldownMsLeft: Math.max(0, cooldownUntil - now),
+    recentWindow: recent.length,
+    recentFailRate: recent.length ? +(recent.filter((v) => !v).length / recent.length).toFixed(2) : null,
+  };
+  const url = SCRAPE_POOL.length ? SCRAPE_POOL[0] : null;
+  const t = Date.now();
+  try {
+    const p = await fetchScrape("sopro.io", url ? agentFor(url) : null);
+    out.liveProbe = { via: url ? "proxy" : "direct", ok: p.ok, total: p.total, limited: !!p.limited, ms: Date.now() - t };
+  } catch (e) { out.liveProbe = { via: url ? "proxy" : "direct", err: e.code || e.message, ms: Date.now() - t }; }
+  return out;
+}
+
 export async function diagnose() {
   const tokenSet = !!config.hostio.token;
   if (!tokenSet) return { tokenSet: false, error: "HOSTIO_TOKEN not set" };
