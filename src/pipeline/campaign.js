@@ -15,6 +15,8 @@ import { runPool } from "../lib/pool.js";
 import { scrapeRedirectPage, apiRedirectPage } from "../services/hostio.js";
 import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, getWorkspaceVerdicts } from "../services/blacklistProject.js";
+import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes } from "../services/sendkit.js";
+import { BLACKLIST_SEQUENCE, leadPayload } from "./blacklistCopy.js";
 import { campaigns, campaignTargets, hostioPages, hostioUsage } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
@@ -127,9 +129,28 @@ async function processSeed(campaignId, t, gates) {
       return;
     }
 
-    await setTarget(t._id, { ...common, stage: "enriching", activity: "finding contacts (prospeo)" });
+    await setTarget(t._id, { ...common, stage: "enriching", activity: "finding decision-makers (prospeo)" });
     const { people, total, free, error } = await searchPeople(t.seed);
-    await setTarget(t._id, { ...common, people, peopleCount: people.length, peopleTotal: total, prospeoFree: !!free, prospeoError: error || null, stage: "done", activity: null });
+
+    // Auto-reveal the decision-makers' emails (search-person masks them) — these are already
+    // filtered to Founder/C-Suite/VP/Head/Director, so the per-person enrich credits only go to
+    // people worth contacting. Without an email they can't be pushed to SendKit at all.
+    if (people.length) {
+      await setTarget(t._id, { ...common, people, peopleCount: people.length, activity: `revealing ${people.length} emails (prospeo)` });
+      await runPool(people, async (p, i) => {
+        const ids = p.linkedin_url ? { linkedin_url: p.linkedin_url }
+          : { first_name: p.first_name, last_name: p.last_name, company_domain: t.seed };
+        const r = await findEmail(ids);
+        people[i].email = r.email || null;
+        people[i].email_status = r.email_status || null;
+      }, { concurrency: 4 });
+    }
+    const withEmail = people.filter((p) => p.email).length;
+    await setTarget(t._id, {
+      ...common, people, peopleCount: people.length, peopleTotal: total, emailsRevealed: true,
+      contactsWithEmail: withEmail, prospeoFree: !!free, prospeoError: error || null,
+      stage: "done", activity: null,
+    });
   } catch (e) {
     await setTarget(t._id, { stage: "error", error: e.message, activity: null });
   }
@@ -232,6 +253,56 @@ export async function revealCompanyEmails(campaignId, seed) {
   await campaignTargets().updateOne({ _id: target._id },
     { $set: { people, emailsRevealed: true, updatedAt: new Date() } });
   return people;
+}
+
+// ── Push a campaign's qualified prospects into a SendKit campaign ──────────────────────────────
+// Creates (once) a DRAFT SendKit campaign carrying the blacklist sequence, upserts every revealed
+// decision-maker as a lead with their per-company variables (blacklistedDomainCount, domain1..4, …),
+// and adds them to it. Nothing is ever sent: the campaign stays a draft until it's started by hand
+// in SendKit — starting a real outbound sequence is deliberately left as a human decision.
+export async function pushCampaignToSendkit(campaignId, { campaignName } = {}) {
+  if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
+  const _id = new ObjectId(campaignId);
+  const camp = await campaigns().findOne({ _id });
+  if (!camp) return { ok: false, error: "campaign not found" };
+
+  const targets = await campaignTargets().find({ campaignId: _id, stage: "done", peopleCount: { $gt: 0 } }).toArray();
+  const leads = [];
+  for (const t of targets) {
+    for (const p of t.people || []) {
+      if (p.email) leads.push(leadPayload(p, t));
+    }
+  }
+  if (!leads.length) return { ok: false, error: "no contacts with a revealed email yet" };
+
+  // reuse the SendKit campaign if this run already made one
+  let sendkitCampaignId = camp.sendkitCampaignId;
+  if (!sendkitCampaignId) {
+    const name = campaignName || `Blacklist campaign — ${new Date(camp.createdAt).toISOString().slice(0, 10)}`;
+    const created = await createSendkitCampaign(name, BLACKLIST_SEQUENCE);
+    if (!created.ok) return { ok: false, error: `could not create SendKit campaign: ${created.error}` };
+    sendkitCampaignId = created.id;
+    await campaigns().updateOne({ _id }, { $set: { sendkitCampaignId, sendkitCampaignName: name, updatedAt: new Date() } });
+  }
+
+  const up = await upsertLeads(leads);                                   // creates/updates + custom fields
+  const add = await addLeadsToCampaign(sendkitCampaignId, leads.map((l) => l.email));
+  await campaigns().updateOne({ _id }, { $set: { sendkitPushedAt: new Date(), sendkitLeadCount: leads.length, updatedAt: new Date() } });
+
+  log.info("pushed campaign to sendkit", { campaignId, sendkitCampaignId, leads: leads.length, added: add.added, skipped: add.skipped });
+  return { ok: true, sendkitCampaignId, leads: leads.length, upserted: up.ok, failed: up.failed, added: add.added, alreadyIn: add.skipped };
+}
+
+// Render one of the sequence's emails exactly as SendKit would send it for a given lead — no send.
+export async function previewCampaignEmail(campaignId, { email, step = 1 }) {
+  if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
+  const camp = await campaigns().findOne({ _id: new ObjectId(campaignId) });
+  if (!camp?.sendkitCampaignId) return { ok: false, error: "push to SendKit first" };
+  const lead = await findLeadByEmail(email);
+  if (!lead) return { ok: false, error: "lead not found in SendKit" };
+  const boxes = await listMailboxes();
+  if (!boxes.length) return { ok: false, error: "no mailbox in the SendKit workspace to preview as" };
+  return previewEmail(camp.sendkitCampaignId, { sequenceStep: step, leadId: lead.id, mailboxId: boxes[0].id });
 }
 
 // host.io PAID API usage — totals + recent calls, for the tracking view.

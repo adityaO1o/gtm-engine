@@ -123,13 +123,20 @@ function extractPerson(row) {
   };
 }
 
-// searchPeople(domain, { page }) -> { people, total, free, error } (emails NOT included — masked).
-export async function searchPeople(domain, { page = 1 } = {}) {
+// Only decision-makers — the people who can actually act on a deliverability pitch. Prospeo's
+// person_seniority enum; anything below Director (Manager/Senior/Entry/Intern) is excluded.
+export const DECISION_MAKER_SENIORITY = ["Founder/Owner", "C-Suite", "Vice President", "Head", "Director"];
+
+// searchPeople(domain, { page, seniority }) -> { people, total, free, error } (emails MASKED — reveal
+// needs a separate enrich-person call per person). Defaults to decision-makers only.
+export async function searchPeople(domain, { page = 1, seniority = DECISION_MAKER_SENIORITY } = {}) {
   const site = String(domain || "").trim().toLowerCase();
   if (!site) return { people: [], total: 0, error: "no domain" };
   meter.inc("prospeo_search_calls");
   try {
-    const r = await prospeoPost(SEARCH_ENDPOINT, { page, filters: { company: { websites: { include: [site] } } } });
+    const filters = { company: { websites: { include: [site] } } };
+    if (seniority?.length) filters.person_seniority = { include: seniority };
+    const r = await prospeoPost(SEARCH_ENDPOINT, { page, filters });
     if (r.status !== 200 || r.data?.error) {
       const code = r.data?.error_code || `http_${r.status}`;
       // NO_MATCH / no results is normal — return empty, never throw.

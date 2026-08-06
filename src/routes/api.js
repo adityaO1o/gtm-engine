@@ -30,7 +30,7 @@ import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/dom
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio } from "../services/hostio.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail } from "../pipeline/campaign.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -915,6 +915,16 @@ apiRouter.post("/campaign", async (req, res) => {
 });
 apiRouter.get("/campaign", async (_req, res) => res.json({ items: await listOutreachCampaigns() }));
 apiRouter.get("/hostio/usage", async (_req, res) => res.json(await hostioUsageReport()));
+// Push this campaign's qualified decision-makers into a DRAFT SendKit campaign (never started here).
+apiRouter.post("/campaign/:id/push-sendkit", async (req, res) => {
+  const r = await pushCampaignToSendkit(req.params.id, { campaignName: S(req.body?.name) || undefined });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+// Render one sequence email for one lead, personalized — preview only, sends nothing.
+apiRouter.get("/campaign/:id/preview", async (req, res) => {
+  const r = await previewCampaignEmail(req.params.id, { email: S(req.query.email), step: parseInt(S(req.query.step) || "1", 10) });
+  res.status(r.ok ? 200 : 400).json(r);
+});
 apiRouter.get("/campaign/:id", async (req, res) => {
   const c = await getCampaign(req.params.id);
   if (!c) return res.status(404).json({ error: "not found" });

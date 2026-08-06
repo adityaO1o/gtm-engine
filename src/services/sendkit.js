@@ -204,6 +204,58 @@ export async function campaignLeadCount(campaignId) {
   } catch (e) { log.warn("sendkit campaign count threw", { campaignId, err: e.message }); return null; }
 }
 
+// Create a campaign with its full email sequence. Campaigns are created in DRAFT — SendKit will not
+// send anything until it's started from the SendKit UI, which is deliberate: starting a real cold-
+// email sequence stays a human decision. `sequence` items are {type:"email"|"wait", order, name,
+// subject, body, waitDays}. Mailboxes are left unassigned so they're chosen at start time.
+export async function createCampaign(name, sequence) {
+  try {
+    const r = await withRetry(() => axios.post(`${base}/v1/campaigns`, { name, sequence },
+      { headers: h(), timeout: 30000, validateStatus: () => true }));
+    if (r.status >= 300) {
+      log.warn("sendkit createCampaign failed", { name, status: r.status, body: JSON.stringify(r.data || {}).slice(0, 300) });
+      return { ok: false, error: `http_${r.status}`, detail: r.data };
+    }
+    const c = r.data?.data || r.data || {};
+    return { ok: true, id: c._id || c.id, name: c.name, status: c.status };
+  } catch (e) {
+    log.warn("sendkit createCampaign threw", { name, err: e.message });
+    return { ok: false, error: e.message };
+  }
+}
+
+// Render a campaign step exactly as it would be sent for one lead — WITHOUT sending. Used to eyeball
+// the personalized copy (variables/conditionals resolved) before anyone starts the campaign.
+export async function previewEmail(campaignId, { sequenceStep = 1, leadId, mailboxId }) {
+  try {
+    const r = await withRetry(() => axios.post(`${base}/v1/campaigns/${campaignId}/preview-email`,
+      { sequenceStep, leadId, mailboxId },
+      { headers: h(), timeout: 25000, validateStatus: () => true }));
+    if (r.status >= 300) return { ok: false, error: `http_${r.status}`, detail: r.data };
+    const d = r.data?.data || r.data || {};
+    return { ok: true, subject: d.subject, body: d.body };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+// Look a lead up by email to get its SendKit id (needed for preview-email).
+export async function findLeadByEmail(email) {
+  try {
+    const r = await axios.get(`${base}/v1/leads`, { headers: h(), params: { search: email }, timeout: 15000, validateStatus: () => true });
+    const arr = r.data?.data || [];
+    const hit = arr.find((l) => String(l.email || "").toLowerCase() === String(email).toLowerCase()) || arr[0];
+    return hit ? { id: hit._id || hit.id, email: hit.email } : null;
+  } catch { return null; }
+}
+
+// The workspace's mailboxes — needed to pick a sender for a preview.
+export async function listMailboxes() {
+  try {
+    const r = await axios.get(`${base}/v1/mailboxes`, { headers: h(), params: { limit: 50 }, timeout: 20000, validateStatus: () => true });
+    if (r.status >= 300) return [];
+    return (r.data?.data || []).map((m) => ({ id: m._id || m.id, email: m.email, status: m.status }));
+  } catch { return []; }
+}
+
 // Live list of EVERY campaign in the SendKit workspace — so a campaign created directly in SendKit
 // (not in our hardcoded CAMPAIGNS config) is still visible to the MCP / dashboard. Read-only.
 export async function listCampaigns() {
@@ -297,6 +349,33 @@ export async function campaignLeadDetail(campaignId, campaignLeadId) {
     log.warn("sendkit campaign lead detail threw", { campaignId, campaignLeadId, err: e.message });
     return null;
   }
+}
+
+// Every REPLY conversation in a campaign, with SendKit's AI classification of what the person
+// actually said. aiTag is one of: Interested, Meeting Booked, More Info Needed, Not Interested,
+// Unsubscribe, Wrong Person, Out of Office, Unclassified.
+//
+// This is the only signal that distinguishes "leave them alone, a deal is in progress" from "stop
+// mailing them, they said no" — send counts and addedAt cannot tell those apart. Note that
+// campaigns run stopOnReply:true, so a reply stops only the campaign it was sent to; the person's
+// OTHER campaign keeps mailing them, which is exactly what this lets a caller find and fix.
+export async function inboxConversations(campaignId) {
+  const out = [];
+  let cursor = "";
+  for (let i = 0; i < 400; i++) {
+    const r = await withRetry(() => axios.get(`${base}/v1/inbox`, {
+      headers: h(), params: { limit: 100, ...(campaignId ? { campaign_id: campaignId } : {}), ...(cursor ? { cursor } : {}) },
+      timeout: 30000, validateStatus: () => true,
+    }));
+    if (r.status >= 300) { log.warn("sendkit inbox failed", { campaignId, status: r.status, got: out.length }); break; }
+    for (const m of (r.data?.data || [])) {
+      const email = String(m.lead?.email || "").trim().toLowerCase();
+      if (email) out.push({ email, aiTag: m.aiTag || null, status: m.status, repliedAt: m.repliedAt || null });
+    }
+    cursor = r.data?.pagination?.nextCursor || "";
+    if (!cursor) break;
+  }
+  return out;
 }
 
 // Is this address blocked — either directly, or because its whole domain is?

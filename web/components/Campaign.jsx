@@ -60,7 +60,32 @@ export default function Campaign() {
   const [starting, setStarting] = useState(false);
   const [openRow, setOpenRow] = useState(null);
   const [revealing, setRevealing] = useState(null);
+  const [pushing, setPushing] = useState(false);
+  const [preview, setPreview] = useState(null);
   const timer = useRef(null);
+
+  const campId = campaign?.id || campaign?._id;
+
+  async function pushToSendkit() {
+    const contacts = results.reduce((a, r) => a + (r.people || []).filter((p) => p.email).length, 0);
+    if (!contacts) { toast("No contacts with a revealed email yet", "bad"); return; }
+    if (!window.confirm(`Push ${contacts} decision-maker contact${contacts === 1 ? "" : "s"} into a SendKit campaign?\n\nThe campaign is created as a DRAFT with the 3-email blacklist sequence and each lead's variables (blacklisted domain count, example domains, …). Nothing is sent — you start it yourself in SendKit.`)) return;
+    setPushing(true);
+    try {
+      const r = await post(`/api/campaign/${campId}/push-sendkit`, {});
+      if (r.ok) { toast(`Pushed ${num(r.leads)} leads — SendKit campaign is a DRAFT, start it there`, "good"); poll(campId); }
+      else toast(r.error || "Push failed", "bad");
+    } catch { toast("Push failed", "bad"); }
+    setPushing(false);
+  }
+
+  async function showPreview(email) {
+    setPreview({ email, loading: true });
+    try {
+      const r = await j(`/api/campaign/${campId}/preview?email=${encodeURIComponent(email)}&step=1`);
+      setPreview(r.ok ? { email, subject: r.subject, body: r.body } : { email, error: r.error });
+    } catch { setPreview({ email, error: "preview failed" }); }
+  }
 
   async function revealEmails(seed) {
     if (revealing) return;
@@ -187,6 +212,17 @@ export default function Campaign() {
         <button className="btn btn-ghost btn-sm" onClick={() => { clearTimeout(timer.current); setView("list"); loadHistory(); }}><Icon name="back" />All campaigns</button>
         {campaign ? <span className="resn">{running ? <><span className="spin" /> <b>{campaign.stage}</b></> : <b>done</b>} · {num(campaign.seedCount)} seeds</span> : null}
         <div className="grow" />
+        {campaign?.sendkitCampaignId ? (
+          <span className="resn" style={{ color: "var(--good)" }}>
+            <Icon name="check" />pushed to SendKit ({num(campaign.sendkitLeadCount || 0)} leads) · draft
+          </span>
+        ) : null}
+        {results.length && !running ? (
+          <button className="btn btn-ghost btn-sm" disabled={pushing} onClick={pushToSendkit}
+            title="Creates a DRAFT SendKit campaign with the blacklist sequence + per-lead variables. Nothing is sent.">
+            <Icon name={pushing ? "refresh" : "mega"} />{pushing ? "Pushing…" : "Push to SendKit"}
+          </button>
+        ) : null}
         {results.length ? <button className="btn btn-ghost btn-sm" onClick={() => exportCsv(results)}><Icon name="download" />Export CSV</button> : null}
       </div>
 
@@ -307,6 +343,11 @@ export default function Campaign() {
                                           ? <span className="mono" style={{ color: p.email_status === "VERIFIED" ? "var(--good)" : "var(--ink)" }}>{p.email}</span>
                                           : r.emailsRevealed ? <span className="muted">—</span> : <span className="muted">hidden</span>}</td>
                                         <td>{p.linkedin_url ? <a href={p.linkedin_url} target="_blank" rel="noopener" className="sm">in ↗</a> : null}</td>
+                                        <td>{p.email && campaign?.sendkitCampaignId ? (
+                                          <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); showPreview(p.email); }} title="See the exact personalized email (nothing is sent)">
+                                            <Icon name="mail" />preview
+                                          </button>
+                                        ) : null}</td>
                                       </tr>
                                     ))}
                                   </tbody></table>
@@ -326,6 +367,26 @@ export default function Campaign() {
         </>
       ) : campaign && !running ? (
         <div className="tablewrap"><div className="empty"><Icon name="search" /><b>No qualifying prospects</b>No company passed both gates. Try lowering the thresholds.</div></div>
+      ) : null}
+
+      {preview ? (
+        <>
+          <div className="drawer-scrim" onClick={() => setPreview(null)} />
+          <div className="drawer open">
+            <span className="x" onClick={() => setPreview(null)}><Icon name="x" style={{ width: 20, height: 20, stroke: "var(--dim)" }} /></span>
+            <h3>Email preview</h3>
+            <div className="muted mono" style={{ fontSize: 11 }}>{preview.email} · nothing is sent</div>
+            {preview.loading ? <div className="loading"><span className="spin" />Rendering…</div>
+              : preview.error ? <div className="note bad" style={{ marginTop: 14 }}><Icon name="warn" /><div>{preview.error}</div></div>
+              : (
+                <div style={{ marginTop: "var(--s4)" }}>
+                  <div className="resn" style={{ marginBottom: 6 }}><b>Subject:</b> {preview.subject}</div>
+                  <div className="card" style={{ padding: "var(--s4)", fontSize: 13, lineHeight: 1.55 }}
+                    dangerouslySetInnerHTML={{ __html: preview.body || "" }} />
+                </div>
+              )}
+          </div>
+        </>
       ) : null}
     </>
   );
