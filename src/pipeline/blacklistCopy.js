@@ -3,50 +3,52 @@
 // SendKit resolves {{variable}} against the lead's standard + custom fields, so every unrecognized
 // key we send on a lead (blacklistedDomainCount, domain1..4, …) becomes usable in this copy.
 //
-// Two deliberate deviations from the original draft, per the brief:
-//   - No {{calendlyLink}} — we don't have one, so that CTA is reworded to a plain reply ask.
-//   - No {{clientName1/2}} — we have no source for a prospect's own client names, and guessing them
-//     into a real cold email is worse than not naming them, so email 2 uses a generic line.
+// The copy below is the approved script, kept verbatim — including "Or grab a slot:" in email 3 with
+// nothing after it (there is no booking link yet; keeping it was an explicit call) and email 2's
+// hardcoded "Talk soon, Abbas Somji" sign-off. Don't "tidy" these without asking.
 export const SENDER_NAME = "Abbas Somji";
 
 // Body is HTML (SendKit sends `body` as HTML). Keep it plain and text-like — no styling, so it reads
 // like a hand-written email rather than a marketing blast.
 const p = (s) => `<p>${s}</p>`;
 
+const SUBJECT = "Ran a check on your domains";
+
 const EMAIL_1 = [
   p("Hey {{firstName}},"),
-  p("Pulled a scan on {{companyName}}'s {{secondaryDomainCount}} secondary outbound domains yesterday and {{blacklistedDomainCount}} of them are sitting on blacklists right now. A few examples:"),
+  p("Pulled a scan on {{companyName}}'s {{secondaryDomainCount}} secondary outbound domains yesterday and {{blacklistedDomainCount}} of them are sitting on SURBL right now. Few examples:"),
   p("{{domain1}}, {{domain2}}, {{domain3}}, {{domain4}}"),
   p("Won't kill deliverability overnight, but anything sending through those domains is probably landing in spam more than it should already."),
   p("We scanned your whole secondary footprint, not just these four. And since these are blacklisted, on InboxKit you can just rotate them out and keep tracking the rest so this doesn't sneak up again."),
-  p("Can run the same check across your other domains too, that's usually where the ugly stuff hides."),
+  p("Can run the same check across your client setups too, that's usually where the ugly stuff hides."),
   p("Happy to send the full report over, just reply."),
   p("{{senderName}}"),
 ].join("\n");
 
 const EMAIL_2 = [
   p("{{firstName}}, thought I'd just send the whole report over rather than sit on it."),
-  p("Also happy to run the same audit on any other domains you're sending from, so you catch anything before your prospects do."),
+  p("Also happy to run the same audit for your clients, for a start, so you catch anything on their side before they do."),
   p("And if any of these domains are worth keeping alive, you can rotate them with us instead of burning them."),
   p("Let me know and I'll share the details."),
-  p("Talk soon,<br />{{senderName}}"),
+  p("Talk soon, Abbas Somji"),
 ].join("\n");
 
 const EMAIL_3 = [
   p("{{firstName}}, last one from me."),
-  p("The {{blacklistedDomainCount}} domains I flagged were just what surfaced first. If you're sending at real scale the actual number is probably higher, and the rest of your sending setup won't all be clean either."),
+  p("The {{blacklistedDomainCount}} domains I flagged were just what surfaced first. If you're sending at real scale the actual number is probably higher, and your client setups won't all be clean either."),
   p("If deliverability isn't the fire right now, no stress, I'll drop it here."),
-  p('Otherwise just reply "send it" and the full breakdown is yours.'),
+  p('Otherwise reply "send it" and the full breakdown\'s yours. Or grab a slot:'),
+  p("&nbsp;"),
   p("{{senderName}}"),
 ].join("\n");
 
-// Day 0 → wait 3 → Day 3 → wait 3 → Day 6
+// Day 0 → wait 3 → Day 3 → wait 3 → Day 6. Emails 2 and 3 reuse subject 1 as "Re:" so they thread.
 export const BLACKLIST_SEQUENCE = [
-  { type: "email", order: 0, name: "Email 1 — Ran a check on your domains", subject: "Ran a check on your domains", body: EMAIL_1 },
+  { type: "email", order: 0, name: "Email 1 — Day 0", subject: SUBJECT, body: EMAIL_1 },
   { type: "wait", order: 1, name: "Wait 3 days", waitDays: 3 },
-  { type: "email", order: 2, name: "Email 2 — Full report", subject: "Re: Ran a check on your domains", body: EMAIL_2 },
+  { type: "email", order: 2, name: "Email 2 — Day 3", subject: `Re: ${SUBJECT}`, body: EMAIL_2 },
   { type: "wait", order: 3, name: "Wait 3 days", waitDays: 3 },
-  { type: "email", order: 4, name: "Email 3 — Last one", subject: "Re: Ran a check on your domains", body: EMAIL_3 },
+  { type: "email", order: 4, name: "Email 3 — Day 6", subject: `Re: ${SUBJECT}`, body: EMAIL_3 },
 ];
 
 // Build the SendKit lead payload for one person at one prospect company. Standard fields are mapped

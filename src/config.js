@@ -75,6 +75,9 @@ export const config = {
   sendkit: {
     key: req("SENDKIT_KEY"),
     base: process.env.SENDKIT_BASE || "https://api.sendkit.ai",
+    // The ONE standing "Blacklist Campaign" every campaign run's qualified leads are added to.
+    // Set this and runs stop creating a new SendKit campaign each time.
+    blacklistCampaignId: process.env.SENDKIT_BLACKLIST_CAMPAIGN_ID || "",
   },
 
   // The Blacklist Project — InboxKit's own DNSBL checker (used by the domain-prospecting scan:

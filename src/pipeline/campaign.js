@@ -275,14 +275,18 @@ export async function pushCampaignToSendkit(campaignId, { campaignName } = {}) {
   }
   if (!leads.length) return { ok: false, error: "no contacts with a revealed email yet" };
 
-  // reuse the SendKit campaign if this run already made one
-  let sendkitCampaignId = camp.sendkitCampaignId;
+  // All blacklist prospecting funnels feed ONE standing SendKit campaign ("Blacklist Campaign"), so
+  // every run's leads land in the same sequence instead of scattering across a campaign per run.
+  // Falls back to creating a per-run campaign only if that standing id isn't configured.
+  let sendkitCampaignId = config.sendkit.blacklistCampaignId || camp.sendkitCampaignId;
   if (!sendkitCampaignId) {
     const name = campaignName || `Blacklist campaign — ${new Date(camp.createdAt).toISOString().slice(0, 10)}`;
     const created = await createSendkitCampaign(name, BLACKLIST_SEQUENCE);
     if (!created.ok) return { ok: false, error: `could not create SendKit campaign: ${created.error}` };
     sendkitCampaignId = created.id;
-    await campaigns().updateOne({ _id }, { $set: { sendkitCampaignId, sendkitCampaignName: name, updatedAt: new Date() } });
+  }
+  if (sendkitCampaignId !== camp.sendkitCampaignId) {
+    await campaigns().updateOne({ _id }, { $set: { sendkitCampaignId, updatedAt: new Date() } });
   }
 
   const up = await upsertLeads(leads);                                   // creates/updates + custom fields
