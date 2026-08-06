@@ -267,7 +267,12 @@ export async function startCampaign(rawSeeds, opts = {}) {
 
 // Funnel tallies + live activity for the dashboard poll: stage counts, how many seeds are SETTLED vs
 // still working (for a real progress bar + ETA), and a sample of what's being processed right now.
-const SETTLED = new Set(["done", "dropped_count", "dropped_blacklist", "error", "interrupted"]);
+// A seed counts as processed only once it has a REAL verdict. "interrupted" is deliberately not in
+// here: those are seeds a deploy killed mid-flight, which a resume puts back through the lanes —
+// counting them as processed made a resumed 4.6k run read "4568/4598 done" while 4,309 were still
+// queued, and produced a meaningless ETA.
+const SETTLED = new Set(["done", "dropped_count", "dropped_blacklist", "error"]);
+const NOT_ACTIVE = new Set([...SETTLED, "queued", "interrupted"]); // neither working nor finished
 export async function getCampaign(id) {
   if (!ObjectId.isValid(id)) return null;
   const _id = new ObjectId(id);
@@ -284,7 +289,7 @@ export async function getCampaign(id) {
   const discovered = processed + (stages.enrich_queued || 0) + (stages.enriching || 0);
   // a few seeds actively being worked, with their current step — the "it's alive" ticker
   const active = await campaignTargets().find(
-    { campaignId: _id, stage: { $nin: [...SETTLED, "queued"] } },
+    { campaignId: _id, stage: { $nin: [...NOT_ACTIVE] } },
     { projection: { seed: 1, stage: 1, activity: 1, blacklistedCount: 1 }, limit: 12, sort: { updatedAt: -1 } },
   ).toArray();
   return { ...campaign, id, stages, processed, discovered, active };
