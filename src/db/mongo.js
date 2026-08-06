@@ -57,6 +57,9 @@ export async function connect() {
   // already-recently-tried leads on the index instead of in memory.
   await db.collection("leads").createIndex({ email_status: 1, last_retry_at: 1 });
   await db.collection("leads").createIndex({ campaigns: 1 });
+  // The campaign funnel looks up "which of our engagers work at this domain" per seed. Without this
+  // that's a collection scan per seed (thousands of them on a big run).
+  await db.collection("leads").createIndex({ company_domain: 1 });
   await db.collection("leads").createIndex({ campaigns: 1, status: 1 });
   await db.collection("leads").createIndex({ campaigns: 1, email_status: 1, email: 1 });
   await db.collection("leads").createIndex({ bb_verdict: 1 });          // BounceBan audit + scorecard

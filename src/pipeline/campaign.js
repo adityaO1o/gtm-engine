@@ -28,9 +28,11 @@ const PAGE_TTL_MS = 7 * 86400000; // cached redirect pages are reused for 7 days
 async function cachedPage1(seed) {
   const _id = `${seed}:1`;
   const hit = await hostioPages().findOne({ _id }).catch(() => null);
-  if (hit && Date.now() - new Date(hit.at).getTime() < PAGE_TTL_MS) return { total: hit.total, domains: hit.domains || [] };
+  if (hit && Date.now() - new Date(hit.at).getTime() < PAGE_TTL_MS) return { ok: true, total: hit.total, domains: hit.domains || [] };
   const page = await scrapeRedirectPage(seed);
-  if (page.domains.length || page.total != null) {
+  // Only cache a page we actually read. Caching a failed fetch would freeze a false "no redirects"
+  // for a week.
+  if (page.ok) {
     await hostioPages().updateOne({ _id }, { $set: { seed, page: 1, source: "scrape", total: page.total, domains: page.domains, at: new Date() } }, { upsert: true }).catch(() => {});
   }
   return page;
@@ -41,7 +43,7 @@ async function cachedPage1(seed) {
 async function cachedApiPage(campaignId, seed, page) {
   const _id = `${seed}:${page}`;
   const hit = await hostioPages().findOne({ _id }).catch(() => null);
-  if (hit && Date.now() - new Date(hit.at).getTime() < PAGE_TTL_MS) return hit.domains || [];
+  if (hit && Date.now() - new Date(hit.at).getTime() < PAGE_TTL_MS) return { ok: true, domains: hit.domains || [] };
   const res = await apiRedirectPage(seed, page, {
     onApiCall: async ({ count }) => {
       await campaigns().updateOne({ _id: campaignId }, { $inc: { apiCallsUsed: 1 } }).catch(() => {});
@@ -49,7 +51,7 @@ async function cachedApiPage(campaignId, seed, page) {
     },
   });
   if (res.ok) await hostioPages().updateOne({ _id }, { $set: { seed, page, source: "api", domains: res.domains, at: new Date() } }, { upsert: true }).catch(() => {});
-  return res.domains;
+  return res;   // { ok, domains } — ok:false means the fetch failed, not that the list ended
 }
 
 // Normalize + dedupe a pasted blob of seed domains (newline/comma/space separated).
@@ -102,6 +104,12 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
   try {
     await setTarget(t._id, { stage: "scraping", activity: "fetching redirects (free)" });
     const p1 = await cachedPage1(t.seed);
+    // Couldn't READ the page (all proxies + direct failed). That's not a verdict — record it as an
+    // error so a resume retries it, instead of burying the seed in dropped_count, which is final.
+    if (!p1.ok) {
+      await setTarget(t._id, { stage: "error", error: "host.io page unreadable", activity: null });
+      return;
+    }
     const count = p1.total;
     await setTarget(t._id, { redirectCount: count });
     if (count == null || count < gates.countGate) {
@@ -121,18 +129,25 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
     await feed(p1.domains);
 
     // lazy paid pagination — only if page 1 didn't already clear the gate
-    let page = 2, apiPages = 0;
+    let page = 2, apiPages = 0, pageFailed = false;
     while (blacklisted.length < gates.blacklistGate && (page - 1) * 50 < count && page <= config.campaign.maxApiPages + 1) {
-      await setTarget(t._id, { activity: `checking page ${page} (api)`, apiPagesUsed: apiPages + 1 });
-      const domains = await cachedApiPage(campaignId, t.seed, page);
-      if (!domains.length) break;
-      await feed(domains);
+      await setTarget(t._id, { activity: `checking page ${page} (api)` });
+      const res = await cachedApiPage(campaignId, t.seed, page);
+      if (!res.ok) { pageFailed = true; break; }   // API error — we did NOT see the rest of this footprint
+      if (!res.domains.length) break;              // genuinely the end of the list
+      await feed(res.domains);
       apiPages++; page++;
     }
 
     blacklisted.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
     const common = { confirmedCount: seen.size, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted, apiPagesUsed: apiPages };
     if (blacklisted.length < gates.blacklistGate) {
+      // If a page fetch failed we never saw part of this company's footprint, so "not enough
+      // blacklisted" isn't a real verdict — leave it retryable rather than dropping it for good.
+      if (pageFailed) {
+        await setTarget(t._id, { ...common, stage: "error", error: "host.io api page failed mid-pagination", activity: null });
+        return;
+      }
       await setTarget(t._id, { ...common, stage: "dropped_blacklist", activity: null });
       return;
     }
@@ -151,12 +166,15 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
 // domain. These seed lists are built from those very leads, so when Prospeo returns nothing for a
 // company we usually still have a real, already-verified person there. Costs zero credits.
 async function ownLeadsFor(seed) {
-  const rx = new RegExp("@" + seed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i");
-  const rows = await leads().find({
-    email: rx,
-    email_status: { $in: ["verified", "unverified"] },
-    dnc: { $ne: true },
-  }).sort({ score: -1 }).limit(10).toArray().catch(() => []);
+  const base = { email_status: { $in: ["verified", "unverified"] }, dnc: { $ne: true } };
+  // company_domain is indexed, so try it first. It isn't populated on every lead, so fall back to a
+  // suffix match on email — that one can't use an index (a trailing-anchored regex forces a scan),
+  // which is why it's the fallback and not the primary query.
+  let rows = await leads().find({ ...base, company_domain: seed }).sort({ score: -1 }).limit(10).toArray().catch(() => []);
+  if (!rows.length) {
+    const rx = new RegExp("@" + seed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i");
+    rows = await leads().find({ ...base, email: rx }).sort({ score: -1 }).limit(10).toArray().catch(() => []);
+  }
 
   return rows.map((l) => {
     const parts = String(l.name || "").trim().split(/\s+/);
@@ -171,9 +189,22 @@ async function ownLeadsFor(seed) {
       linkedin_url: l.linkedin_url || null,
       email: l.email,
       email_status: l.email_status === "verified" ? "VERIFIED" : null,
+      company: l.company || null,
       source: "gtm-lead",          // came from our own engagement data, not Prospeo
     };
   });
+}
+
+// A human company name for the copy. Without this the email reads "Pulled a scan on acme.com's …"
+// instead of "on Acme's …" — the seed is a domain, so somebody has to supply the real name.
+async function companyNameFor(seed, people) {
+  const fromPeople = people.find((p) => p.company)?.company;
+  if (fromPeople) return fromPeople;
+  const lead = await leads().findOne(
+    { $or: [{ company_domain: seed }, { email: new RegExp("@" + seed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i") }], company: { $nin: [null, ""] } },
+    { projection: { company: 1 } },
+  ).catch(() => null);
+  return lead?.company || null;
 }
 
 // The Prospeo half, run in its own small lane so it never blocks discovery.
@@ -216,6 +247,7 @@ async function enrichSeed(t) {
     await setTarget(t._id, {
       people, peopleCount: people.length, peopleTotal: total, emailsRevealed: true,
       contactsWithEmail: withEmail, contactsFromOwnLeads: fromOwnLeads,
+      companyName: await companyNameFor(t.seed, people),
       prospeoFree: !!free, prospeoError: error || null,
       stage: "done", activity: null,
     });

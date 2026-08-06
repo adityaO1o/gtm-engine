@@ -108,6 +108,7 @@ async function prospeoPost(url, body) {
 
 function extractPerson(row) {
   const p = row?.person || row || {};
+  const c = row?.company || {};
   const first = pick(p.first_name, p.firstName);
   const last = pick(p.last_name, p.lastName);
   const name = pick(p.full_name, p.name, [first, last].filter(Boolean).join(" ") || null);
@@ -120,6 +121,8 @@ function extractPerson(row) {
     seniority: pick(p.seniority, p.person_seniority),
     department: pick(p.department, p.person_department),
     linkedin_url: pick(p.linkedin_url, p.linkedin, p.linkedinUrl),
+    // the company's real display name — the campaign copy needs it ("Acme" not "acme.com")
+    company: pick(c.name, c.company_name, p.company_name),
   };
 }
 
