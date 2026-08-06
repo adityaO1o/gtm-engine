@@ -156,9 +156,13 @@ async function enrichSeed(t) {
     // Auto-reveal the decision-makers' emails (search-person masks them) — these are already
     // filtered to Founder/C-Suite/VP/Head/Director, so the per-person enrich credits only go to
     // people worth contacting. Without an email they can't be pushed to SendKit at all.
-    if (people.length) {
-      await setTarget(t._id, { people, peopleCount: people.length, activity: `revealing ${people.length} emails (prospeo)` });
-      await runPool(people, async (p, i) => {
+    // Reveal only the top N decision-makers' emails. Each reveal is its own rate-limited Prospeo
+    // call, so revealing all 25 a search can return is what actually made runs slow and expensive;
+    // the rest keep their masked record and can be revealed on demand from the UI later.
+    const toReveal = people.slice(0, config.campaign.revealPerCompany);
+    if (toReveal.length) {
+      await setTarget(t._id, { people, peopleCount: people.length, activity: `revealing ${toReveal.length} of ${people.length} emails (prospeo)` });
+      await runPool(toReveal, async (p, i) => {
         const ids = p.linkedin_url ? { linkedin_url: p.linkedin_url }
           : { first_name: p.first_name, last_name: p.last_name, company_domain: t.seed };
         const r = await findEmail(ids);

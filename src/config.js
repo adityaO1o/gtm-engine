@@ -128,6 +128,12 @@ export const config = {
     // Enrichment lane width (Prospeo search + email reveal). Small on purpose: Prospeo is globally
     // rate-limited by its own spacer, so more parallelism here buys nothing and only risks 429s.
     enrichConcurrency: parseInt(process.env.CAMPAIGN_ENRICH_CONCURRENCY || "4", 10),
+    // How many decision-makers per company get their email revealed. Revealing is 1 Prospeo call
+    // EACH and search-person returns up to 25 people, so uncapped it dominates both runtime and
+    // credits: a measured run averaged 13.8 reveals/company (135 companies hit the 25 cap), i.e.
+    // 4,300 Prospeo calls for 291 companies ≈ 50 min of pure rate-limited API time. You don't need
+    // 25 contacts at one company to open a conversation — the top few are enough.
+    revealPerCompany: parseInt(process.env.CAMPAIGN_REVEAL_PER_COMPANY || "5", 10),
   },
 
   // Domain-prospecting scan tunables. DNS concurrency is high on purpose: lookups now go to public
