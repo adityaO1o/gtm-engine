@@ -53,8 +53,10 @@ export async function findEmail(ids) {
 
 // Live Prospeo credit balance for the dashboard (cached 5 min). remaining/used.
 let balCache = { at: 0, data: null };
-export async function prospeoBalance() {
-  if (balCache.data && Date.now() - balCache.at < 5 * 60_000) return balCache.data;
+// `force` skips the cache — used by the dashboard's manual refresh, since after a big campaign the
+// 5-minute cache makes the credit figure look untouched while thousands were actually spent.
+export async function prospeoBalance({ force = false } = {}) {
+  if (!force && balCache.data && Date.now() - balCache.at < 5 * 60_000) return balCache.data;
   try {
     const r = await axios.post(
       "https://api.prospeo.io/account-information",

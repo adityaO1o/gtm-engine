@@ -68,9 +68,9 @@ export async function bouncebanVerify(email) {
 
 // Live credit balance for the dashboard (cached 5 min).
 let balCache = { at: 0, data: null };
-export async function bouncebanBalance() {
+export async function bouncebanBalance({ force = false } = {}) {
   if (!config.bouncebanKey) return null;
-  if (balCache.data && Date.now() - balCache.at < 5 * 60_000) return balCache.data;
+  if (!force && balCache.data && Date.now() - balCache.at < 5 * 60_000) return balCache.data;
   try {
     const r = await axios.get(`${BASE}/account`, { headers: auth(), timeout: 15000, validateStatus: () => true });
     if (r.status === 200 && r.data) balCache = { at: Date.now(), data: { remaining: r.data.available_credits ?? null } };

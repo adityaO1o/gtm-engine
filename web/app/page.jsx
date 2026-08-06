@@ -143,7 +143,7 @@ export default function Dashboard() {
             </nav>
           </aside>
           <main className="main">
-            <Topbar title={TITLES[view]} stats={stats} prospeo={prospeo} onCmdK={() => setCmdk(true)} />
+            <Topbar title={TITLES[view]} stats={stats} prospeo={prospeo} onCmdK={() => setCmdk(true)} onRefreshBalances={refreshTop} />
             <div className="content" key={view}><Body /></div>
           </main>
         </div>

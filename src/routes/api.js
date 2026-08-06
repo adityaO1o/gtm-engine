@@ -935,6 +935,17 @@ apiRouter.post("/campaign", async (req, res) => {
 });
 apiRouter.get("/campaign", async (_req, res) => res.json({ items: await listOutreachCampaigns() }));
 apiRouter.get("/hostio/usage", async (_req, res) => res.json(await hostioUsageReport()));
+
+// Live API credit balances, bypassing the 5-minute service caches — after a big campaign the cached
+// figures can be thousands of credits out of date, which is exactly when you want to look.
+apiRouter.get("/balances/refresh", async (_req, res) => {
+  const [prospeo, bounceban, apiBalance] = await Promise.all([
+    prospeoBalance({ force: true }),
+    bouncebanBalance({ force: true }),
+    readBalances(),
+  ]);
+  res.json({ prospeo, bounceban, ...apiBalance });
+});
 // Push this campaign's qualified decision-makers into a DRAFT SendKit campaign (never started here).
 apiRouter.post("/campaign/:id/push-sendkit", async (req, res) => {
   const r = await pushCampaignToSendkit(req.params.id, {
