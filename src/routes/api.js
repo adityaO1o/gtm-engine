@@ -30,7 +30,7 @@ import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/dom
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio } from "../services/hostio.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, backfillOwnLeadContacts, listWorkspaces, addWorkspace } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, backfillOwnLeadContacts, listWorkspaces } from "../pipeline/campaign.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -939,13 +939,9 @@ apiRouter.post("/campaign/:id/push-sendkit", async (req, res) => {
   res.status(r.ok ? 200 : 400).json(r);
 });
 
-// SendKit workspaces the funnel can push into — one per teammate, each with their own SendKit key.
-// Keys are never returned by the list endpoint.
+// SendKit workspaces the funnel can push into — one per teammate, configured via SENDKIT_WORKSPACES.
+// Only ids/labels are returned; keys never leave the server.
 apiRouter.get("/sendkit/workspaces", async (_req, res) => res.json({ items: await listWorkspaces() }));
-apiRouter.post("/sendkit/workspaces", async (req, res) => {
-  const r = await addWorkspace({ id: S(req.body?.id), label: S(req.body?.label), apiKey: S(req.body?.apiKey) });
-  res.status(r.ok ? 200 : 400).json(r);
-});
 // Render one sequence email for one lead, personalized — preview only, sends nothing.
 apiRouter.get("/campaign/:id/preview", async (req, res) => {
   const r = await previewCampaignEmail(req.params.id, { email: S(req.query.email), step: parseInt(S(req.query.step) || "1", 10) });

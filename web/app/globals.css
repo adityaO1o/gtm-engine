@@ -248,6 +248,12 @@ th.chkcol,td.chkcol{width:40px;padding-left:16px;padding-right:6px}
 .note.bad{background:var(--hot-soft);border-color:var(--hot);color:var(--hot)}
 .note.bad .ico{stroke:var(--hot)}
 
+/* sidebar workspace switcher — which teammate's SendKit workspace campaign leads are pushed into */
+.wsw{padding:10px 12px 12px;border-bottom:1px solid var(--line)}
+.wsw-k{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:600;margin-bottom:6px}
+.wsw-i{display:flex;align-items:center;gap:8px;padding:6px 9px;font-size:12.5px;color:var(--dim);cursor:pointer;border:1px solid transparent;user-select:none}
+.wsw-i:hover{background:var(--bg);color:var(--ink)}
+.wsw-i.on{background:var(--primary-soft);color:var(--primary);border-color:var(--primary);font-weight:600}
 .drawer-scrim{position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:65;animation:fade .18s ease}
 @keyframes fade{from{opacity:0}to{opacity:1}}
 .drawer{position:fixed;top:0;right:0;width:448px;max-width:92vw;height:100vh;background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);transition:transform .22s cubic-bezier(.4,0,.2,1);overflow-y:auto;z-index:70;padding:var(--s5);box-shadow:var(--sh-lg)}

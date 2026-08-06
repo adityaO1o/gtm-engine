@@ -4,6 +4,7 @@ import Icon from "@/components/Icon";
 import { num, ts } from "@/lib/format";
 import { j, post } from "@/lib/api";
 import { useToast } from "@/lib/toast";
+import { useDash } from "@/lib/ctx";
 
 // The funnel stages, in order, with how to read each tally off the campaign's stage counts.
 // Stage groups. A seed that cleared the blacklist gate sits in enrich_queued until the (slower)
@@ -70,10 +71,8 @@ export default function Campaign() {
   const [pushing, setPushing] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
-  const [workspaces, setWorkspaces] = useState([]);
-  const [workspaceId, setWorkspaceId] = useState("");
-
-  useEffect(() => { j("/api/sendkit/workspaces").then((d) => setWorkspaces(d.items || [])).catch(() => {}); }, []);
+  // Push target comes from the sidebar switcher, so it's picked once and applies everywhere.
+  const { workspaces = [], workspaceId = "" } = useDash();
   const [preview, setPreview] = useState(null);
   const timer = useRef(null);
 
@@ -265,12 +264,6 @@ export default function Campaign() {
             title="For companies Prospeo found nobody at, use our own hot/warm engagers on that domain. Free — no Prospeo credits.">
             <Icon name={backfilling ? "refresh" : "users"} />{backfilling ? "Filling…" : "Fill from our leads"}
           </button>
-        ) : null}
-        {results.length && !running && workspaces.length > 1 ? (
-          <select className="search" style={{ maxWidth: 190 }} value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)}
-            title="Which teammate's SendKit workspace these leads go into">
-            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
-          </select>
         ) : null}
         {results.length && !running ? (
           <button className="btn btn-ghost btn-sm" disabled={pushing} onClick={pushToSendkit}

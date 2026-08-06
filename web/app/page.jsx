@@ -48,6 +48,23 @@ export default function Dashboard() {
   const [dataVersion, setDataVersion] = useState(0);
   const [cmdk, setCmdk] = useState(false);
   const [pendingCampaign, setPendingCampaign] = useState(null);
+  // Which teammate's SendKit workspace campaign leads get pushed into. Purely a push target — the
+  // LinkedIn-engagement pipeline always uses the server's default workspace regardless of this.
+  const [workspaces, setWorkspaces] = useState([]);
+  const [workspaceId, setWorkspaceId] = useState("");
+  useEffect(() => {
+    j("/api/sendkit/workspaces").then((d) => {
+      const items = d.items || [];
+      setWorkspaces(items);
+      let saved = "";
+      try { saved = localStorage.getItem("gtm.workspace") || ""; } catch { /* ignore */ }
+      setWorkspaceId(items.some((w) => w.id === saved) ? saved : (items[0]?.id ?? ""));
+    }).catch(() => {});
+  }, []);
+  const chooseWorkspace = useCallback((id) => {
+    setWorkspaceId(id);
+    try { localStorage.setItem("gtm.workspace", id); } catch { /* ignore */ }
+  }, []);
   const jobTimer = useRef(null);
   const prevRunning = useRef(false);
 
@@ -92,9 +109,9 @@ export default function Dashboard() {
   const clearPending = useCallback(() => setPendingCampaign(null), []);
 
   const ctx = useMemo(() => ({
-    campaigns, stats, prospeo, jobs, dataVersion, pendingCampaign,
+    campaigns, stats, prospeo, jobs, dataVersion, pendingCampaign, workspaces, workspaceId,
     refreshTop, pollJobs, openLead, openReverify, refreshData, openCampaign, clearPending,
-  }), [campaigns, stats, prospeo, jobs, dataVersion, pendingCampaign, refreshTop, pollJobs, openLead, openReverify, refreshData, openCampaign, clearPending]);
+  }), [campaigns, stats, prospeo, jobs, dataVersion, pendingCampaign, workspaces, workspaceId, refreshTop, pollJobs, openLead, openReverify, refreshData, openCampaign, clearPending]);
 
   const Body = BODIES[view];
 
@@ -104,6 +121,16 @@ export default function Dashboard() {
         <div className="app">
           <aside className="sidebar">
             <div className="brand"><div className="mk"><Icon name="spark" /></div><div><b>InboxKit</b><span>GTM Engine</span></div></div>
+            {workspaces.length > 1 ? (
+              <div className="wsw">
+                <div className="wsw-k">Send leads to</div>
+                {workspaces.map((w) => (
+                  <div key={w.id} className={`wsw-i${workspaceId === w.id ? " on" : ""}`} onClick={() => chooseWorkspace(w.id)}>
+                    <Icon name={workspaceId === w.id ? "check" : "mega"} />{w.label}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <nav>
               {TABS.map((t) => {
                 const c = t.id === "campaigns" ? campaigns.length : t.cnt ? t.cnt(stats) : null;

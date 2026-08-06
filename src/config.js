@@ -79,6 +79,21 @@ export const config = {
     // empty: the engine resolves that campaign by NAME at push time, so no env var / redeploy is
     // needed. Only set this to point at a campaign whose name differs.
     blacklistCampaignId: process.env.SENDKIT_BLACKLIST_CAMPAIGN_ID || "",
+
+    // Teammates each run their OWN SendKit workspace, so campaign leads can be pushed into any of
+    // them. Format: "slug|Label:key,slug|Label:key" (Label optional).
+    //   SENDKIT_WORKSPACES=inboxkit|InboxKit:sk_xxx,sendkit|SendKit:sk_yyy
+    // SENDKIT_KEY remains the DEFAULT for everything else in the engine (the LinkedIn-engagement
+    // pipeline that feeds Cold Email 2.0) — switching workspaces here never affects that.
+    workspaces: (process.env.SENDKIT_WORKSPACES || "").split(",").map((s) => s.trim()).filter(Boolean)
+      .map((entry) => {
+        const i = entry.indexOf(":");
+        const left = entry.slice(0, i).trim();
+        const apiKey = entry.slice(i + 1).trim();
+        const [id, label] = left.includes("|") ? left.split("|").map((x) => x.trim()) : [left, left];
+        return { id, label: label || id, apiKey };
+      })
+      .filter((w) => w.id && w.apiKey),
   },
 
   // The Blacklist Project — InboxKit's own DNSBL checker (used by the domain-prospecting scan:

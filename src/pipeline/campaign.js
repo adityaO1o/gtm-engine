@@ -17,7 +17,7 @@ import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
 import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, leadPayload } from "./blacklistCopy.js";
-import { campaigns, campaignTargets, hostioPages, hostioUsage, leads, sendkitWorkspaces } from "../db/mongo.js";
+import { campaigns, campaignTargets, hostioPages, hostioUsage, leads } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
@@ -431,27 +431,16 @@ export async function revealCompanyEmails(campaignId, seed) {
 // ── SendKit workspaces (one per teammate) ──────────────────────────────────────────────────────
 // The funnel is shared, but each person sends from their OWN SendKit workspace, so the push target
 // is selectable. No workspace = the default SENDKIT_KEY (the LinkedIn-engagement workspace).
+// Workspaces come from SENDKIT_WORKSPACES (see config). Keys never leave the server.
 export async function listWorkspaces() {
-  const rows = await sendkitWorkspaces().find({}, { projection: { apiKey: 0 } }).sort({ label: 1 }).toArray().catch(() => []);
-  return [{ id: "", label: "Default (SENDKIT_KEY)" }, ...rows.map((r) => ({ id: r._id, label: r.label }))];
-}
-
-export async function addWorkspace({ id, label, apiKey }) {
-  const slug = String(id || label || "").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, "");
-  if (!slug || !apiKey) return { ok: false, error: "id/label and apiKey are required" };
-  // Verify the key before storing it — a wrong key would otherwise only surface at push time.
-  const probe = await listSendkitCampaigns({ apiKey });
-  if (!Array.isArray(probe)) return { ok: false, error: "could not reach SendKit with that key" };
-  await sendkitWorkspaces().updateOne({ _id: slug },
-    { $set: { label: label || slug, apiKey, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
-    { upsert: true });
-  return { ok: true, id: slug, label: label || slug, campaignsVisible: probe.length };
+  const ws = config.sendkit.workspaces;
+  if (ws.length) return ws.map((w) => ({ id: w.id, label: w.label }));
+  return [{ id: "", label: "Default" }];        // nothing configured -> just the SENDKIT_KEY workspace
 }
 
 async function workspaceKey(workspaceId) {
   if (!workspaceId) return undefined;                       // undefined -> sendkit.js uses the default
-  const w = await sendkitWorkspaces().findOne({ _id: workspaceId }).catch(() => null);
-  return w?.apiKey || undefined;
+  return config.sendkit.workspaces.find((w) => w.id === workspaceId)?.apiKey;
 }
 
 export async function pushCampaignToSendkit(campaignId, { campaignName, workspaceId } = {}) {
