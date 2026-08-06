@@ -168,6 +168,11 @@ async function fetchScrape(seed, agent) {
   // Without it we didn't get a usable page (block/captcha/error body) — say so rather than let the
   // caller read it as "this company has no redirects".
   page.ok = page.total != null || page.domains.length > 0;
+  // 429 is host.io rate-limiting THIS IP, not a broken exit. Measured direct: 15 concurrent is
+  // clean, 30 gives 25/30 429s, 60 gives 60/60. The caller must not bench the proxy for two
+  // minutes over it — that shrank the pool until every seed fell through to the single direct IP,
+  // which 429s instantly. That cascade is what turned a transient limit into 4,730 dead seeds.
+  page.limited = r.status === 429;
   return page;
 }
 
@@ -179,6 +184,17 @@ async function fetchScrape(seed, agent) {
 // seed burns its whole proxy list against a wall. A 6,140-seed run lost 4,730 seeds that way while
 // host.io was answering fine minutes later. So watch the recent success rate and, when it collapses,
 // make every scrape wait: the run gets slower instead of shredding itself, and recovers on its own.
+// Once an IP is genuinely rate-limited the penalty is not seconds: after a 60-concurrent burst, the
+// same address still 429'd on single sequential requests 100s later. So a limited exit is rested for
+// a minute, doubling while it keeps coming back limited — long enough to actually clear, and reset
+// the moment it serves a page again.
+const limitHits = new Map();     // proxyUrl -> consecutive 429s
+function benchLimited(url) {
+  const hits = (limitHits.get(url) || 0) + 1;
+  limitHits.set(url, hits);
+  benchedUntil.set(url, Date.now() + Math.min(60_000 * 2 ** (hits - 1), 600_000));
+}
+
 const THROTTLE_WINDOW = 40;
 let recent = [];                 // trailing booleans: did the scrape read a page?
 let cooldownUntil = 0;
@@ -219,24 +235,36 @@ async function scrapeOnce(seed) {
   // second later on a different exit. A seed we can't read costs a retry later, so it's worth trying
   // harder here than failing fast.
   const perPass = Math.min(6, SCRAPE_POOL.length);
+  let limited = false;
   for (let pass = 0; pass < 2; pass++) {
     for (let i = 0; i < perPass; i++) {
       const url = nextProxy();
       if (!url) break;
       try {
         const page = await fetchScrape(seed, agentFor(url));
-        if (page.ok) return page;
-        benchedUntil.set(url, Date.now() + 120_000); // reachable but unusable — soft block; rotate
+        if (page.ok) { limitHits.delete(url); return page; }   // healthy again — clear its penalty
+        // A rate-limited exit is healthy and usable again in seconds; a genuinely bad one is not.
+        // Benching both for two minutes is what drained the pool.
+        if (page.limited) { limited = true; benchLimited(url); }
+        else benchedUntil.set(url, Date.now() + 120_000);
       } catch (e) {
         benchedUntil.set(url, Date.now() + 120_000);
         log.warn("hostio scrape proxy failed — rotating", { seed, proxy: url.split("@")[1], err: e.message });
       }
     }
-    try { const direct = await fetchScrape(seed, null); if (direct.ok) return direct; } catch { /* fall through */ }
-    if (pass === 0) await sleep(1500 + Math.floor(Math.random() * 1500)); // let a burst-limit clear
+    // Only fall back to the server's own IP when we aren't being rate-limited — under a limit it
+    // 429s immediately and just burns the one address every seed shares.
+    if (!limited) {
+      try {
+        const direct = await fetchScrape(seed, null);
+        if (direct.ok) return direct;
+        if (direct.limited) limited = true;   // the shared IP is limited too — stop hammering it
+      } catch { /* fall through */ }
+    }
+    if (pass === 0) await sleep(limited ? 4000 + Math.floor(Math.random() * 4000) : 1500 + Math.floor(Math.random() * 1500));
   }
-  log.warn("hostio scrape failed after retries", { seed });
-  return { ok: false, total: null, domains: [] };
+  log.warn("hostio scrape failed after retries", { seed, limited });
+  return { ok: false, total: null, domains: [], limited };
 }
 
 // back-compat: just the domains (used by the old Domain Prospecting hostio mode).
