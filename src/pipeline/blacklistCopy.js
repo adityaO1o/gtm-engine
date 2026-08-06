@@ -8,6 +8,10 @@
 // hardcoded "Talk soon, Abbas Somji" sign-off. Don't "tidy" these without asking.
 export const SENDER_NAME = "Abbas Somji";
 
+// The single standing SendKit campaign every run's qualified leads are added to. Resolved by NAME at
+// push time, so pointing the engine at it needs no env var or redeploy.
+export const BLACKLIST_CAMPAIGN_NAME = "Blacklist Campaign";
+
 // Body is HTML (SendKit sends `body` as HTML). Keep it plain and text-like — no styling, so it reads
 // like a hand-written email rather than a marketing blast.
 const p = (s) => `<p>${s}</p>`;

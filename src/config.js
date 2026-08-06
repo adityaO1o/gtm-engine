@@ -75,8 +75,9 @@ export const config = {
   sendkit: {
     key: req("SENDKIT_KEY"),
     base: process.env.SENDKIT_BASE || "https://api.sendkit.ai",
-    // The ONE standing "Blacklist Campaign" every campaign run's qualified leads are added to.
-    // Set this and runs stop creating a new SendKit campaign each time.
+    // Optional override pinning the standing "Blacklist Campaign" to a specific id. Normally left
+    // empty: the engine resolves that campaign by NAME at push time, so no env var / redeploy is
+    // needed. Only set this to point at a campaign whose name differs.
     blacklistCampaignId: process.env.SENDKIT_BLACKLIST_CAMPAIGN_ID || "",
   },
 

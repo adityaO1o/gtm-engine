@@ -15,8 +15,8 @@ import { runPool } from "../lib/pool.js";
 import { scrapeRedirectPage, apiRedirectPage } from "../services/hostio.js";
 import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, getWorkspaceVerdicts } from "../services/blacklistProject.js";
-import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes } from "../services/sendkit.js";
-import { BLACKLIST_SEQUENCE, leadPayload } from "./blacklistCopy.js";
+import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
+import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, leadPayload } from "./blacklistCopy.js";
 import { campaigns, campaignTargets, hostioPages, hostioUsage } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
@@ -275,13 +275,20 @@ export async function pushCampaignToSendkit(campaignId, { campaignName } = {}) {
   }
   if (!leads.length) return { ok: false, error: "no contacts with a revealed email yet" };
 
-  // All blacklist prospecting funnels feed ONE standing SendKit campaign ("Blacklist Campaign"), so
-  // every run's leads land in the same sequence instead of scattering across a campaign per run.
-  // Falls back to creating a per-run campaign only if that standing id isn't configured.
-  let sendkitCampaignId = config.sendkit.blacklistCampaignId || camp.sendkitCampaignId;
+  // All blacklist prospecting funnels feed ONE standing SendKit campaign, so every run's leads land
+  // in the same sequence instead of scattering across a campaign per run. It's resolved BY NAME from
+  // SendKit (no env var / redeploy needed to point at it): an explicit id override wins, otherwise we
+  // find the existing "Blacklist Campaign", otherwise we create it once.
+  const standingName = campaignName || BLACKLIST_CAMPAIGN_NAME;
+  let sendkitCampaignId = config.sendkit.blacklistCampaignId;
   if (!sendkitCampaignId) {
-    const name = campaignName || `Blacklist campaign — ${new Date(camp.createdAt).toISOString().slice(0, 10)}`;
-    const created = await createSendkitCampaign(name, BLACKLIST_SEQUENCE);
+    const existing = (await listSendkitCampaigns()).find(
+      (c) => String(c.name || "").trim().toLowerCase() === standingName.toLowerCase() && c.status !== "archived",
+    );
+    sendkitCampaignId = existing?.id;
+  }
+  if (!sendkitCampaignId) {
+    const created = await createSendkitCampaign(standingName, BLACKLIST_SEQUENCE);
     if (!created.ok) return { ok: false, error: `could not create SendKit campaign: ${created.error}` };
     sendkitCampaignId = created.id;
   }
