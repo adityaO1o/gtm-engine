@@ -55,24 +55,39 @@ export const BLACKLIST_SEQUENCE = [
   { type: "email", order: 4, name: "Email 3 — Day 6", subject: `Re: ${SUBJECT}`, body: EMAIL_3 },
 ];
 
+// Domains in the copy are DEFANGED (acme.com -> acme(.)com). A live link to a blacklisted domain in
+// a cold email is exactly the kind of thing that gets the sending domain filtered, and mail clients
+// would auto-link them; defanged they still read clearly to a human.
+export const defang = (d) => String(d || "").replace(/\./g, "(.)");
+
+// A human company name for the copy. The seed is a domain, so "ringcentral.com's 507 domains" reads
+// like a machine wrote it — we want "RingCentral's". Prefer a real name we hold, else title-case the
+// domain label rather than falling back to the bare domain.
+export function displayCompany(target, person) {
+  const real = target.companyName || person?.company;
+  if (real) return real;
+  const label = String(target.seed || "").split(".")[0].replace(/[-_]+/g, " ").trim();
+  return label ? label.replace(/\b\w/g, (c) => c.toUpperCase()) : target.seed;
+}
+
 // Build the SendKit lead payload for one person at one prospect company. Standard fields are mapped
 // by SendKit; everything else lands as a custom field and is addressable as {{key}} in the copy.
 export function leadPayload(person, target) {
   const bl = target.blacklistedDomains || [];
-  const top = bl.slice(0, 4).map((d) => d.domain);
+  const top = bl.slice(0, 4).map((d) => defang(d.domain));
   return {
     email: person.email,
     firstName: person.first_name || (person.name || "").split(" ")[0] || "",
     lastName: person.last_name || (person.name || "").split(" ").slice(1).join(" ") || "",
-    companyName: target.companyName || target.seed,
+    companyName: displayCompany(target, person),
     jobTitle: person.job_title || "",
     linkedinUrl: person.linkedin_url || "",
     // custom fields used by the copy
     secondaryDomainCount: String(target.redirectCount ?? bl.length),
     blacklistedDomainCount: String(target.blacklistedCount ?? bl.length),
     domain1: top[0] || "", domain2: top[1] || "", domain3: top[2] || "", domain4: top[3] || "",
-    // full list (max 10) for the report / manual use
-    blacklistedDomains: bl.slice(0, 10).map((d) => d.domain).join(", "),
+    // full list (max 10) for the report / manual use — defanged too
+    blacklistedDomains: bl.slice(0, 10).map((d) => defang(d.domain)).join(", "),
     seedDomain: target.seed,
     senderName: SENDER_NAME,
     tags: ["gtm-auto", "blacklist-campaign"],

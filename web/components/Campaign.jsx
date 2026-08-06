@@ -285,7 +285,15 @@ export default function Campaign() {
             <Icon name={pushing ? "refresh" : "mega"} />{pushing ? "Pushing…" : "Push to SendKit"}
           </button>
         ) : null}
-        {results.length ? <button className="btn btn-ghost btn-sm" onClick={() => exportCsv(results)}><Icon name="download" />Export CSV</button> : null}
+        {results.length ? (
+          <>
+            {/* the exact rows that go to SendKit — same payload, same variables */}
+            <a className="btn btn-ghost btn-sm" href={`/api/campaign/${campId}/csv`} download>
+              <Icon name="download" />Campaign CSV
+            </a>
+            <button className="btn btn-ghost btn-sm" onClick={() => exportCsv(results)}><Icon name="download" />Full report</button>
+          </>
+        ) : null}
       </div>
 
       {campaign && running ? (

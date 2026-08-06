@@ -17,7 +17,7 @@ import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
 import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, leadPayload } from "./blacklistCopy.js";
-import { campaigns, campaignTargets, hostioPages, hostioUsage, leads } from "../db/mongo.js";
+import { campaigns, campaignTargets, hostioPages, hostioUsage, leads as leadsCol } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
@@ -170,10 +170,10 @@ async function ownLeadsFor(seed) {
   // company_domain is indexed, so try it first. It isn't populated on every lead, so fall back to a
   // suffix match on email — that one can't use an index (a trailing-anchored regex forces a scan),
   // which is why it's the fallback and not the primary query.
-  let rows = await leads().find({ ...base, company_domain: seed }).sort({ score: -1 }).limit(10).toArray().catch(() => []);
+  let rows = await leadsCol().find({ ...base, company_domain: seed }).sort({ score: -1 }).limit(10).toArray().catch(() => []);
   if (!rows.length) {
     const rx = new RegExp("@" + seed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i");
-    rows = await leads().find({ ...base, email: rx }).sort({ score: -1 }).limit(10).toArray().catch(() => []);
+    rows = await leadsCol().find({ ...base, email: rx }).sort({ score: -1 }).limit(10).toArray().catch(() => []);
   }
 
   return rows.map((l) => {
@@ -200,7 +200,7 @@ async function ownLeadsFor(seed) {
 async function companyNameFor(seed, people) {
   const fromPeople = people.find((p) => p.company)?.company;
   if (fromPeople) return fromPeople;
-  const lead = await leads().findOne(
+  const lead = await leadsCol().findOne(
     { $or: [{ company_domain: seed }, { email: new RegExp("@" + seed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i") }], company: { $nin: [null, ""] } },
     { projection: { company: 1 } },
   ).catch(() => null);
@@ -483,6 +483,19 @@ export async function pushCampaignToSendkit(campaignId, { campaignName, workspac
   if (workspaceId && !apiKey) return { ok: false, error: `unknown workspace "${workspaceId}"` };
 
   const targets = await campaignTargets().find({ campaignId: _id, stage: "done", peopleCount: { $gt: 0 } }).toArray();
+
+  // Fill in any company display names that are missing (targets from runs before we captured them),
+  // so the copy says "RingCentral's" and not "ringcentral.com's". One query, not one per target.
+  const needName = targets.filter((t) => !t.companyName).map((t) => t.seed);
+  if (needName.length) {
+    const rows = await leadsCol().find(
+      { company_domain: { $in: needName }, company: { $nin: [null, ""] } },
+      { projection: { company_domain: 1, company: 1 } },
+    ).toArray().catch(() => []);
+    const byDomain = new Map(rows.map((r) => [r.company_domain, r.company]));
+    for (const t of targets) if (!t.companyName && byDomain.has(t.seed)) t.companyName = byDomain.get(t.seed);
+  }
+
   const leads = [];
   for (const t of targets) {
     for (const p of t.people || []) {
@@ -519,6 +532,38 @@ export async function pushCampaignToSendkit(campaignId, { campaignName, workspac
 
   log.info("pushed campaign to sendkit", { campaignId, workspaceId: workspaceId || "default", sendkitCampaignId, leads: leads.length, added: add.added, skipped: add.skipped });
   return { ok: true, workspaceId: workspaceId || null, sendkitCampaignId, leads: leads.length, upserted: up.ok, failed: up.failed, added: add.added, alreadyIn: add.skipped };
+}
+
+// The exact rows that get pushed to SendKit, as CSV — same payload, same variables, so the file and
+// the campaign can't drift apart. Importable straight into SendKit if you'd rather not use the push.
+export async function campaignCsv(campaignId) {
+  if (!ObjectId.isValid(campaignId)) return null;
+  const _id = new ObjectId(campaignId);
+  const targets = await campaignTargets().find({ campaignId: _id, stage: "done", peopleCount: { $gt: 0 } }).toArray();
+
+  const needName = targets.filter((t) => !t.companyName).map((t) => t.seed);
+  if (needName.length) {
+    const rows = await leadsCol().find(
+      { company_domain: { $in: needName }, company: { $nin: [null, ""] } },
+      { projection: { company_domain: 1, company: 1 } },
+    ).toArray().catch(() => []);
+    const byDomain = new Map(rows.map((r) => [r.company_domain, r.company]));
+    for (const t of targets) if (!t.companyName && byDomain.has(t.seed)) t.companyName = byDomain.get(t.seed);
+  }
+
+  const cols = ["email", "firstName", "lastName", "companyName", "jobTitle", "linkedinUrl",
+    "secondaryDomainCount", "blacklistedDomainCount", "domain1", "domain2", "domain3", "domain4",
+    "blacklistedDomains", "seedDomain", "senderName"];
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const out = [cols.join(",")];
+  for (const t of targets) {
+    for (const p of t.people || []) {
+      if (!p.email) continue;
+      const l = leadPayload(p, t);
+      out.push(cols.map((c) => esc(l[c])).join(","));
+    }
+  }
+  return out.join("\n");
 }
 
 // Render one of the sequence's emails exactly as SendKit would send it for a given lead — no send.

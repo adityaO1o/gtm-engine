@@ -30,7 +30,7 @@ import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/dom
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio } from "../services/hostio.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, backfillOwnLeadContacts, listWorkspaces, pushTarget } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, backfillOwnLeadContacts, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -957,6 +957,13 @@ apiRouter.post("/campaign/:id/push-sendkit", async (req, res) => {
 
 // SendKit workspaces the funnel can push into — one per teammate, configured via SENDKIT_WORKSPACES.
 // Only ids/labels are returned; keys never leave the server.
+apiRouter.get("/campaign/:id/csv", async (req, res) => {
+  const csv = await campaignCsv(req.params.id);
+  if (csv == null) return res.status(404).json({ error: "not found" });
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", "attachment; filename=blacklist-campaign-leads.csv");
+  res.send(csv);
+});
 apiRouter.get("/campaign/:id/push-target", async (req, res) => {
   const r = await pushTarget(req.params.id, { workspaceId: S(req.query.workspaceId) || undefined });
   res.status(r.ok ? 200 : 400).json(r);
