@@ -256,16 +256,22 @@ export default function Campaign() {
 
   // ── DETAIL VIEW ──────────────────────────────────────────────────────────────────────────────
   const stages = campaign?.stages || {};
+  // Seeds a resume would pick up: anything without a real verdict. Errors are transient (a blocked
+  // scrape, a failed API page), so they stay retryable however the run as a whole ended.
+  const retryable = (stages.error || 0) + (stages.interrupted || 0);
   return (
     <>
       <div className="toolbar">
         <button className="btn btn-ghost btn-sm" onClick={() => { clearTimeout(timer.current); setView("list"); loadHistory(); }}><Icon name="back" />All campaigns</button>
         {campaign ? <span className="resn">{running ? <><span className="spin" /> <b>{campaign.stage}</b></> : <b>done</b>} · {num(campaign.seedCount)} seeds</span> : null}
         <div className="grow" />
-        {campaign && !running && campaign.status !== "done" ? (
+        {/* A run finishes "done" even when seeds errored — a host.io block left 4,764 of 6,140 in
+            error on one run — so gate Resume on there being retryable seeds, not on the status. */}
+        {campaign && !running && (retryable > 0 || campaign.status !== "done") ? (
           <button className="btn btn-ghost btn-sm" disabled={resuming} onClick={resumeRun}
             title="Reprocesses only the seeds without a final verdict — already-enriched companies keep their result">
-            <Icon name={resuming ? "refresh" : "sync"} />{resuming ? "Resuming…" : "Resume"}
+            <Icon name={resuming ? "refresh" : "sync"} />
+            {resuming ? "Resuming…" : retryable > 0 ? `Retry ${num(retryable)} failed` : "Resume"}
           </button>
         ) : null}
         {campaign?.sendkitCampaignId ? (

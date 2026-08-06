@@ -174,7 +174,46 @@ async function fetchScrape(seed, agent) {
 // FREE web scrape of page 1 -> { ok, total, domains }. Tries up to 4 pool proxies (benching dead
 // ones ~2 min), then one direct attempt. Never throws. `ok:false` means we could not READ the page —
 // distinct from a genuine zero, so the caller can retry instead of recording a false verdict.
+// ── adaptive throttle ────────────────────────────────────────────────────────────────────────────
+// host.io doesn't block outright, it starts refusing under load — and once it does, every in-flight
+// seed burns its whole proxy list against a wall. A 6,140-seed run lost 4,730 seeds that way while
+// host.io was answering fine minutes later. So watch the recent success rate and, when it collapses,
+// make every scrape wait: the run gets slower instead of shredding itself, and recovers on its own.
+const THROTTLE_WINDOW = 40;
+let recent = [];                 // trailing booleans: did the scrape read a page?
+let cooldownUntil = 0;
+let cooldownMs = 0;
+
+function noteScrape(ok) {
+  recent.push(ok);
+  if (recent.length > THROTTLE_WINDOW) recent.shift();
+  if (recent.length < THROTTLE_WINDOW) return;
+  const failRate = recent.filter((v) => !v).length / recent.length;
+  if (failRate > 0.5) {
+    // back off harder each time it re-trips, capped, and let the window re-fill before re-judging
+    cooldownMs = Math.min(cooldownMs ? cooldownMs * 2 : 5_000, 60_000);
+    cooldownUntil = Date.now() + cooldownMs;
+    recent = [];
+    log.warn("hostio failing in bulk — throttling", { failRate: failRate.toFixed(2), cooldownMs });
+  } else if (failRate < 0.2) {
+    cooldownMs = 0;               // healthy again — drop the penalty
+  }
+}
+
+async function throttleGate() {
+  for (let i = 0; i < 20 && Date.now() < cooldownUntil; i++) {
+    await sleep(Math.min(2000, cooldownUntil - Date.now()));
+  }
+}
+
 export async function scrapeRedirectPage(seed) {
+  await throttleGate();
+  const page = await scrapeOnce(seed);
+  noteScrape(page.ok);
+  return page;
+}
+
+async function scrapeOnce(seed) {
   // Two passes with a pause between them. A 2,319-seed run at concurrency 30 gave up on 14% of seeds
   // after only 4 proxies and no backoff — host.io pushes back in bursts, and most of those recover a
   // second later on a different exit. A seed we can't read costs a retry later, so it's worth trying
