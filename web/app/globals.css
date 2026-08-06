@@ -248,6 +248,13 @@ th.chkcol,td.chkcol{width:40px;padding-left:16px;padding-right:6px}
 .note.bad{background:var(--hot-soft);border-color:var(--hot);color:var(--hot)}
 .note.bad .ico{stroke:var(--hot)}
 
+/* multi-select filter chips (status): several can be active at once, unlike a <select> */
+.chips{display:inline-flex;gap:5px;align-items:center}
+.chip{font-size:12px;padding:5px 10px;border:1px solid var(--line);color:var(--dim);cursor:pointer;user-select:none;background:var(--panel)}
+.chip:hover{color:var(--ink);background:var(--bg)}
+.chip.on{background:var(--primary-soft);color:var(--primary);border-color:var(--primary);font-weight:600}
+.chip.x{border-style:dashed;color:var(--faint)}
+
 /* sidebar workspace switcher — which teammate's SendKit workspace campaign leads are pushed into */
 .wsw{padding:10px 12px 12px;border-bottom:1px solid var(--line)}
 .wsw-k{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:600;margin-bottom:6px}

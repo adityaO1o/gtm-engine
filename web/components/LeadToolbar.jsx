@@ -16,12 +16,28 @@ export default function LeadToolbar({ filters, setFilter, count, campaigns, with
   const Sel = ({ k, children }) => (
     <select value={filters[k]} onChange={(e) => setFilter(k, e.target.value)}>{children}</select>
   );
+
+  // Status is multi-select: click Hot and Warm to see (and export) both together. Empty = all.
+  const statuses = String(filters.status || "").split(",").filter(Boolean);
+  const toggleStatus = (s) => {
+    const next = statuses.includes(s) ? statuses.filter((x) => x !== s) : [...statuses, s];
+    setFilter("status", next.join(","));
+  };
+  const StatusChip = ({ s, label }) => (
+    <span className={`chip${statuses.includes(s) ? " on" : ""}`} onClick={() => toggleStatus(s)}>{label}</span>
+  );
+
   return (
     <div className="toolbar">
       {withCampaign && (
         <Sel k="campaign"><option value="">All campaigns</option>{campaigns.map((c) => <option key={c.campaign} value={c.campaign}>{c.label}</option>)}</Sel>
       )}
-      <Sel k="status"><option value="">All status</option><option value="hot">Hot</option><option value="warm">Warm</option><option value="cold">Cold</option></Sel>
+      <span className="chips" title="Click more than one to combine (e.g. Hot + Warm)">
+        <StatusChip s="hot" label="Hot" />
+        <StatusChip s="warm" label="Warm" />
+        <StatusChip s="cold" label="Cold" />
+        {statuses.length ? <span className="chip x" onClick={() => setFilter("status", "")}>clear</span> : null}
+      </span>
       <Sel k="email"><option value="">All emails</option><option value="verified">Verified</option><option value="no-email">No email</option><option value="review">Review</option><option value="unverified">Unverified</option><option value="competitor">Competitor</option><option value="discarded">Discarded</option></Sel>
       <Sel k="cat"><option value="">All categories</option>{CATS.map((c) => <option key={c} value={c}>{c}</option>)}</Sel>
       <Sel k="source"><option value="">All sources</option><option value="keyword">Keyword</option><option value="influencer">Influencer/CSV</option><option value="hub">Hub</option><option value="manual-post">Manual post</option></Sel>

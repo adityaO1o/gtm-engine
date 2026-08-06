@@ -443,6 +443,37 @@ async function workspaceKey(workspaceId) {
   return config.sendkit.workspaces.find((w) => w.id === workspaceId)?.apiKey;
 }
 
+// What a push WOULD do — which SendKit workspace and which campaign in it, whether that campaign
+// already exists (and what sequence it carries), and how many contacts would go. Lets the confirm
+// dialog state the real target instead of guessing.
+export async function pushTarget(campaignId, { workspaceId } = {}) {
+  if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
+  const apiKey = await workspaceKey(workspaceId);
+  if (workspaceId && !apiKey) return { ok: false, error: `unknown workspace "${workspaceId}"` };
+
+  const targets = await campaignTargets().find(
+    { campaignId: new ObjectId(campaignId), stage: "done", peopleCount: { $gt: 0 } },
+    { projection: { people: 1, seed: 1 } },
+  ).toArray();
+  let contacts = 0, companies = 0;
+  for (const t of targets) {
+    const n = (t.people || []).filter((p) => p.email).length;
+    if (n) { contacts += n; companies++; }
+  }
+
+  const name = BLACKLIST_CAMPAIGN_NAME;
+  const existing = (await listSendkitCampaigns({ apiKey })).find(
+    (c) => String(c.name || "").trim().toLowerCase() === name.toLowerCase() && c.status !== "archived",
+  );
+  const wsLabel = config.sendkit.workspaces.find((w) => w.id === workspaceId)?.label || "Default";
+
+  return {
+    ok: true, workspaceId: workspaceId || null, workspaceLabel: wsLabel,
+    campaignName: name, campaignId: existing?.id || null, campaignStatus: existing?.status || null,
+    exists: !!existing, contacts, companies,
+  };
+}
+
 export async function pushCampaignToSendkit(campaignId, { campaignName, workspaceId } = {}) {
   if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
   const _id = new ObjectId(campaignId);

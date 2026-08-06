@@ -81,9 +81,23 @@ export default function Campaign() {
   async function pushToSendkit() {
     const contacts = results.reduce((a, r) => a + (r.people || []).filter((p) => p.email).length, 0);
     if (!contacts) { toast("No contacts with a revealed email yet", "bad"); return; }
-    const wsLabel = workspaces.find((w) => w.id === workspaceId)?.label || "Default";
-    if (!window.confirm(`Push ${contacts} decision-maker contact${contacts === 1 ? "" : "s"} into the "${wsLabel}" SendKit workspace?\n\nThe campaign is created as a DRAFT with the 3-email blacklist sequence and each lead's variables (blacklisted domain count, example domains, …). Nothing is sent — you start it yourself in SendKit.`)) return;
+
+    // Ask the server exactly where this would land, so the prompt states the real target instead of
+    // assuming (each workspace has its own campaign, with its own copy).
     setPushing(true);
+    let tgt;
+    try { tgt = await j(`/api/campaign/${campId}/push-target?workspaceId=${encodeURIComponent(workspaceId)}`); }
+    catch { tgt = null; }
+    if (!tgt?.ok) { toast(tgt?.error || "Could not resolve the SendKit campaign", "bad"); setPushing(false); return; }
+
+    const where = tgt.exists
+      ? `existing campaign "${tgt.campaignName}"\nid: ${tgt.campaignId}  (status: ${tgt.campaignStatus})\nIts sequence/copy is used as-is — nothing is overwritten.`
+      : `a NEW campaign "${tgt.campaignName}" (none exists yet in this workspace)\nIt will be created as a DRAFT carrying our blacklist sequence.`;
+    if (!window.confirm(
+      `Workspace: ${tgt.workspaceLabel}\nTarget: ${where}\n\n` +
+      `Pushing ${num(tgt.contacts)} contacts from ${num(tgt.companies)} companies, each with their own variables ` +
+      `(blacklisted domain count, example domains, …).\n\nNothing is sent — you start the campaign yourself in SendKit.`
+    )) { setPushing(false); return; }
     try {
       const r = await post(`/api/campaign/${campId}/push-sendkit`, { workspaceId });
       if (r.ok) { toast(`Pushed ${num(r.leads)} leads — SendKit campaign is a DRAFT, start it there`, "good"); poll(campId); }

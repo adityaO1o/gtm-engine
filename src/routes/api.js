@@ -30,7 +30,7 @@ import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/dom
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio } from "../services/hostio.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, backfillOwnLeadContacts, listWorkspaces } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, backfillOwnLeadContacts, listWorkspaces, pushTarget } from "../pipeline/campaign.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -90,7 +90,12 @@ async function countBlock(campaign, bucket) {
 function buildLeadFilter(query) {
   const status = S(query.status), email_status = S(query.email_status), category = S(query.category), campaign = S(query.campaign), recovered = S(query.recovered), q = S(query.q);
   const filter = {};
-  if (status) filter.status = status;
+  // status accepts one value or a comma-separated set ("hot,warm") so several buckets can be
+  // viewed/exported together instead of one at a time.
+  if (status) {
+    const list = status.split(",").map((s) => s.trim()).filter(Boolean);
+    filter.status = list.length > 1 ? { $in: list } : list[0];
+  }
   // "has-email" = every lead we ever produced an address for (verified + unverified) — the Test tab.
   if (email_status === "has-email") { filter.email_status = { $in: ["verified", "unverified"] }; filter.email = { $nin: [null, ""] }; }
   else if (email_status) filter.email_status = email_status;
@@ -941,6 +946,10 @@ apiRouter.post("/campaign/:id/push-sendkit", async (req, res) => {
 
 // SendKit workspaces the funnel can push into — one per teammate, configured via SENDKIT_WORKSPACES.
 // Only ids/labels are returned; keys never leave the server.
+apiRouter.get("/campaign/:id/push-target", async (req, res) => {
+  const r = await pushTarget(req.params.id, { workspaceId: S(req.query.workspaceId) || undefined });
+  res.status(r.ok ? 200 : 400).json(r);
+});
 apiRouter.get("/sendkit/workspaces", async (_req, res) => res.json({ items: await listWorkspaces() }));
 // Render one sequence email for one lead, personalized — preview only, sends nothing.
 apiRouter.get("/campaign/:id/preview", async (req, res) => {
