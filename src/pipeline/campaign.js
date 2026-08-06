@@ -205,6 +205,37 @@ async function runCampaign(campaignId, targets, gates) {
   log.info("campaign finished", { campaignId: String(campaignId) });
 }
 
+// Resume a campaign that was interrupted (deploy/crash) or stalled — WITHOUT redoing settled seeds.
+// Anything already done/dropped keeps its result (crucially, a `done` seed keeps its Prospeo data so
+// its credits aren't spent twice); only the unsettled remainder is put back through the lanes.
+export async function resumeCampaign(id) {
+  if (!ObjectId.isValid(id)) return { ok: false, error: "bad campaign id" };
+  const _id = new ObjectId(id);
+  const camp = await campaigns().findOne({ _id });
+  if (!camp) return { ok: false, error: "campaign not found" };
+  if (camp.status === "running") return { ok: false, error: "already running" };
+
+  // Only a real verdict is final. "interrupted" (killed mid-flight by a deploy) and "error"
+  // (possibly transient) are exactly what a resume is for, so they go back through the lanes —
+  // unlike SETTLED, which counts interrupted as finished for a dead run's progress display.
+  const FINAL = ["done", "dropped_count", "dropped_blacklist"];
+  const pending = await campaignTargets().find({ campaignId: _id, stage: { $nin: FINAL } }).toArray();
+  if (!pending.length) {
+    await campaigns().updateOne({ _id }, { $set: { status: "done", stage: "done", finishedAt: new Date() } });
+    return { ok: true, resumed: 0, alreadySettled: camp.seedCount, note: "nothing left to process" };
+  }
+
+  await campaigns().updateOne({ _id }, { $set: { status: "running", stage: "running", finishedAt: null, updatedAt: new Date() } });
+  const gates = camp.gates || { countGate: config.campaign.countGate, blacklistGate: config.campaign.blacklistGate };
+
+  runCampaign(_id, pending, gates).catch((e) => {
+    log.error("campaign resume crashed", { err: e.message, id });
+    campaigns().updateOne({ _id }, { $set: { status: "error", error: e.message, finishedAt: new Date() } }).catch(() => {});
+  });
+
+  return { ok: true, resumed: pending.length, alreadySettled: camp.seedCount - pending.length };
+}
+
 export async function startCampaign(rawSeeds, opts = {}) {
   const seeds = parseSeeds(rawSeeds);
   if (!seeds.length) throw new Error("no valid domains in the list");

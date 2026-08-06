@@ -30,7 +30,7 @@ import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/dom
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio } from "../services/hostio.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign } from "../pipeline/campaign.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -946,6 +946,12 @@ apiRouter.get("/campaign/:id", async (req, res) => {
   res.json(c);
 });
 apiRouter.get("/campaign/:id/results", async (req, res) => res.json({ items: await getCampaignResults(req.params.id) }));
+// Resume an interrupted/stalled campaign — reprocesses only the seeds without a final verdict, so
+// already-enriched companies keep their result (and don't spend their Prospeo credits again).
+apiRouter.post("/campaign/:id/resume", async (req, res) => {
+  const r = await resumeCampaign(req.params.id);
+  res.status(r.ok ? 200 : 400).json(r);
+});
 // On-demand email reveal for one company's contacts (spends Prospeo credits — ~1 per person).
 apiRouter.post("/campaign/:id/reveal", async (req, res) => {
   const people = await revealCompanyEmails(req.params.id, S(req.body?.seed));

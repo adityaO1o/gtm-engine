@@ -62,6 +62,7 @@ export default function Campaign() {
   const [openRow, setOpenRow] = useState(null);
   const [revealing, setRevealing] = useState(null);
   const [pushing, setPushing] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [preview, setPreview] = useState(null);
   const timer = useRef(null);
 
@@ -78,6 +79,17 @@ export default function Campaign() {
       else toast(r.error || "Push failed", "bad");
     } catch { toast("Push failed", "bad"); }
     setPushing(false);
+  }
+
+  async function resumeRun() {
+    if (resuming) return;
+    setResuming(true);
+    try {
+      const r = await post(`/api/campaign/${campId}/resume`, {});
+      if (r.ok) { toast(`Resumed — ${num(r.resumed)} to process, ${num(r.alreadySettled)} kept`, "good"); poll(campId); }
+      else toast(r.error || "Resume failed", "bad");
+    } catch { toast("Resume failed", "bad"); }
+    setResuming(false);
   }
 
   async function showPreview(email) {
@@ -214,6 +226,12 @@ export default function Campaign() {
         <button className="btn btn-ghost btn-sm" onClick={() => { clearTimeout(timer.current); setView("list"); loadHistory(); }}><Icon name="back" />All campaigns</button>
         {campaign ? <span className="resn">{running ? <><span className="spin" /> <b>{campaign.stage}</b></> : <b>done</b>} · {num(campaign.seedCount)} seeds</span> : null}
         <div className="grow" />
+        {campaign && !running && campaign.status !== "done" ? (
+          <button className="btn btn-ghost btn-sm" disabled={resuming} onClick={resumeRun}
+            title="Reprocesses only the seeds without a final verdict — already-enriched companies keep their result">
+            <Icon name={resuming ? "refresh" : "sync"} />{resuming ? "Resuming…" : "Resume"}
+          </button>
+        ) : null}
         {campaign?.sendkitCampaignId ? (
           <span className="resn" style={{ color: "var(--good)" }}>
             <Icon name="check" />pushed to SendKit ({num(campaign.sendkitLeadCount || 0)} leads) · draft
