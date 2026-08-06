@@ -320,6 +320,19 @@ export async function scrapeDiagnose() {
     const p = await fetchScrape("sopro.io", url ? agentFor(url) : null);
     out.liveProbe = { via: url ? "proxy" : "direct", ok: p.ok, total: p.total, limited: !!p.limited, ms: Date.now() - t };
   } catch (e) { out.liveProbe = { via: url ? "proxy" : "direct", err: e.code || e.message, ms: Date.now() - t }; }
+
+  // The pool is only worth its size if the exits are distinct ADDRESSES. host.io limits per IP, so
+  // 75 credentials sharing a handful of egress IPs buys no headroom at all — and would explain a
+  // 429 arriving in 200ms on a freshly started process with nothing benched.
+  const sample = SCRAPE_POOL.slice(0, 12);
+  const ips = await Promise.all(sample.map(async (u) => {
+    try {
+      const r = await axios.get("https://api.ipify.org?format=json",
+        { httpsAgent: agentFor(u), proxy: false, timeout: 10000, validateStatus: () => true });
+      return r.data?.ip || `status${r.status}`;
+    } catch (e) { return e.code || "ERR"; }
+  }));
+  out.exitIps = { probed: sample.length, distinct: new Set(ips.filter((v) => /^\d+\./.test(v))).size, ips };
   return out;
 }
 
