@@ -14,7 +14,7 @@ import { splitDomain } from "../lib/permute.js";
 import { runPool } from "../lib/pool.js";
 import { scrapeRedirectPage, apiRedirectPage } from "../services/hostio.js";
 import { searchPeople, findEmail } from "../services/prospeo.js";
-import { pushDomains, getWorkspaceVerdicts } from "../services/blacklistProject.js";
+import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
 import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, leadPayload } from "./blacklistCopy.js";
 import { campaigns, campaignTargets, hostioPages, hostioUsage } from "../db/mongo.js";
@@ -72,16 +72,23 @@ async function setTarget(id, fields) {
 // shared across all seeds, so concurrent seeds' domains get checked together.
 async function blacklistOf(domains) {
   if (!domains.length) return [];
-  await pushDomains(domains);
-  const want = new Set(domains);
-  const deadline = Date.now() + 20_000;
-  let map = await getWorkspaceVerdicts();
-  for (;;) {
-    const pending = [...want].filter((d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; });
-    if (!pending.length || Date.now() >= deadline) break;
-    await sleep(2500);
-    map = await getWorkspaceVerdicts();
+
+  // Anything we already have a verdict for locally needs no round-trip at all.
+  let map = await verdictsFor(domains);
+  const unknown = domains.filter((d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; });
+
+  if (unknown.length) {
+    await pushDomains(unknown);                       // queues only the ones we don't know yet
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      await sleep(1200);
+      await refreshVerdicts();                        // incremental: a page or two, not the workspace
+      map = await verdictsFor(domains);
+      const stillUnknown = unknown.filter((d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; });
+      if (!stillUnknown.length || Date.now() >= deadline) break;
+    }
   }
+
   const out = [];
   for (const d of domains) { const v = map.get(d); if (v && v.status === "listed") out.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] }); }
   return out;
@@ -179,6 +186,9 @@ async function enrichSeed(t) {
 // its own speed and enrichment trickles along behind it.
 async function runCampaign(campaignId, targets, gates) {
   await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "running", startedAt: new Date(), updatedAt: new Date() } });
+  // Warm the local verdict mirror once up front (first run pulls the existing workspace; after that
+  // every refresh is incremental) so seeds don't each pay for it.
+  await refreshVerdicts().catch(() => {});
 
   const queue = [];
   let discoveryDone = false;

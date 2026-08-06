@@ -170,6 +170,10 @@ export async function connect() {
   await db.collection("hostio_pages").createIndex({ at: 1 });
   // Audit log of every PAID host.io API call, for the Usage view / cost tracking.
   await db.collection("hostio_usage").createIndex({ at: -1 });
+  // Local mirror of the blacklist workspace's verdicts (_id = domain). Refreshed INCREMENTALLY from
+  // the newest checks, so a campaign never re-reads the whole (six-figure) workspace to answer
+  // "is this domain listed".
+  await db.collection("blacklist_verdicts").createIndex({ checkedAt: -1 });
 
   log.info("mongo connected", { db: config.mongoDb });
   return db;
@@ -215,3 +219,4 @@ export const campaignTargets = () => db.collection("campaign_targets");    // pe
 export const hostioCounts = () => db.collection("hostio_counts");          // cached host.io redirect counts
 export const hostioPages = () => db.collection("hostio_pages");            // cached redirect pages (scrape + api)
 export const hostioUsage = () => db.collection("hostio_usage");            // paid API call audit log
+export const blacklistVerdicts = () => db.collection("blacklist_verdicts"); // local mirror: domain -> verdict

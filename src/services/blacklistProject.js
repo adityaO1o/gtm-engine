@@ -2,6 +2,7 @@
 // Barracuda...). Docs: http://163.123.236.189:4400/docs
 import axios from "axios";
 import { config } from "../config.js";
+import { blacklistVerdicts } from "../db/mongo.js";
 import { log } from "../lib/logger.js";
 
 const h = () => ({ "x-api-key": config.blacklistProject.key, "Content-Type": "application/json" });
@@ -33,6 +34,62 @@ export async function listDomains({ search, status, page = 1, limit = 100, sort,
     return { items: [], total: 0 };
   }
   return r.data;
+}
+
+// ── Local verdict mirror (the fast path) ───────────────────────────────────────────────────────
+// Reading verdicts by paginating the whole workspace is O(workspace) per read, and a campaign GROWS
+// the workspace as it runs (48 domains per seed): at 17k domains a full read was already 35 pages /
+// ~60s, and a 4.6k-seed run heads for six figures — the read cost was swamping the actual work.
+//
+// Instead we keep a local mirror in Mongo and top it up INCREMENTALLY: pull pages sorted by
+// lastCheckedAt DESC and stop as soon as we reach checks we already have. Newly pushed domains are
+// checked within seconds, so they land at the top — a refresh costs a page or two regardless of how
+// big the workspace gets.
+const OVERLAP_MS = 60_000; // re-read a minute of overlap so nothing slips between refreshes
+let refreshing = null;
+
+export async function refreshVerdicts({ maxPages = 40 } = {}) {
+  if (refreshing) return refreshing;
+  refreshing = (async () => {
+    const newest = await blacklistVerdicts().find({}, { projection: { checkedAt: 1 } }).sort({ checkedAt: -1 }).limit(1).toArray();
+    const watermark = newest[0]?.checkedAt ? new Date(newest[0].checkedAt).getTime() - OVERLAP_MS : 0;
+    let upserted = 0;
+
+    for (let page = 1; page <= maxPages; page++) {
+      const r = await axios.get(`${base()}/projects/${ws()}/domains`, {
+        headers: h(), timeout: 25000, validateStatus: () => true,
+        params: { page, limit: 500, sort: "lastCheckedAt", dir: "desc" },
+      }).catch(() => null);
+      if (!r || r.status !== 200) break;
+      const items = r.data?.items || [];
+      if (!items.length) break;
+
+      const ops = [];
+      let reachedKnown = false;
+      for (const it of items) {
+        const domain = String(it.domain || "").toLowerCase();
+        if (!domain) continue;
+        const checkedAt = it.summary?.lastCheckedAt ? new Date(it.summary.lastCheckedAt) : new Date(0);
+        if (watermark && checkedAt.getTime() < watermark) { reachedKnown = true; continue; }
+        ops.push({ updateOne: {
+          filter: { _id: domain },
+          update: { $set: { status: it.status, riskScore: it.riskScore ?? null, zones: it.summary?.listedZones || [], checkedAt } },
+          upsert: true,
+        } });
+      }
+      if (ops.length) { await blacklistVerdicts().bulkWrite(ops, { ordered: false }).catch(() => {}); upserted += ops.length; }
+      if (reachedKnown || items.length < 500) break; // caught up with what we already have
+    }
+    refreshing = null;
+    return upserted;
+  })();
+  return refreshing;
+}
+
+// Verdicts for just these domains, straight out of the local mirror. -> Map<domain, verdict>
+export async function verdictsFor(domains) {
+  const rows = await blacklistVerdicts().find({ _id: { $in: domains } }).toArray().catch(() => []);
+  return new Map(rows.map((r) => [r._id, r]));
 }
 
 // A cached snapshot of EVERY domain's verdict in the workspace: domain -> {status, riskScore, zones}.
