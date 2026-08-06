@@ -30,7 +30,7 @@ import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/dom
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio } from "../services/hostio.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, backfillOwnLeadContacts } from "../pipeline/campaign.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -950,6 +950,12 @@ apiRouter.get("/campaign/:id/results", async (req, res) => res.json({ items: awa
 // already-enriched companies keep their result (and don't spend their Prospeo credits again).
 apiRouter.post("/campaign/:id/resume", async (req, res) => {
   const r = await resumeCampaign(req.params.id);
+  res.status(r.ok ? 200 : 400).json(r);
+});
+// Fill in contacts for companies Prospeo found nobody at, using our own hot/warm engagers on that
+// domain (these seed lists came from those leads to begin with). Free — no Prospeo credits.
+apiRouter.post("/campaign/:id/backfill-contacts", async (req, res) => {
+  const r = await backfillOwnLeadContacts(req.params.id);
   res.status(r.ok ? 200 : 400).json(r);
 });
 // On-demand email reveal for one company's contacts (spends Prospeo credits — ~1 per person).

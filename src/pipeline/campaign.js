@@ -17,7 +17,7 @@ import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
 import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, leadPayload } from "./blacklistCopy.js";
-import { campaigns, campaignTargets, hostioPages, hostioUsage } from "../db/mongo.js";
+import { campaigns, campaignTargets, hostioPages, hostioUsage, leads } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
@@ -147,6 +147,35 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
   }
 }
 
+// Contacts we ALREADY own for this company — our hot/warm engagers whose work email is on this
+// domain. These seed lists are built from those very leads, so when Prospeo returns nothing for a
+// company we usually still have a real, already-verified person there. Costs zero credits.
+async function ownLeadsFor(seed) {
+  const rx = new RegExp("@" + seed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i");
+  const rows = await leads().find({
+    email: rx,
+    email_status: { $in: ["verified", "unverified"] },
+    dnc: { $ne: true },
+  }).sort({ score: -1 }).limit(10).toArray().catch(() => []);
+
+  return rows.map((l) => {
+    const parts = String(l.name || "").trim().split(/\s+/);
+    return {
+      prospeo_id: null,
+      name: l.name || null,
+      first_name: parts[0] || null,
+      last_name: parts.slice(1).join(" ") || null,
+      job_title: l.headline || null,
+      seniority: null,
+      department: null,
+      linkedin_url: l.linkedin_url || null,
+      email: l.email,
+      email_status: l.email_status === "verified" ? "VERIFIED" : null,
+      source: "gtm-lead",          // came from our own engagement data, not Prospeo
+    };
+  });
+}
+
 // The Prospeo half, run in its own small lane so it never blocks discovery.
 async function enrichSeed(t) {
   try {
@@ -170,10 +199,24 @@ async function enrichSeed(t) {
         people[i].email_status = r.email_status || null;
       }, { concurrency: 4 });
     }
-    const withEmail = people.filter((p) => p.email).length;
+    let withEmail = people.filter((p) => p.email).length;
+    let fromOwnLeads = 0;
+
+    // Prospeo found nobody reachable — fall back to the engagers we already have at this company.
+    if (!withEmail) {
+      const own = await ownLeadsFor(t.seed);
+      if (own.length) {
+        const have = new Set(people.map((p) => (p.email || "").toLowerCase()).filter(Boolean));
+        for (const o of own) if (!have.has(o.email.toLowerCase())) people.push(o);
+        fromOwnLeads = own.length;
+        withEmail = people.filter((p) => p.email).length;
+      }
+    }
+
     await setTarget(t._id, {
       people, peopleCount: people.length, peopleTotal: total, emailsRevealed: true,
-      contactsWithEmail: withEmail, prospeoFree: !!free, prospeoError: error || null,
+      contactsWithEmail: withEmail, contactsFromOwnLeads: fromOwnLeads,
+      prospeoFree: !!free, prospeoError: error || null,
       stage: "done", activity: null,
     });
   } catch (e) {
@@ -407,6 +450,35 @@ export async function previewCampaignEmail(campaignId, { email, step = 1 }) {
   const boxes = await listMailboxes();
   if (!boxes.length) return { ok: false, error: "no mailbox in the SendKit workspace to preview as" };
   return previewEmail(camp.sendkitCampaignId, { sequenceStep: step, leadId: lead.id, mailboxId: boxes[0].id });
+}
+
+// Retro-fill contacts for companies already finished with nobody reachable, using the engagers we
+// already own at that domain. Free (no Prospeo), and safe to re-run — it only touches targets that
+// still have no contactable email.
+export async function backfillOwnLeadContacts(campaignId) {
+  if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
+  const _id = new ObjectId(campaignId);
+  const targets = await campaignTargets().find({
+    campaignId: _id, stage: "done",
+    $or: [{ contactsWithEmail: { $in: [0, null] } }, { contactsWithEmail: { $exists: false } }],
+  }).toArray();
+
+  let filled = 0, contacts = 0;
+  await runPool(targets, async (t) => {
+    const people = (t.people || []).slice();
+    if (people.some((p) => p.email)) return;             // already reachable — leave it alone
+    const own = await ownLeadsFor(t.seed);
+    if (!own.length) return;
+    people.push(...own);
+    filled++; contacts += own.length;
+    await setTarget(t._id, {
+      people, peopleCount: people.length,
+      contactsWithEmail: people.filter((p) => p.email).length,
+      contactsFromOwnLeads: own.length,
+    });
+  }, { concurrency: 10 });
+
+  return { ok: true, scanned: targets.length, companiesFilled: filled, contactsAdded: contacts };
 }
 
 // host.io PAID API usage — totals + recent calls, for the tracking view.

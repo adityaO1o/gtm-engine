@@ -69,6 +69,7 @@ export default function Campaign() {
   const [revealing, setRevealing] = useState(null);
   const [pushing, setPushing] = useState(false);
   const [resuming, setResuming] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
   const [preview, setPreview] = useState(null);
   const timer = useRef(null);
 
@@ -96,6 +97,17 @@ export default function Campaign() {
       else toast(r.error || "Resume failed", "bad");
     } catch { toast("Resume failed", "bad"); }
     setResuming(false);
+  }
+
+  async function backfillContacts() {
+    if (backfilling) return;
+    setBackfilling(true);
+    try {
+      const r = await post(`/api/campaign/${campId}/backfill-contacts`, {});
+      if (r.ok) { toast(`Filled ${num(r.companiesFilled)} companies with ${num(r.contactsAdded)} of our own leads`, r.companiesFilled ? "good" : "info"); poll(campId); }
+      else toast(r.error || "Backfill failed", "bad");
+    } catch { toast("Backfill failed", "bad"); }
+    setBackfilling(false);
   }
 
   async function showPreview(email) {
@@ -244,6 +256,12 @@ export default function Campaign() {
           </span>
         ) : null}
         {results.length && !running ? (
+          <button className="btn btn-ghost btn-sm" disabled={backfilling} onClick={backfillContacts}
+            title="For companies Prospeo found nobody at, use our own hot/warm engagers on that domain. Free — no Prospeo credits.">
+            <Icon name={backfilling ? "refresh" : "users"} />{backfilling ? "Filling…" : "Fill from our leads"}
+          </button>
+        ) : null}
+        {results.length && !running ? (
           <button className="btn btn-ghost btn-sm" disabled={pushing} onClick={pushToSendkit}
             title="Creates a DRAFT SendKit campaign with the blacklist sequence + per-lead variables. Nothing is sent.">
             <Icon name={pushing ? "refresh" : "mega"} />{pushing ? "Pushing…" : "Push to SendKit"}
@@ -363,7 +381,10 @@ export default function Campaign() {
                                   <table><tbody>
                                     {r.people.map((p, i) => (
                                       <tr key={i}>
-                                        <td><b className="sm">{p.name || "—"}</b></td>
+                                        <td>
+                                          <b className="sm">{p.name || "—"}</b>
+                                          {p.source === "gtm-lead" ? <span className="tag-pers" title="From our own hot/warm engagers, not Prospeo">our lead</span> : null}
+                                        </td>
                                         <td className="sm muted">{p.job_title || "—"}</td>
                                         <td className="sm muted">{p.department || ""}</td>
                                         <td className="sm">{p.email
