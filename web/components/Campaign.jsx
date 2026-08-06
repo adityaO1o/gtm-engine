@@ -6,10 +6,16 @@ import { j, post } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 
 // The funnel stages, in order, with how to read each tally off the campaign's stage counts.
+// Stage groups. A seed that cleared the blacklist gate sits in enrich_queued until the (slower)
+// enrichment lane picks it up — it must count in both cards below, or the totals visibly jump around
+// as seeds shuttle between enrich_queued and enriching.
+const PAST_COUNT_GATE = ["scraping", "blacklisting", "dropped_blacklist", "enrich_queued", "enriching", "error", "done"];
+const PAST_BLACKLIST_GATE = ["enrich_queued", "enriching", "done"];
+
 const FUNNEL = [
   { key: "seeds", label: "Seed domains", of: (c) => c.seedCount, hint: "companies you pasted in" },
-  { key: "qualified", label: "Passed count gate", of: (c, s) => sum(s, ["scraping", "blacklisting", "enriching", "dropped_blacklist", "error", "done"]), hint: (c) => `≥ ${c.gates?.countGate} redirect domains` },
-  { key: "blacklisted", label: "Have blacklisted infra", of: (c, s) => sum(s, ["enriching", "done"]), hint: (c) => `≥ ${c.gates?.blacklistGate} blacklisted domains` },
+  { key: "qualified", label: "Passed count gate", of: (c, s) => sum(s, PAST_COUNT_GATE), hint: (c) => `≥ ${c.gates?.countGate} redirect domains` },
+  { key: "blacklisted", label: "Have blacklisted infra", of: (c, s) => sum(s, PAST_BLACKLIST_GATE), hint: (c) => `≥ ${c.gates?.blacklistGate} blacklisted domains` },
   { key: "enriched", label: "Contacts pulled", of: (c, s) => sum(s, ["done"]), hint: "Prospeo search-person run" },
 ];
 function sum(stages, keys) { return keys.reduce((a, k) => a + (stages?.[k] || 0), 0); }
