@@ -175,21 +175,29 @@ async function fetchScrape(seed, agent) {
 // ones ~2 min), then one direct attempt. Never throws. `ok:false` means we could not READ the page —
 // distinct from a genuine zero, so the caller can retry instead of recording a false verdict.
 export async function scrapeRedirectPage(seed) {
-  const tries = Math.min(4, SCRAPE_POOL.length);
-  for (let i = 0; i < tries; i++) {
-    const url = nextProxy();
-    if (!url) break;
-    try {
-      const page = await fetchScrape(seed, agentFor(url));
-      if (page.ok) return page;
-      benchedUntil.set(url, Date.now() + 120_000); // reachable but unusable — soft block; rotate
-    } catch (e) {
-      benchedUntil.set(url, Date.now() + 120_000);
-      log.warn("hostio scrape proxy failed — rotating", { seed, proxy: url.split("@")[1], err: e.message });
+  // Two passes with a pause between them. A 2,319-seed run at concurrency 30 gave up on 14% of seeds
+  // after only 4 proxies and no backoff — host.io pushes back in bursts, and most of those recover a
+  // second later on a different exit. A seed we can't read costs a retry later, so it's worth trying
+  // harder here than failing fast.
+  const perPass = Math.min(6, SCRAPE_POOL.length);
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < perPass; i++) {
+      const url = nextProxy();
+      if (!url) break;
+      try {
+        const page = await fetchScrape(seed, agentFor(url));
+        if (page.ok) return page;
+        benchedUntil.set(url, Date.now() + 120_000); // reachable but unusable — soft block; rotate
+      } catch (e) {
+        benchedUntil.set(url, Date.now() + 120_000);
+        log.warn("hostio scrape proxy failed — rotating", { seed, proxy: url.split("@")[1], err: e.message });
+      }
     }
+    try { const direct = await fetchScrape(seed, null); if (direct.ok) return direct; } catch { /* fall through */ }
+    if (pass === 0) await sleep(1500 + Math.floor(Math.random() * 1500)); // let a burst-limit clear
   }
-  try { return await fetchScrape(seed, null); }        // direct fallback
-  catch (e) { log.warn("hostio scrape failed (direct too)", { seed, err: e.message }); return { ok: false, total: null, domains: [] }; }
+  log.warn("hostio scrape failed after retries", { seed });
+  return { ok: false, total: null, domains: [] };
 }
 
 // back-compat: just the domains (used by the old Domain Prospecting hostio mode).
