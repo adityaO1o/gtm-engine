@@ -70,6 +70,10 @@ export default function Campaign() {
   const [pushing, setPushing] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
+  const [workspaces, setWorkspaces] = useState([]);
+  const [workspaceId, setWorkspaceId] = useState("");
+
+  useEffect(() => { j("/api/sendkit/workspaces").then((d) => setWorkspaces(d.items || [])).catch(() => {}); }, []);
   const [preview, setPreview] = useState(null);
   const timer = useRef(null);
 
@@ -78,10 +82,11 @@ export default function Campaign() {
   async function pushToSendkit() {
     const contacts = results.reduce((a, r) => a + (r.people || []).filter((p) => p.email).length, 0);
     if (!contacts) { toast("No contacts with a revealed email yet", "bad"); return; }
-    if (!window.confirm(`Push ${contacts} decision-maker contact${contacts === 1 ? "" : "s"} into a SendKit campaign?\n\nThe campaign is created as a DRAFT with the 3-email blacklist sequence and each lead's variables (blacklisted domain count, example domains, …). Nothing is sent — you start it yourself in SendKit.`)) return;
+    const wsLabel = workspaces.find((w) => w.id === workspaceId)?.label || "Default";
+    if (!window.confirm(`Push ${contacts} decision-maker contact${contacts === 1 ? "" : "s"} into the "${wsLabel}" SendKit workspace?\n\nThe campaign is created as a DRAFT with the 3-email blacklist sequence and each lead's variables (blacklisted domain count, example domains, …). Nothing is sent — you start it yourself in SendKit.`)) return;
     setPushing(true);
     try {
-      const r = await post(`/api/campaign/${campId}/push-sendkit`, {});
+      const r = await post(`/api/campaign/${campId}/push-sendkit`, { workspaceId });
       if (r.ok) { toast(`Pushed ${num(r.leads)} leads — SendKit campaign is a DRAFT, start it there`, "good"); poll(campId); }
       else toast(r.error || "Push failed", "bad");
     } catch { toast("Push failed", "bad"); }
@@ -260,6 +265,12 @@ export default function Campaign() {
             title="For companies Prospeo found nobody at, use our own hot/warm engagers on that domain. Free — no Prospeo credits.">
             <Icon name={backfilling ? "refresh" : "users"} />{backfilling ? "Filling…" : "Fill from our leads"}
           </button>
+        ) : null}
+        {results.length && !running && workspaces.length > 1 ? (
+          <select className="search" style={{ maxWidth: 190 }} value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)}
+            title="Which teammate's SendKit workspace these leads go into">
+            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
+          </select>
         ) : null}
         {results.length && !running ? (
           <button className="btn btn-ghost btn-sm" disabled={pushing} onClick={pushToSendkit}

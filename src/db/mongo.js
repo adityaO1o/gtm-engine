@@ -177,6 +177,9 @@ export async function connect() {
   // the newest checks, so a campaign never re-reads the whole (six-figure) workspace to answer
   // "is this domain listed".
   await db.collection("blacklist_verdicts").createIndex({ checkedAt: -1 });
+  // SendKit workspaces the campaign funnel can push into (one per teammate — each runs their own
+  // SendKit workspace). _id is a slug; the default workspace is still SENDKIT_KEY from env.
+  await db.collection("sendkit_workspaces").createIndex({ label: 1 });
 
   log.info("mongo connected", { db: config.mongoDb });
   return db;
@@ -223,3 +226,4 @@ export const hostioCounts = () => db.collection("hostio_counts");          // ca
 export const hostioPages = () => db.collection("hostio_pages");            // cached redirect pages (scrape + api)
 export const hostioUsage = () => db.collection("hostio_usage");            // paid API call audit log
 export const blacklistVerdicts = () => db.collection("blacklist_verdicts"); // local mirror: domain -> verdict
+export const sendkitWorkspaces = () => db.collection("sendkit_workspaces"); // per-teammate SendKit targets

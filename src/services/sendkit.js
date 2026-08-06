@@ -77,7 +77,10 @@ export async function intakeCampaign(email, desiredCampaignId) {
   return desired;
 }
 
-const h = () => ({ "X-Api-Key": config.sendkit.key, "Content-Type": "application/json" });
+// Every call defaults to the workspace in SENDKIT_KEY (the LinkedIn-engagement pipeline's workspace).
+// Passing a key targets a DIFFERENT SendKit workspace — that's how one engine serves several people
+// who each run their own workspace, without touching the shared default.
+const h = (apiKey) => ({ "X-Api-Key": apiKey || config.sendkit.key, "Content-Type": "application/json" });
 const base = config.sendkit.base;
 
 // Has this email already been claimed by our system? (tag-scoped, ignores legacy leads)
@@ -218,10 +221,10 @@ export const DEFAULT_SCHEDULE = {
 // send anything until it's started from the SendKit UI, which is deliberate: starting a real cold-
 // email sequence stays a human decision. `sequence` items are {type:"email"|"wait", order, name,
 // subject, body, waitDays}. Mailboxes are left unassigned so they're chosen at start time.
-export async function createCampaign(name, sequence, schedule = DEFAULT_SCHEDULE) {
+export async function createCampaign(name, sequence, schedule = DEFAULT_SCHEDULE, { apiKey } = {}) {
   try {
     const r = await withRetry(() => axios.post(`${base}/v1/campaigns`, { name, sequence, schedule },
-      { headers: h(), timeout: 30000, validateStatus: () => true }));
+      { headers: h(apiKey), timeout: 30000, validateStatus: () => true }));
     if (r.status >= 300) {
       log.warn("sendkit createCampaign failed", { name, status: r.status, body: JSON.stringify(r.data || {}).slice(0, 300) });
       return { ok: false, error: `http_${r.status}`, detail: r.data };
@@ -254,11 +257,11 @@ export async function updateCampaignSchedule(campaignId, schedule) {
 
 // Render a campaign step exactly as it would be sent for one lead — WITHOUT sending. Used to eyeball
 // the personalized copy (variables/conditionals resolved) before anyone starts the campaign.
-export async function previewEmail(campaignId, { sequenceStep = 1, leadId, mailboxId }) {
+export async function previewEmail(campaignId, { sequenceStep = 1, leadId, mailboxId, apiKey }) {
   try {
     const r = await withRetry(() => axios.post(`${base}/v1/campaigns/${campaignId}/preview-email`,
       { sequenceStep, leadId, mailboxId },
-      { headers: h(), timeout: 25000, validateStatus: () => true }));
+      { headers: h(apiKey), timeout: 25000, validateStatus: () => true }));
     if (r.status >= 300) return { ok: false, error: `http_${r.status}`, detail: r.data };
     const d = r.data?.data || r.data || {};
     return { ok: true, subject: d.subject, body: d.body };
@@ -266,9 +269,9 @@ export async function previewEmail(campaignId, { sequenceStep = 1, leadId, mailb
 }
 
 // Look a lead up by email to get its SendKit id (needed for preview-email).
-export async function findLeadByEmail(email) {
+export async function findLeadByEmail(email, { apiKey } = {}) {
   try {
-    const r = await axios.get(`${base}/v1/leads`, { headers: h(), params: { search: email }, timeout: 15000, validateStatus: () => true });
+    const r = await axios.get(`${base}/v1/leads`, { headers: h(apiKey), params: { search: email }, timeout: 15000, validateStatus: () => true });
     const arr = r.data?.data || [];
     const hit = arr.find((l) => String(l.email || "").toLowerCase() === String(email).toLowerCase()) || arr[0];
     return hit ? { id: hit._id || hit.id, email: hit.email } : null;
@@ -276,9 +279,9 @@ export async function findLeadByEmail(email) {
 }
 
 // The workspace's mailboxes — needed to pick a sender for a preview.
-export async function listMailboxes() {
+export async function listMailboxes({ apiKey } = {}) {
   try {
-    const r = await axios.get(`${base}/v1/mailboxes`, { headers: h(), params: { limit: 50 }, timeout: 20000, validateStatus: () => true });
+    const r = await axios.get(`${base}/v1/mailboxes`, { headers: h(apiKey), params: { limit: 50 }, timeout: 20000, validateStatus: () => true });
     if (r.status >= 300) return [];
     return (r.data?.data || []).map((m) => ({ id: m._id || m.id, email: m.email, status: m.status }));
   } catch { return []; }
@@ -286,12 +289,12 @@ export async function listMailboxes() {
 
 // Live list of EVERY campaign in the SendKit workspace — so a campaign created directly in SendKit
 // (not in our hardcoded CAMPAIGNS config) is still visible to the MCP / dashboard. Read-only.
-export async function listCampaigns() {
+export async function listCampaigns({ apiKey } = {}) {
   const out = [];
   let cursor = "";
   for (let i = 0; i < 30; i++) {
     const r = await withRetry(() => axios.get(`${base}/v1/campaigns`, {
-      headers: h(), params: { limit: 100, ...(cursor ? { cursor } : {}) },
+      headers: h(apiKey), params: { limit: 100, ...(cursor ? { cursor } : {}) },
       timeout: 25000, validateStatus: () => true,
     }));
     if (r.status >= 300) { log.warn("sendkit list campaigns failed", { status: r.status, got: out.length }); break; }
@@ -416,7 +419,7 @@ export function isBlockedBy(dnc, email) {
 }
 
 // Bulk-upsert leads, 100 at a time (the /leads/bulk endpoint takes an array).
-export async function upsertLeads(list = []) {
+export async function upsertLeads(list = [], { apiKey } = {}) {
   let ok = 0, failed = 0;
   for (let i = 0; i < list.length; i += 100) {
     const chunk = list.slice(i, i + 100);
@@ -424,7 +427,7 @@ export async function upsertLeads(list = []) {
       const r = await withRetry(() => axios.post(
         `${base}/v1/leads/bulk`,
         { skipDuplicates: false, leads: chunk.map((l) => ({ ...l, tags: l.tags })) },
-        { headers: h(), timeout: 40000, validateStatus: () => true }
+        { headers: h(apiKey), timeout: 40000, validateStatus: () => true }
       ));
       if (r.status < 300) ok += chunk.length;
       else { failed += chunk.length; log.warn("sendkit bulk upsert failed", { status: r.status, body: JSON.stringify(r.data || {}).slice(0, 200) }); }
@@ -435,7 +438,7 @@ export async function upsertLeads(list = []) {
 
 // Add many emails to one campaign, 100 at a time. SendKit answers {added, skipped}: "skipped"
 // means the lead is ALREADY a member of that campaign — that's success, not a failure.
-export async function addLeadsToCampaign(campaignId, emails = []) {
+export async function addLeadsToCampaign(campaignId, emails = [], { apiKey } = {}) {
   if (!campaignId || !emails.length) return { added: 0, skipped: 0, failed: 0 };
   let added = 0, skipped = 0, failed = 0;
   for (let i = 0; i < emails.length; i += 100) {
@@ -444,7 +447,7 @@ export async function addLeadsToCampaign(campaignId, emails = []) {
       const r = await withRetry(() => axios.post(
         `${base}/v1/campaigns/${campaignId}/leads`,
         { leads: chunk.map((email) => ({ email })) },
-        { headers: h(), timeout: 40000, validateStatus: () => true }
+        { headers: h(apiKey), timeout: 40000, validateStatus: () => true }
       ));
       if (r.status >= 300) {
         failed += chunk.length;

@@ -17,7 +17,7 @@ import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
 import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, leadPayload } from "./blacklistCopy.js";
-import { campaigns, campaignTargets, hostioPages, hostioUsage, leads } from "../db/mongo.js";
+import { campaigns, campaignTargets, hostioPages, hostioUsage, leads, sendkitWorkspaces } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
@@ -428,11 +428,39 @@ export async function revealCompanyEmails(campaignId, seed) {
 // decision-maker as a lead with their per-company variables (blacklistedDomainCount, domain1..4, …),
 // and adds them to it. Nothing is ever sent: the campaign stays a draft until it's started by hand
 // in SendKit — starting a real outbound sequence is deliberately left as a human decision.
-export async function pushCampaignToSendkit(campaignId, { campaignName } = {}) {
+// ── SendKit workspaces (one per teammate) ──────────────────────────────────────────────────────
+// The funnel is shared, but each person sends from their OWN SendKit workspace, so the push target
+// is selectable. No workspace = the default SENDKIT_KEY (the LinkedIn-engagement workspace).
+export async function listWorkspaces() {
+  const rows = await sendkitWorkspaces().find({}, { projection: { apiKey: 0 } }).sort({ label: 1 }).toArray().catch(() => []);
+  return [{ id: "", label: "Default (SENDKIT_KEY)" }, ...rows.map((r) => ({ id: r._id, label: r.label }))];
+}
+
+export async function addWorkspace({ id, label, apiKey }) {
+  const slug = String(id || label || "").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, "");
+  if (!slug || !apiKey) return { ok: false, error: "id/label and apiKey are required" };
+  // Verify the key before storing it — a wrong key would otherwise only surface at push time.
+  const probe = await listSendkitCampaigns({ apiKey });
+  if (!Array.isArray(probe)) return { ok: false, error: "could not reach SendKit with that key" };
+  await sendkitWorkspaces().updateOne({ _id: slug },
+    { $set: { label: label || slug, apiKey, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+    { upsert: true });
+  return { ok: true, id: slug, label: label || slug, campaignsVisible: probe.length };
+}
+
+async function workspaceKey(workspaceId) {
+  if (!workspaceId) return undefined;                       // undefined -> sendkit.js uses the default
+  const w = await sendkitWorkspaces().findOne({ _id: workspaceId }).catch(() => null);
+  return w?.apiKey || undefined;
+}
+
+export async function pushCampaignToSendkit(campaignId, { campaignName, workspaceId } = {}) {
   if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
   const _id = new ObjectId(campaignId);
   const camp = await campaigns().findOne({ _id });
   if (!camp) return { ok: false, error: "campaign not found" };
+  const apiKey = await workspaceKey(workspaceId);
+  if (workspaceId && !apiKey) return { ok: false, error: `unknown workspace "${workspaceId}"` };
 
   const targets = await campaignTargets().find({ campaignId: _id, stage: "done", peopleCount: { $gt: 0 } }).toArray();
   const leads = [];
@@ -447,29 +475,30 @@ export async function pushCampaignToSendkit(campaignId, { campaignName } = {}) {
   // in the same sequence instead of scattering across a campaign per run. It's resolved BY NAME from
   // SendKit (no env var / redeploy needed to point at it): an explicit id override wins, otherwise we
   // find the existing "Blacklist Campaign", otherwise we create it once.
+  // Resolve the standing campaign INSIDE the chosen workspace — each workspace has its own.
   const standingName = campaignName || BLACKLIST_CAMPAIGN_NAME;
-  let sendkitCampaignId = config.sendkit.blacklistCampaignId;
+  let sendkitCampaignId = workspaceId ? null : config.sendkit.blacklistCampaignId;
   if (!sendkitCampaignId) {
-    const existing = (await listSendkitCampaigns()).find(
+    const existing = (await listSendkitCampaigns({ apiKey })).find(
       (c) => String(c.name || "").trim().toLowerCase() === standingName.toLowerCase() && c.status !== "archived",
     );
     sendkitCampaignId = existing?.id;
   }
   if (!sendkitCampaignId) {
-    const created = await createSendkitCampaign(standingName, BLACKLIST_SEQUENCE);
+    const created = await createSendkitCampaign(standingName, BLACKLIST_SEQUENCE, undefined, { apiKey });
     if (!created.ok) return { ok: false, error: `could not create SendKit campaign: ${created.error}` };
     sendkitCampaignId = created.id;
   }
-  if (sendkitCampaignId !== camp.sendkitCampaignId) {
-    await campaigns().updateOne({ _id }, { $set: { sendkitCampaignId, updatedAt: new Date() } });
-  }
 
-  const up = await upsertLeads(leads);                                   // creates/updates + custom fields
-  const add = await addLeadsToCampaign(sendkitCampaignId, leads.map((l) => l.email));
-  await campaigns().updateOne({ _id }, { $set: { sendkitPushedAt: new Date(), sendkitLeadCount: leads.length, updatedAt: new Date() } });
+  const up = await upsertLeads(leads, { apiKey });                        // creates/updates + custom fields
+  const add = await addLeadsToCampaign(sendkitCampaignId, leads.map((l) => l.email), { apiKey });
+  await campaigns().updateOne({ _id }, { $set: {
+    sendkitCampaignId, sendkitWorkspaceId: workspaceId || null,
+    sendkitPushedAt: new Date(), sendkitLeadCount: leads.length, updatedAt: new Date(),
+  } });
 
-  log.info("pushed campaign to sendkit", { campaignId, sendkitCampaignId, leads: leads.length, added: add.added, skipped: add.skipped });
-  return { ok: true, sendkitCampaignId, leads: leads.length, upserted: up.ok, failed: up.failed, added: add.added, alreadyIn: add.skipped };
+  log.info("pushed campaign to sendkit", { campaignId, workspaceId: workspaceId || "default", sendkitCampaignId, leads: leads.length, added: add.added, skipped: add.skipped });
+  return { ok: true, workspaceId: workspaceId || null, sendkitCampaignId, leads: leads.length, upserted: up.ok, failed: up.failed, added: add.added, alreadyIn: add.skipped };
 }
 
 // Render one of the sequence's emails exactly as SendKit would send it for a given lead — no send.
@@ -477,11 +506,13 @@ export async function previewCampaignEmail(campaignId, { email, step = 1 }) {
   if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
   const camp = await campaigns().findOne({ _id: new ObjectId(campaignId) });
   if (!camp?.sendkitCampaignId) return { ok: false, error: "push to SendKit first" };
-  const lead = await findLeadByEmail(email);
+  // preview must read from the SAME workspace the leads were pushed into
+  const apiKey = await workspaceKey(camp.sendkitWorkspaceId);
+  const lead = await findLeadByEmail(email, { apiKey });
   if (!lead) return { ok: false, error: "lead not found in SendKit" };
-  const boxes = await listMailboxes();
+  const boxes = await listMailboxes({ apiKey });
   if (!boxes.length) return { ok: false, error: "no mailbox in the SendKit workspace to preview as" };
-  return previewEmail(camp.sendkitCampaignId, { sequenceStep: step, leadId: lead.id, mailboxId: boxes[0].id });
+  return previewEmail(camp.sendkitCampaignId, { sequenceStep: step, leadId: lead.id, mailboxId: boxes[0].id, apiKey });
 }
 
 // Retro-fill contacts for companies already finished with nobody reachable, using the engagers we
