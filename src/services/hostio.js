@@ -314,12 +314,21 @@ export async function scrapeDiagnose() {
     recentWindow: recent.length,
     recentFailRate: recent.length ? +(recent.filter((v) => !v).length / recent.length).toFixed(2) : null,
   };
-  const url = SCRAPE_POOL.length ? SCRAPE_POOL[0] : null;
-  const t = Date.now();
-  try {
-    const p = await fetchScrape("sopro.io", url ? agentFor(url) : null);
-    out.liveProbe = { via: url ? "proxy" : "direct", ok: p.ok, total: p.total, limited: !!p.limited, ms: Date.now() - t };
-  } catch (e) { out.liveProbe = { via: url ? "proxy" : "direct", err: e.code || e.message, ms: Date.now() - t }; }
+  // Probe several DIFFERENT exits plus the server's own address. If the proxies are limited but
+  // direct is clean, skipping the direct fallback while limited (which this file does) is actively
+  // throwing away the one working path.
+  const probe = async (label, agent) => {
+    const t = Date.now();
+    try {
+      const p = await fetchScrape("sopro.io", agent);
+      return { via: label, ok: p.ok, total: p.total, limited: !!p.limited, ms: Date.now() - t };
+    } catch (e) { return { via: label, err: e.code || e.message, ms: Date.now() - t }; }
+  };
+  out.probes = [];
+  for (let i = 0; i < Math.min(3, SCRAPE_POOL.length); i++) {
+    out.probes.push(await probe(`proxy[${i}]`, agentFor(SCRAPE_POOL[i])));
+  }
+  out.probes.push(await probe("direct", null));
 
   // The pool is only worth its size if the exits are distinct ADDRESSES. host.io limits per IP, so
   // 75 credentials sharing a handful of egress IPs buys no headroom at all — and would explain a
