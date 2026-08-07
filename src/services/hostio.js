@@ -117,7 +117,6 @@ const SCRAPE_POOL = (() => {
   if (w.username && w.host) pool.push(`http://${encodeURIComponent(w.username)}:${encodeURIComponent(w.password)}@${w.host}:${w.port}`);
   return pool;
 })();
-let poolCursor = 0;
 const benchedUntil = new Map(); // proxyUrl -> timestamp it becomes usable again
 const agentCache = new Map();   // proxyUrl -> HttpsProxyAgent (reused)
 
@@ -127,15 +126,36 @@ function agentFor(url) {
   return a;
 }
 
-// Next live proxy url (round-robin, skipping benched ones), or null if none available right now.
-function nextProxy() {
-  const now = Date.now();
-  for (let i = 0; i < SCRAPE_POOL.length; i++) {
-    const url = SCRAPE_POOL[poolCursor % SCRAPE_POOL.length];
-    poolCursor++;
-    if ((benchedUntil.get(url) || 0) <= now) return url;
+// ── exit leasing ─────────────────────────────────────────────────────────────────────────────────
+// Round-robin let any number of seeds hit the same address at once, which is how a 75-exit pool got
+// itself permanently 429'd — every one of those exits now refuses, none recovered. host.io limits per
+// IP, so the only durable protection is a hard per-IP rate: an exit serves ONE request at a time and
+// then rests. The pool therefore also becomes the concurrency limit, whatever the campaign asks for.
+const MIN_GAP_PER_EXIT_MS = parseInt(process.env.HOSTIO_PROXY_MIN_GAP_MS || "2000", 10);
+const exitBusy = new Set();
+const exitFreeAt = new Map();   // proxyUrl -> earliest timestamp it may be used again
+
+// Wait for an exit that is neither busy, benched, nor still resting. null if none frees up in time.
+async function acquireExit(timeoutMs = 45_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const now = Date.now();
+    let best = null, bestAt = Infinity;
+    for (const url of SCRAPE_POOL) {
+      if (exitBusy.has(url)) continue;
+      if ((benchedUntil.get(url) || 0) > now) continue;
+      const at = Math.max(exitFreeAt.get(url) || 0, now);
+      if (at < bestAt) { bestAt = at; best = url; }
+    }
+    if (best && bestAt <= now) { exitBusy.add(best); return best; }
+    if (Date.now() >= deadline) return null;
+    await sleep(Math.min(300, Math.max(50, bestAt - now)));
   }
-  return null;
+}
+
+function releaseExit(url) {
+  exitBusy.delete(url);
+  exitFreeAt.set(url, Date.now() + MIN_GAP_PER_EXIT_MS);
 }
 
 export function scrapePoolSize() { return SCRAPE_POOL.length; }
@@ -230,39 +250,34 @@ export async function scrapeRedirectPage(seed) {
 }
 
 async function scrapeOnce(seed) {
-  // Two passes with a pause between them. A 2,319-seed run at concurrency 30 gave up on 14% of seeds
-  // after only 4 proxies and no backoff — host.io pushes back in bursts, and most of those recover a
-  // second later on a different exit. A seed we can't read costs a retry later, so it's worth trying
-  // harder here than failing fast.
-  const perPass = Math.min(6, SCRAPE_POOL.length);
+  // A small pool must be spent carefully: three leased exits, each rate-limited to one request at a
+  // time, then give up. A seed we can't read stays a retryable error, which costs far less than
+  // burning the pool trying harder — the previous 6-exits-times-2-passes ladder is exactly how 75
+  // addresses ended up permanently refused.
   let limited = false;
-  for (let pass = 0; pass < 2; pass++) {
-    for (let i = 0; i < perPass; i++) {
-      const url = nextProxy();
-      if (!url) break;
-      try {
-        const page = await fetchScrape(seed, agentFor(url));
-        if (page.ok) { limitHits.delete(url); return page; }   // healthy again — clear its penalty
-        // A rate-limited exit is healthy and usable again in seconds; a genuinely bad one is not.
-        // Benching both for two minutes is what drained the pool.
-        if (page.limited) { limited = true; benchLimited(url); }
-        else benchedUntil.set(url, Date.now() + 120_000);
-      } catch (e) {
-        benchedUntil.set(url, Date.now() + 120_000);
-        log.warn("hostio scrape proxy failed — rotating", { seed, proxy: url.split("@")[1], err: e.message });
-      }
-    }
-    // Only fall back to the server's own IP when we aren't being rate-limited — under a limit it
-    // 429s immediately and just burns the one address every seed shares.
-    if (!limited) {
-      try {
-        const direct = await fetchScrape(seed, null);
-        if (direct.ok) return direct;
-        if (direct.limited) limited = true;   // the shared IP is limited too — stop hammering it
-      } catch { /* fall through */ }
-    }
-    if (pass === 0) await sleep(limited ? 4000 + Math.floor(Math.random() * 4000) : 1500 + Math.floor(Math.random() * 1500));
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const url = await acquireExit();
+    if (!url) break;                       // whole pool busy, resting or benched
+    try {
+      const page = await fetchScrape(seed, agentFor(url));
+      if (page.ok) { limitHits.delete(url); return page; }   // healthy again — clear its penalty
+      // A rate-limited exit is not a broken one, but it does need real rest before we touch it again.
+      if (page.limited) { limited = true; benchLimited(url); }
+      else benchedUntil.set(url, Date.now() + 120_000);
+    } catch (e) {
+      benchedUntil.set(url, Date.now() + 120_000);
+      log.warn("hostio scrape proxy failed — rotating", { seed, proxy: url.split("@")[1], err: e.message });
+    } finally { releaseExit(url); }
+    if (limited) await sleep(2000 + Math.floor(Math.random() * 3000));
   }
+
+  // The server's own address is a single shared IP: usable as a last resort when nothing is being
+  // limited, but never while a limit is in play — that is what turned a proxy problem into a total
+  // outage, every seed piling onto one address that 429s instantly.
+  if (!limited && SCRAPE_POOL.length === 0) {
+    try { const direct = await fetchScrape(seed, null); if (direct.ok) return direct; } catch { /* fall through */ }
+  }
+
   log.warn("hostio scrape failed after retries", { seed, limited });
   return { ok: false, total: null, domains: [], limited };
 }
@@ -309,6 +324,10 @@ export async function scrapeDiagnose() {
     benched,
     usable: SCRAPE_POOL.length - benched,
     rateLimitedExits: limitHits.size,
+    busy: exitBusy.size,
+    resting: SCRAPE_POOL.filter((u) => (exitFreeAt.get(u) || 0) > now).length,
+    minGapPerExitMs: MIN_GAP_PER_EXIT_MS,
+    maxReqPerSec: SCRAPE_POOL.length ? +(SCRAPE_POOL.length / (MIN_GAP_PER_EXIT_MS / 1000)).toFixed(1) : null,
     throttled: now < cooldownUntil,
     cooldownMsLeft: Math.max(0, cooldownUntil - now),
     recentWindow: recent.length,
