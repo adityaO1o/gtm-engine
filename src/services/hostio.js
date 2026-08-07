@@ -303,7 +303,9 @@ export async function apiRedirectPage(seed, page, { onApiCall } = {}) {
       if (r.status >= 300) { log.warn("hostio api page failed", { seed, page, status: r.status }); return { domains: [], ok: false }; }
       const domains = (r.data?.domains || []).map((d) => String(d).toLowerCase());
       if (onApiCall) await onApiCall({ seed, page, count: domains.length });
-      return { domains, ok: true };
+      // `total` is the full redirect count for the seed and comes free with any page — the caller
+      // that only ever fetches page 1 needs it, and re-deriving it would cost a second call.
+      return { domains, ok: true, total: r.data?.total ?? null };
     } catch (e) {
       log.warn("hostio api page threw", { seed, page, attempt, err: e.message });
     }
