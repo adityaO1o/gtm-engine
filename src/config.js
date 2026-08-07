@@ -149,6 +149,9 @@ export const config = {
     // 4,300 Prospeo calls for 291 companies ≈ 50 min of pure rate-limited API time. You don't need
     // 25 contacts at one company to open a conversation — the top few are enough.
     revealPerCompany: parseInt(process.env.CAMPAIGN_REVEAL_PER_COMPANY || "5", 10),
+    // When the free scrape can't read a seed's page, spend one paid host.io call rather than
+    // recording an error. Only fires on seeds the scrape already lost.
+    apiFallback: (process.env.CAMPAIGN_API_FALLBACK || "true") !== "false",
   },
 
   // Domain-prospecting scan tunables. DNS concurrency is high on purpose: lookups now go to public

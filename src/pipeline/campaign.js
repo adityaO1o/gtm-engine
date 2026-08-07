@@ -25,7 +25,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PAGE_TTL_MS = 7 * 86400000; // cached redirect pages are reused for 7 days
 
 // Page 1 = FREE web scrape (gives total count + ~48 domains). Cached so a re-run never re-scrapes.
-async function cachedPage1(seed) {
+async function cachedPage1(seed, campaignId) {
   const _id = `${seed}:1`;
   const hit = await hostioPages().findOne({ _id }).catch(() => null);
   if (hit && Date.now() - new Date(hit.at).getTime() < PAGE_TTL_MS) return { ok: true, total: hit.total, domains: hit.domains || [] };
@@ -34,8 +34,18 @@ async function cachedPage1(seed) {
   // for a week.
   if (page.ok) {
     await hostioPages().updateOne({ _id }, { $set: { seed, page: 1, source: "scrape", total: page.total, domains: page.domains, at: new Date() } }, { upsert: true }).catch(() => {});
+    return page;
   }
-  return page;
+
+  // The free scrape is the fragile half: one run lost 4,730 seeds to it while the paid API answered
+  // 5,270 domains with zero failures. So rather than writing the seed off, spend ONE API call — the
+  // same call the blacklist scan makes, carrying both the total and up to 50 domains. It only ever
+  // fires on a seed the scrape already failed, so a healthy pool costs nothing extra.
+  if (!config.campaign.apiFallback || !campaignId) return page;
+  const res = await cachedApiPage(campaignId, seed, 1);
+  if (!res.ok) return page;                       // API failed too — still a retryable error
+  await campaigns().updateOne({ _id: campaignId }, { $inc: { apiFallbacks: 1 } }).catch(() => {});
+  return { ok: true, total: res.total ?? null, domains: res.domains || [] };
 }
 
 // Page >=2 = PAID API (50/page). Cached; a real call is logged to hostio_usage + increments the
@@ -43,14 +53,20 @@ async function cachedPage1(seed) {
 async function cachedApiPage(campaignId, seed, page) {
   const _id = `${seed}:${page}`;
   const hit = await hostioPages().findOne({ _id }).catch(() => null);
-  if (hit && Date.now() - new Date(hit.at).getTime() < PAGE_TTL_MS) return { ok: true, domains: hit.domains || [] };
+  // `total` matters when this is page 1 (the scrape fallback): without it the caller reads the count
+  // as null and drops the seed below the count gate despite having just paid for the answer.
+  if (hit && Date.now() - new Date(hit.at).getTime() < PAGE_TTL_MS) return { ok: true, domains: hit.domains || [], total: hit.total ?? null };
   const res = await apiRedirectPage(seed, page, {
     onApiCall: async ({ count }) => {
       await campaigns().updateOne({ _id: campaignId }, { $inc: { apiCallsUsed: 1 } }).catch(() => {});
       await hostioUsage().insertOne({ at: new Date(), campaignId, seed, page, count, source: "api" }).catch(() => {});
     },
   });
-  if (res.ok) await hostioPages().updateOne({ _id }, { $set: { seed, page, source: "api", domains: res.domains, at: new Date() } }, { upsert: true }).catch(() => {});
+  if (res.ok) {
+    const set = { seed, page, source: "api", domains: res.domains, at: new Date() };
+    if (res.total != null) set.total = res.total;
+    await hostioPages().updateOne({ _id }, { $set: set }, { upsert: true }).catch(() => {});
+  }
   return res;   // { ok, domains } — ok:false means the fetch failed, not that the list ended
 }
 
@@ -103,7 +119,7 @@ async function blacklistOf(domains) {
 async function discoverSeed(campaignId, t, gates, onQualified) {
   try {
     await setTarget(t._id, { stage: "scraping", activity: "fetching redirects (free)" });
-    const p1 = await cachedPage1(t.seed);
+    const p1 = await cachedPage1(t.seed, campaignId);
     // Couldn't READ the page (all proxies + direct failed). That's not a verdict — record it as an
     // error so a resume retries it, instead of burying the seed in dropped_count, which is final.
     if (!p1.ok) {
