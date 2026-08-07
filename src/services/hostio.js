@@ -242,6 +242,19 @@ async function throttleGate() {
   }
 }
 
+// Is the scrape path worth attempting at all right now? Per-exit pacing survives a burst but not
+// sustained volume: 15 exits held to one request every 2s still put ~1,800 requests each through
+// host.io over an hour, and it limits on volume as well as concurrency — mid-run every exit was
+// rate-limited at once. When that happens each seed still pays three leased attempts and their waits
+// before falling back, which is what dropped a 6,140-seed run to 0.28 seeds/sec. Callers with a paid
+// fallback should skip straight to it, which also lets the pool actually recover.
+export function scrapeUsable() {
+  if (!SCRAPE_POOL.length) return true;              // no pool: direct is the only path, let it try
+  if (Date.now() < cooldownUntil) return false;      // global throttle engaged
+  const now = Date.now();
+  return SCRAPE_POOL.some((u) => (benchedUntil.get(u) || 0) <= now);
+}
+
 export async function scrapeRedirectPage(seed) {
   await throttleGate();
   const page = await scrapeOnce(seed);

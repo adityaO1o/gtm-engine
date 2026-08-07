@@ -12,7 +12,7 @@
 import { ObjectId } from "mongodb";
 import { splitDomain } from "../lib/permute.js";
 import { runPool } from "../lib/pool.js";
-import { scrapeRedirectPage, apiRedirectPage } from "../services/hostio.js";
+import { scrapeRedirectPage, apiRedirectPage, scrapeUsable } from "../services/hostio.js";
 import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
@@ -29,7 +29,10 @@ async function cachedPage1(seed, campaignId) {
   const _id = `${seed}:1`;
   const hit = await hostioPages().findOne({ _id }).catch(() => null);
   if (hit && Date.now() - new Date(hit.at).getTime() < PAGE_TTL_MS) return { ok: true, total: hit.total, domains: hit.domains || [] };
-  const page = await scrapeRedirectPage(seed);
+  // Don't attempt a scrape the pool can't serve — every exit rate-limited means three doomed
+  // attempts and their waits per seed, and more pressure on IPs that need quiet to recover.
+  const canScrape = scrapeUsable() || !config.campaign.apiFallback || !campaignId;
+  const page = canScrape ? await scrapeRedirectPage(seed) : { ok: false, total: null, domains: [] };
   // Only cache a page we actually read. Caching a failed fetch would freeze a false "no redirects"
   // for a week.
   if (page.ok) {
