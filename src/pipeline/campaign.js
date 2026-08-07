@@ -208,7 +208,7 @@ async function companyNameFor(seed, people) {
 }
 
 // The Prospeo half, run in its own small lane so it never blocks discovery.
-async function enrichSeed(t) {
+export async function enrichSeed(t) {
   try {
     await setTarget(t._id, { stage: "enriching", activity: "finding decision-makers (prospeo)" });
     const { people, total, free, error } = await searchPeople(t.seed);
@@ -408,7 +408,22 @@ export async function getCampaign(id) {
     { campaignId: _id, stage: { $nin: [...NOT_ACTIVE] } },
     { projection: { seed: 1, stage: 1, activity: 1, blacklistedCount: 1 }, limit: 12, sort: { updatedAt: -1 } },
   ).toArray();
-  return { ...campaign, id, stages, processed, discovered, active };
+  // A blacklist scan gates nothing — every seed finishes "done" — so the stage-derived funnel the
+  // cards use reports the entire list at every step (one run showed 5,270 seeds, 5,270 past the
+  // count gate, 5,270 with bad infra). For those runs the funnel has to be counted from the values
+  // actually measured against the gates.
+  let funnel;
+  if (campaign.kind === "blacklist_scan") {
+    const gates = campaign.gates || { countGate: config.campaign.countGate, blacklistGate: config.campaign.blacklistGate };
+    const [passedCount, hasBadInfra, contacts] = await Promise.all([
+      campaignTargets().countDocuments({ campaignId: _id, redirectCount: { $gte: gates.countGate } }),
+      campaignTargets().countDocuments({ campaignId: _id, redirectCount: { $gte: gates.countGate }, blacklistedCount: { $gte: gates.blacklistGate } }),
+      campaignTargets().countDocuments({ campaignId: _id, peopleCount: { $gt: 0 } }),
+    ]);
+    funnel = { seeds: campaign.seedCount, passedCount, hasBadInfra, contacts };
+  }
+
+  return { ...campaign, id, stages, processed, discovered, active, ...(funnel ? { funnel } : {}) };
 }
 
 // EVERY seed's full funnel result (not just qualified ones) — so you can see each domain's whole

@@ -915,7 +915,7 @@ apiRouter.post("/domainscan", async (req, res) => {
 apiRouter.get("/domainscan", async (_req, res) => res.json({ items: await listDomainScans() }));
 apiRouter.post("/campaign/:id/stop", async (req, res) => res.json(await stopCampaign(req.params.id)));
 apiRouter.post("/blacklist-scan/estimate", async (req, res) => res.json(await estimateBlacklistScan(req.body?.domains)));
-apiRouter.post("/blacklist-scan", async (req, res) => res.json(await startBlacklistScan(req.body?.domains)));
+apiRouter.post("/blacklist-scan", async (req, res) => res.json(await startBlacklistScan(req.body?.domains, req.body || {})));
 apiRouter.get("/blacklist-scan/:id", async (req, res) => { const r = await getBlacklistScan(req.params.id); r ? res.json(r) : res.status(404).json({ error: "not found" }); });
 apiRouter.get("/blacklist-scan/:id/results", async (req, res) => { const r = await blacklistScanResults(req.params.id); r ? res.json({ items: r }) : res.status(404).json({ error: "not found" }); });
 apiRouter.get("/hostio/scrape-health", async (_req, res) => res.json(await scrapeDiagnose()));

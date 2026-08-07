@@ -13,11 +13,13 @@ import { useDash } from "@/lib/ctx";
 const PAST_COUNT_GATE = ["scraping", "blacklisting", "dropped_blacklist", "enrich_queued", "enriching", "error", "done"];
 const PAST_BLACKLIST_GATE = ["enrich_queued", "enriching", "done"];
 
+// A blacklist scan drops nothing, so its stage counts say nothing about the funnel — the server
+// sends a measured `funnel` for those runs and it wins wherever present.
 const FUNNEL = [
-  { key: "seeds", label: "Seed domains", of: (c) => c.seedCount, hint: "companies you pasted in" },
-  { key: "qualified", label: "Passed count gate", of: (c, s) => sum(s, PAST_COUNT_GATE), hint: (c) => `≥ ${c.gates?.countGate} redirect domains` },
-  { key: "blacklisted", label: "Have blacklisted infra", of: (c, s) => sum(s, PAST_BLACKLIST_GATE), hint: (c) => `≥ ${c.gates?.blacklistGate} blacklisted domains` },
-  { key: "enriched", label: "Contacts pulled", of: (c, s) => sum(s, ["done"]), hint: "Prospeo search-person run" },
+  { key: "seeds", label: "Seed domains", of: (c) => c.funnel?.seeds ?? c.seedCount, hint: "companies you pasted in" },
+  { key: "qualified", label: "Passed count gate", of: (c, s) => c.funnel?.passedCount ?? sum(s, PAST_COUNT_GATE), hint: (c) => `≥ ${c.gates?.countGate} redirect domains` },
+  { key: "blacklisted", label: "Have blacklisted infra", of: (c, s) => c.funnel?.hasBadInfra ?? sum(s, PAST_BLACKLIST_GATE), hint: (c) => `≥ ${c.gates?.blacklistGate} blacklisted domains` },
+  { key: "enriched", label: "Contacts pulled", of: (c, s) => c.funnel?.contacts ?? sum(s, ["done"]), hint: "Prospeo search-person run" },
 ];
 function sum(stages, keys) { return keys.reduce((a, k) => a + (stages?.[k] || 0), 0); }
 

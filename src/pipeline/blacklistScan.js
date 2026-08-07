@@ -13,6 +13,7 @@ import { splitDomain } from "../lib/permute.js";
 import { runPool } from "../lib/pool.js";
 import { apiRedirectPage } from "../services/hostio.js";
 import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
+import { enrichSeed } from "./campaign.js";
 import { campaigns, campaignTargets, hostioPages, hostioUsage } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
@@ -74,7 +75,7 @@ async function blacklistOf(domains) {
   return out;
 }
 
-async function scanSeed(scanId, t) {
+async function scanSeed(scanId, t, gates, enrich) {
   try {
     await campaignTargets().updateOne({ _id: t._id }, { $set: { stage: "blacklisting", updatedAt: new Date() } });
     const p1 = await pageOne(scanId, t.seed);
@@ -90,17 +91,27 @@ async function scanSeed(scanId, t) {
     }
     const checked = p1.domains || [];
     const bl = await blacklistOf(checked);
+    const count = p1.total ?? 0;
+    // The scan drops nothing — every seed is reported. `qualified` records whether it CLEARS the
+    // gates, so the funnel can be counted from measured values instead of from which bucket a seed
+    // was thrown into. Reading the funnel off stages is what made this run show 5,270 everywhere.
+    const qualified = count >= gates.countGate && bl.length >= gates.blacklistGate;
     await campaignTargets().updateOne({ _id: t._id }, {
       $set: {
-        stage: "done",
-        redirectCount: p1.total ?? null,
+        stage: enrich && qualified ? "enrich_queued" : "done",
+        redirectCount: count,
         checkedCount: checked.length,
         blacklistedCount: bl.length,
         blacklistedDomains: bl,
+        passedCountGate: count >= gates.countGate,
+        qualified,
         fromCache: !!p1.cached,
         updatedAt: new Date(),
       },
     });
+    // Prospeo runs only on seeds that clear both gates — the same discipline as the campaign, so a
+    // scan can hand off straight to outreach instead of needing a second run.
+    if (enrich && qualified) await enrichSeed({ ...t, seed: t.seed, redirectCount: count, blacklistedDomains: bl });
   } catch (e) {
     await campaignTargets().updateOne({ _id: t._id },
       { $set: { stage: "error", error: e.message, updatedAt: new Date() } }).catch(() => {});
@@ -121,13 +132,19 @@ export async function estimateBlacklistScan(rawDomains) {
   return { ok: true, domains: seeds.length, cached, apiCallsNeeded: seeds.length - cached };
 }
 
-export async function startBlacklistScan(rawDomains) {
+export async function startBlacklistScan(rawDomains, opts = {}) {
   const seeds = parseDomains(rawDomains);
   if (!seeds.length) return { ok: false, error: "no usable domains" };
 
+  const gates = {
+    countGate: Number.isFinite(+opts.countGate) ? +opts.countGate : config.campaign.countGate,
+    blacklistGate: Number.isFinite(+opts.blacklistGate) ? +opts.blacklistGate : config.campaign.blacklistGate,
+  };
+  const enrich = !!opts.enrich;
+
   const { insertedId } = await campaigns().insertOne({
     kind: "blacklist_scan", seedCount: seeds.length, status: "running", stage: "queued",
-    apiCallsUsed: 0, createdAt: new Date(), updatedAt: new Date(),
+    gates, enrich, apiCallsUsed: 0, createdAt: new Date(), updatedAt: new Date(),
   });
   await campaignTargets().insertMany(seeds.map((seed) => ({
     campaignId: insertedId, seed, stage: "queued", createdAt: new Date(),
@@ -137,7 +154,7 @@ export async function startBlacklistScan(rawDomains) {
     await campaigns().updateOne({ _id: insertedId }, { $set: { stage: "running", startedAt: new Date() } });
     await refreshVerdicts().catch(() => {});
     const targets = await campaignTargets().find({ campaignId: insertedId }).toArray();
-    await runPool(targets, (t) => scanSeed(insertedId, t), { concurrency: config.campaign.seedConcurrency });
+    await runPool(targets, (t) => scanSeed(insertedId, t, gates, enrich), { concurrency: config.campaign.seedConcurrency });
     await campaigns().updateOne({ _id: insertedId },
       { $set: { status: "done", stage: "done", finishedAt: new Date(), updatedAt: new Date() } });
     log.info("blacklist scan finished", { id: String(insertedId), seeds: seeds.length });
@@ -146,7 +163,7 @@ export async function startBlacklistScan(rawDomains) {
     campaigns().updateOne({ _id: insertedId }, { $set: { status: "error", error: e.message } }).catch(() => {});
   });
 
-  return { ok: true, id: String(insertedId), seedCount: seeds.length };
+  return { ok: true, id: String(insertedId), seedCount: seeds.length, gates, enrich };
 }
 
 export async function getBlacklistScan(id) {
@@ -159,9 +176,21 @@ export async function getBlacklistScan(id) {
   ]).toArray();
   const stages = Object.fromEntries(agg.map((r) => [r._id, r.n]));
   const cached = await campaignTargets().countDocuments({ campaignId: _id, fromCache: true });
+
+  // A scan gates nothing, so every seed ends up "done" and a stage-derived funnel reports the whole
+  // list at every step. Count the funnel from what was actually measured instead.
+  const gates = scan.gates || { countGate: config.campaign.countGate, blacklistGate: config.campaign.blacklistGate };
+  const [passedCount, hasBadInfra, withContacts] = await Promise.all([
+    campaignTargets().countDocuments({ campaignId: _id, redirectCount: { $gte: gates.countGate } }),
+    campaignTargets().countDocuments({ campaignId: _id, redirectCount: { $gte: gates.countGate }, blacklistedCount: { $gte: gates.blacklistGate } }),
+    campaignTargets().countDocuments({ campaignId: _id, peopleCount: { $gt: 0 } }),
+  ]);
+
   return {
-    id: String(_id), status: scan.status, stage: scan.stage, seedCount: scan.seedCount,
+    id: String(_id), kind: "blacklist_scan", status: scan.status, stage: scan.stage,
+    seedCount: scan.seedCount, gates, enrich: !!scan.enrich,
     apiCallsUsed: scan.apiCallsUsed || 0, servedFromCache: cached, stages,
+    funnel: { seeds: scan.seedCount, passedCount, hasBadInfra, contacts: withContacts },
     startedAt: scan.startedAt, finishedAt: scan.finishedAt,
   };
 }
