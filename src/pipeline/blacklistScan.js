@@ -79,8 +79,13 @@ async function scanSeed(scanId, t) {
     await campaignTargets().updateOne({ _id: t._id }, { $set: { stage: "blacklisting", updatedAt: new Date() } });
     const p1 = await pageOne(scanId, t.seed);
     if (!p1.ok) {
-      await campaignTargets().updateOne({ _id: t._id },
-        { $set: { stage: "error", error: "host.io api call failed", updatedAt: new Date() } });
+      await campaignTargets().updateOne({ _id: t._id }, {
+        $set: {
+          stage: "error",
+          error: `host.io api ${p1.status ?? "?"}${p1.body ? `: ${p1.body}` : ""}`,
+          updatedAt: new Date(),
+        },
+      });
       return;
     }
     const checked = p1.domains || [];

@@ -300,7 +300,14 @@ export async function apiRedirectPage(seed, page, { onApiCall } = {}) {
         timeout: 15000, validateStatus: () => true,
       });
       if (r.status === 429) { await sleep(1500 * 2 ** attempt); continue; }
-      if (r.status >= 300) { log.warn("hostio api page failed", { seed, page, status: r.status }); return { domains: [], ok: false }; }
+      // 404 is host.io saying it holds no redirect record for this domain — a real answer (zero),
+      // not a failure. Treating it as an error buried ~20% of a 5,270-domain list in "error".
+      if (r.status === 404) return { domains: [], ok: true, total: 0, status: 404 };
+      if (r.status >= 300) {
+        const body = typeof r.data === "string" ? r.data.slice(0, 120) : JSON.stringify(r.data || {}).slice(0, 120);
+        log.warn("hostio api page failed", { seed, page, status: r.status, body });
+        return { domains: [], ok: false, status: r.status, body };
+      }
       const domains = (r.data?.domains || []).map((d) => String(d).toLowerCase());
       if (onApiCall) await onApiCall({ seed, page, count: domains.length });
       // `total` is the full redirect count for the seed and comes free with any page — the caller
