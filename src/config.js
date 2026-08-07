@@ -121,8 +121,12 @@ export const config = {
 
   // Webshare rotating proxy — an additional scrape-pool exit (fresh IP per request). Optional.
   webshare: {
-    username: process.env.WEBSHARE_PROXY_USERNAME || "",
-    password: process.env.WEBSHARE_PROXY_PASSWORD || "",
+    // WEBSHARE_GATEWAY ("p.webshare.io:80") is a ROTATING endpoint: a different exit IP per request.
+    // That distinction matters — host.io limits per address, so a rotating gateway is not subject to
+    // the per-exit pacing a fixed list needs, and must not be leased like one.
+    gateway: process.env.WEBSHARE_GATEWAY || "",
+    username: process.env.WEBSHARE_USERNAME || process.env.WEBSHARE_PROXY_USERNAME || "",
+    password: process.env.WEBSHARE_PASSWORD || process.env.WEBSHARE_PROXY_PASSWORD || "",
     host: process.env.WEBSHARE_PROXY_HOST || "",
     port: process.env.WEBSHARE_PROXY_PORT || "80",
   },

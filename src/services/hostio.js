@@ -111,11 +111,19 @@ export async function redirectCount(seed) {
 // pool fails the scrape falls back to a DIRECT request, so a dead pool never blocks discovery.
 
 // One-time build of the pool: the residential proxy URLs + (optionally) the Webshare endpoint.
-const SCRAPE_POOL = (() => {
-  const pool = [...config.hostio.scrapeProxies];
+const SCRAPE_POOL = [...config.hostio.scrapeProxies];
+
+// A ROTATING gateway hands out a different exit IP per request. host.io limits per address, so this
+// is the one thing that survives sustained volume: a fixed 15-exit pool pushed ~1,800 requests
+// through each address in an hour and every one of them ended up rate-limited. Measured on this
+// gateway: 40 requests at concurrency 20 all readable, zero 429s, 6.7 req/s.
+// It must NOT go in SCRAPE_POOL — the per-exit lease would pace it to one request every 2s, which
+// is the exact protection it doesn't need and the throughput we're here for.
+const ROTATING = (() => {
   const w = config.webshare;
-  if (w.username && w.host) pool.push(`http://${encodeURIComponent(w.username)}:${encodeURIComponent(w.password)}@${w.host}:${w.port}`);
-  return pool;
+  const hostPort = w.gateway || (w.host ? `${w.host}:${w.port}` : "");
+  if (!hostPort || !w.username) return null;
+  return `http://${encodeURIComponent(w.username)}:${encodeURIComponent(w.password)}@${hostPort}`;
 })();
 const benchedUntil = new Map(); // proxyUrl -> timestamp it becomes usable again
 const agentCache = new Map();   // proxyUrl -> HttpsProxyAgent (reused)
@@ -249,6 +257,7 @@ async function throttleGate() {
 // before falling back, which is what dropped a 6,140-seed run to 0.28 seeds/sec. Callers with a paid
 // fallback should skip straight to it, which also lets the pool actually recover.
 export function scrapeUsable() {
+  if (ROTATING) return Date.now() >= cooldownUntil;  // fresh IP per request — only the global throttle applies
   if (!SCRAPE_POOL.length) return true;              // no pool: direct is the only path, let it try
   if (Date.now() < cooldownUntil) return false;      // global throttle engaged
   const now = Date.now();
@@ -268,6 +277,21 @@ async function scrapeOnce(seed) {
   // burning the pool trying harder — the previous 6-exits-times-2-passes ladder is exactly how 75
   // addresses ended up permanently refused.
   let limited = false;
+
+  // Each attempt through the rotating gateway is a different address, so a retry is genuinely a
+  // fresh try rather than the same IP being asked twice.
+  if (ROTATING) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const page = await fetchScrape(seed, agentFor(ROTATING));
+        if (page.ok) return page;
+        if (page.limited) limited = true;
+      } catch { /* rotate and retry */ }
+      await sleep(400 + Math.floor(Math.random() * 600));
+    }
+    return { ok: false, total: null, domains: [], limited };
+  }
+
   for (let attempt = 0; attempt < 3; attempt++) {
     const url = await acquireExit();
     if (!url) break;                       // whole pool busy, resting or benched
@@ -342,6 +366,7 @@ export async function scrapeDiagnose() {
   const now = Date.now();
   const benched = [...benchedUntil.values()].filter((t) => t > now).length;
   const out = {
+    rotatingGateway: ROTATING ? ROTATING.split("@")[1] : null,
     poolSize: SCRAPE_POOL.length,
     benched,
     usable: SCRAPE_POOL.length - benched,
@@ -366,6 +391,7 @@ export async function scrapeDiagnose() {
     } catch (e) { return { via: label, err: e.code || e.message, ms: Date.now() - t }; }
   };
   out.probes = [];
+  if (ROTATING) for (let i = 0; i < 3; i++) out.probes.push(await probe(`rotating[${i}]`, agentFor(ROTATING)));
   for (let i = 0; i < Math.min(3, SCRAPE_POOL.length); i++) {
     out.probes.push(await probe(`proxy[${i}]`, agentFor(SCRAPE_POOL[i])));
   }
