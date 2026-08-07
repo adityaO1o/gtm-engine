@@ -357,6 +357,15 @@ export async function resumeCampaign(id) {
     return { ok: true, resumed: 0, alreadySettled: camp.seedCount, note: "nothing left to process" };
   }
 
+  // Put the seeds this run will redo back to "queued". They are mostly sitting in "error", which
+  // counts as SETTLED — so the progress bar opened at 6,140 of 6,140 and the ETA, which only updates
+  // when the settled count RISES, never had anything to measure. Re-queueing makes progress mean the
+  // work this run is actually doing.
+  await campaignTargets().updateMany(
+    { campaignId: _id, stage: { $nin: FINAL } },
+    { $set: { stage: "queued", activity: null, updatedAt: new Date() } },
+  ).catch(() => {});
+
   await campaigns().updateOne({ _id }, { $set: { status: "running", stage: "running", finishedAt: null, updatedAt: new Date() } });
   const gates = camp.gates || { countGate: config.campaign.countGate, blacklistGate: config.campaign.blacklistGate };
 

@@ -172,15 +172,20 @@ export default function Campaign() {
       if (c.status === "running" && c.seedCount) {
         const now = Date.now(), prev = rateRef.current;
         const done = c.discovered ?? c.processed;   // discovery is the throughput signal
-        if (prev.at && done > prev.processed) {
+        if (!prev.at) rateRef.current = { at: now, processed: done };
+        else if (done > prev.processed) {
           const rate = (done - prev.processed) / ((now - prev.at) / 1000); // seeds/sec
-          const remaining = c.seedCount - done;
+          const remaining = Math.max(0, c.seedCount - done);
           if (rate > 0) {
             const secs = Math.round(remaining / rate);
             setEtaText(secs > 90 ? `~${Math.ceil(secs / 60)} min left` : `~${secs}s left`);
           }
-        }
-        if (!prev.at || now - prev.at > 4000) rateRef.current = { at: now, processed: done };
+          // Hold the anchor for 20s rather than 4s: a slow run can settle nothing between two 1.5s
+          // polls, and a baseline that keeps resetting never accumulates enough movement to divide.
+          if (now - prev.at > 20000) rateRef.current = { at: now, processed: done };
+        // functional form: `etaText` isn't a dep of this callback, so reading it would give the
+        // first render's value and overwrite a good estimate on every stalled poll.
+        } else setEtaText((cur) => cur || "measuring…");
       } else setEtaText("");
       if (c.status === "running") timer.current = setTimeout(() => p(id), 1500);
       else loadHistory();
