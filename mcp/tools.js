@@ -110,4 +110,63 @@ export function registerTools(server, api) {
   tool("gtm_retry_no_email", "Re-run the email-recovery waterfall for no-email leads. Optionally scope to campaign topic keys and/or a bucket. deep=true retries EVERY stuck lead (spends more credits).",
     { campaigns: z.array(z.string()).optional(), deep: z.boolean().optional(), bucket: z.enum(["1.0", "2.0"]).optional() },
     ({ campaigns, deep, bucket }) => api("POST", "/api/reprocess", { body: { campaigns: campaigns || [], deep: !!deep, bucket } }));
+
+  // ── OUTREACH FUNNEL: blacklist scan ──
+  // Distinct from the Cold Email 1.0/2.0 tools above, which are the LinkedIn-engagement pipeline.
+  // These drive the prospecting funnel: seed company domains -> their secondary sending domains ->
+  // which of those are blacklisted -> (optionally) decision-maker contacts -> SendKit.
+
+  tool("gtm_estimate_blacklist_scan", "COST PREVIEW for gtm_start_blacklist_scan — how many of these domains still need a paid host.io call vs are already cached. Spends nothing. Run this before starting a large scan.",
+    { domains: z.array(z.string()).describe("Company domains (or URLs/emails — they get normalised and de-duplicated)") },
+    ({ domains }) => api("POST", "/api/blacklist-scan/estimate", { body: { domains } }));
+
+  tool("gtm_start_blacklist_scan", "Start a blacklist-only scan over company domains. Exactly ONE host.io API call per domain (page 1 carries the redirect total AND up to 50 secondary domains), then each of those is checked against the blacklist. No web scrape. Nothing is dropped — every domain is reported, including those with zero redirects. Set enrich=true to also run Prospeo for decision-maker contacts, which happens ONLY on domains clearing both gates. Returns a scan id; poll gtm_blacklist_scan_status.",
+    {
+      domains: z.array(z.string()),
+      countGate: z.number().optional().describe("min redirect domains to count as qualified (default 10)"),
+      blacklistGate: z.number().optional().describe("min blacklisted domains to count as qualified (default 5)"),
+      enrich: z.boolean().optional().describe("run Prospeo on qualified domains — spends credits (default false)"),
+    },
+    ({ domains, countGate, blacklistGate, enrich }) =>
+      api("POST", "/api/blacklist-scan", { body: { domains, countGate, blacklistGate, enrich: !!enrich } }));
+
+  tool("gtm_blacklist_scan_status", "Progress and funnel for a blacklist scan: seeds, how many passed the count gate, how many have blacklisted infra, contacts pulled, host.io calls spent and how many seeds were served from cache.",
+    { id: z.string() }, ({ id }) => api("GET", `/api/blacklist-scan/${encodeURIComponent(id)}`));
+
+  tool("gtm_blacklist_scan_results", "Per-domain results of a scan: redirect count, how many secondary domains were checked, how many are blacklisted, and which ones.",
+    { id: z.string() }, ({ id }) => api("GET", `/api/blacklist-scan/${encodeURIComponent(id)}/results`));
+
+  // ── OUTREACH FUNNEL: campaigns ──
+  tool("gtm_start_outreach_campaign", "Start a full outreach campaign over seed company domains: host.io redirects -> count gate -> blacklist check -> blacklist gate -> Prospeo decision-makers. Spends host.io and Prospeo credits. For blacklist data only, prefer gtm_start_blacklist_scan.",
+    { seeds: z.string().describe("domains separated by newlines/commas/spaces"), countGate: z.number().optional(), blacklistGate: z.number().optional() },
+    ({ seeds, countGate, blacklistGate }) => api("POST", "/api/campaign", { body: { seeds, countGate, blacklistGate } }));
+
+  tool("gtm_outreach_campaign_status", "Live funnel of one outreach campaign or scan: per-stage counts, progress, and what it is working on right now.",
+    { id: z.string() }, ({ id }) => api("GET", `/api/campaign/${encodeURIComponent(id)}`));
+
+  tool("gtm_list_outreach_campaigns", "Recent outreach campaigns and blacklist scans, newest first, with seed counts and status.",
+    {}, () => api("GET", "/api/campaign"));
+
+  tool("gtm_outreach_campaign_csv", "The exact rows a push to SendKit would send for this campaign — same payload and same variables, as CSV. Blacklisted domains are defanged (acme(.)com) so mail clients don't turn them into links.",
+    { id: z.string() }, ({ id }) => api("GET", `/api/campaign/${encodeURIComponent(id)}/csv`));
+
+  tool("gtm_stop_outreach_campaign", "Stop a running campaign. Seeds without a verdict stay retryable, so gtm_resume_outreach_campaign continues from there.",
+    { id: z.string() }, ({ id }) => api("POST", `/api/campaign/${encodeURIComponent(id)}/stop`, { body: {} }));
+
+  tool("gtm_resume_outreach_campaign", "Reprocess only the seeds of a campaign that have no final verdict (errored or interrupted). Already-settled seeds keep their result and cost nothing.",
+    { id: z.string() }, ({ id }) => api("POST", `/api/campaign/${encodeURIComponent(id)}/resume`, { body: {} }));
+
+  tool("gtm_push_campaign_to_sendkit", "Push a campaign's contacts into the target workspace's Blacklist Campaign as a DRAFT, each lead carrying its own variables. Nothing is sent — the campaign is started in SendKit by a human. Check gtm_campaign_push_target first to see exactly where it would land.",
+    { id: z.string(), workspaceId: z.string().optional().describe("workspace slug — omit for the default") },
+    ({ id, workspaceId }) => api("POST", `/api/campaign/${encodeURIComponent(id)}/push-sendkit`, { body: { workspaceId } }));
+
+  tool("gtm_campaign_push_target", "PREFLIGHT for gtm_push_campaign_to_sendkit: which workspace and which SendKit campaign the leads would land in, whether that campaign already exists, and how many contacts would go. Sends nothing.",
+    { id: z.string(), workspaceId: z.string().optional() },
+    ({ id, workspaceId }) => api("GET", `/api/campaign/${encodeURIComponent(id)}/push-target`, { query: { workspaceId } }));
+
+  tool("gtm_hostio_scrape_health", "Health of the host.io free-scrape path: proxy pool size, how many exits are rested or rate-limited, whether the global throttle is engaged, and live probes through several exits plus direct. Use this when seeds are failing with unreadable pages.",
+    {}, () => api("GET", "/api/hostio/scrape-health"));
+
+  tool("gtm_hostio_usage", "How many PAID host.io API calls have been spent, in total and over the last 24h, with the most recent calls.",
+    {}, () => api("GET", "/api/hostio/usage"));
 }
