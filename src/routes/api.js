@@ -936,7 +936,7 @@ apiRouter.get("/domainscan/:id", async (req, res) => {
 // ── Campaign funnel — seed domains -> count gate -> discovery+blacklist -> Prospeo people ──────
 apiRouter.post("/campaign", async (req, res) => {
   try {
-    const r = await startCampaign(req.body?.seeds || "", { countGate: req.body?.countGate, blacklistGate: req.body?.blacklistGate });
+    const r = await startCampaign(req.body?.seeds || "", { countGate: req.body?.countGate, blacklistGate: req.body?.blacklistGate, enrich: req.body?.enrich });
     res.json({ started: true, ...r });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

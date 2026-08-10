@@ -171,7 +171,16 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
       return;
     }
 
-    // Qualified — hand off to the enrichment lane and free this slot immediately. Prospeo is globally
+    // Qualified. If contact enrichment is off, STOP here: the domain has blacklisted infra worth
+    // pitching, but we spend no Prospeo credit finding people (the caller already has the emails, or
+    // just wants the blacklist verdict). A distinct "qualified" stage keeps it out of the "Contacts
+    // pulled" total, which counts only the "done" (actually-enriched) stage.
+    if (gates.enrich === false) {
+      await setTarget(t._id, { ...common, stage: "qualified", activity: "blacklisted infra — contacts not requested" });
+      return;
+    }
+
+    // Hand off to the enrichment lane and free this slot immediately. Prospeo is globally
     // rate-limited, so doing it inline would pin a discovery slot for the whole enrich (at 4.6k seeds
     // that pinned 19/20 slots and pushed the run's ETA to ~38h).
     await setTarget(t._id, { ...common, stage: "enrich_queued", activity: "waiting for contact lookup" });
@@ -386,6 +395,10 @@ export async function startCampaign(rawSeeds, opts = {}) {
   const gates = {
     countGate: parseInt(opts.countGate, 10) || config.campaign.countGate,
     blacklistGate: parseInt(opts.blacklistGate, 10) || config.campaign.blacklistGate,
+    // Whether to run the PAID Prospeo contact lookup on domains that clear both gates. Default true
+    // (unchanged behaviour). Set false to only find WHICH seed domains have blacklisted infra — no
+    // contacts, no Prospeo credits — for when you already have emails for these companies.
+    enrich: opts.enrich !== false,
   };
 
   const { insertedId } = await campaigns().insertOne({

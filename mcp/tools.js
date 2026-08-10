@@ -138,8 +138,9 @@ export function registerTools(server, api) {
 
   // ── OUTREACH FUNNEL: campaigns ──
   tool("gtm_start_outreach_campaign", "Start a full outreach campaign over seed company domains: host.io redirects -> count gate -> blacklist check -> blacklist gate -> Prospeo decision-makers. Spends host.io and Prospeo credits. For blacklist data only, prefer gtm_start_blacklist_scan.",
-    { seeds: z.string().describe("domains separated by newlines/commas/spaces"), countGate: z.number().optional(), blacklistGate: z.number().optional() },
-    ({ seeds, countGate, blacklistGate }) => api("POST", "/api/campaign", { body: { seeds, countGate, blacklistGate } }));
+    { seeds: z.string().describe("domains separated by newlines/commas/spaces"), countGate: z.number().optional(), blacklistGate: z.number().optional(),
+      enrich: z.boolean().optional().describe("run Prospeo for decision-maker contacts on qualified domains — spends credits (default true). Set false for the blacklist verdict only.") },
+    ({ seeds, countGate, blacklistGate, enrich }) => api("POST", "/api/campaign", { body: { seeds, countGate, blacklistGate, enrich } }));
 
   tool("gtm_outreach_campaign_status", "Live funnel of one outreach campaign or scan: per-stage counts, progress, and what it is working on right now.",
     { id: z.string() }, ({ id }) => api("GET", `/api/campaign/${encodeURIComponent(id)}`));

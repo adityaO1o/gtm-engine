@@ -28,9 +28,9 @@ const TABS = [
   { id: "campaigns", label: "Campaigns", icon: "mega" },
   { id: "sources", label: "Sources", icon: "radio" },
   { id: "domainscan", label: "Domain Prospecting", icon: "search" },
-  { id: "campaign", label: "Campaign", icon: "spark" },
+  { id: "campaign", label: "Blacklist Campaign", icon: "spark" },
 ];
-const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", review: "Review · Decide these emails", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources", domainscan: "Domain Prospecting", campaign: "Campaign · Outreach funnel" };
+const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", review: "Review · Decide these emails", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources", domainscan: "Domain Prospecting", campaign: "Blacklist Campaign · seed domains → blacklisted infra → contacts" };
 const BODIES = { overview: Overview, leads: Leads, handoff: Handoff, review: Review, competitors: Competitors, campaigns: Campaigns, sources: Sources, domainscan: DomainScan, campaign: Campaign };
 
 export default function Dashboard() {

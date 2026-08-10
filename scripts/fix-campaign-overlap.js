@@ -29,7 +29,7 @@
 import { MongoClient } from "mongodb";
 import { config } from "../src/config.js";
 import { CAMPAIGNS } from "../src/services/campaigns.js";
-import { campaignMembers, campaignLeadDetail, removeFromCampaign } from "../src/services/sendkit.js";
+import { campaignMembers, campaignLeadDetail, removeFromCampaign, inboxConversations } from "../src/services/sendkit.js";
 
 const APPLY = process.argv.includes("--apply");
 const WITH_ACTIVITY = !process.argv.includes("--no-activity") || process.argv.includes("--only-unmailed");
@@ -49,6 +49,18 @@ const SKIP = new Set(
 // Needs activity data, so it forces the timeline fetch on; a membership whose activity can't be
 // read is treated as "unknown" and never removed.
 const ONLY_UNMAILED = process.argv.includes("--only-unmailed");
+// --keep-conversations (default ON, disable with --no-keep-conversations): never touch anyone whose
+// reply says a deal is alive. Campaigns run stopOnReply:true, so a reply stops only the campaign it
+// was sent to — someone mid-conversation in 1.0 keeps getting cold pitches from 2.0. Removing the
+// wrong side there would cut the live thread instead of the cold one, so they are left entirely
+// alone for a human to place.
+const KEEP_CONVERSATIONS = !process.argv.includes("--no-keep-conversations");
+const POSITIVE_TAGS = new Set(["Interested", "Meeting Booked", "More Info Needed"]);
+// Lock pinning needs Mongo. When it isn't reachable (running outside the compose network) the
+// removals are still correct and the DAILY RECONCILE re-derives every lock from SendKit's real
+// membership within 24h — and until then enrollOnce() sees a lock on an active campaign and pushes
+// nobody, so a stale lock cannot re-create the duplicate. Explicit flag, never a silent fallback.
+const NO_LOCK_PIN = process.argv.includes("--no-lock-pin");
 const ACTIVE = CAMPAIGNS.filter((c) => c.manualTarget);
 const DEAD = new Set(["skipped", "removed", "bounced"]);
 
@@ -87,6 +99,32 @@ async function main() {
   const dupes = [...seen.entries()].filter(([, v]) => v.length > 1);
   console.log(`\n[overlap] emails in more than one active campaign: ${dupes.length}`);
   if (!dupes.length) { console.log("[overlap] nothing to do."); return; }
+
+  // Who is mid-conversation? Pull each campaign's replies and their AI classification.
+  const liveThread = new Map();   // email -> [{ label, aiTag }]
+  if (KEEP_CONVERSATIONS) {
+    for (const c of ACTIVE) {
+      const convos = await inboxConversations(c.sendkitId);
+      console.log(`[overlap] ${c.label.padEnd(24)} replies=${convos.length}`);
+      for (const v of convos) {
+        if (!liveThread.has(v.email)) liveThread.set(v.email, []);
+        liveThread.get(v.email).push({ label: c.label, aiTag: v.aiTag });
+      }
+    }
+    const protectedNow = [];
+    for (const [email] of dupes) {
+      const t = liveThread.get(email);
+      if (!t || SKIP.has(email)) continue;
+      // A positive tag anywhere, or a reply in MORE THAN ONE campaign (both threads are live), means
+      // hands off — the right home is a judgement call about a real conversation, not a rule.
+      if (t.some((x) => POSITIVE_TAGS.has(x.aiTag)) || t.length > 1) {
+        SKIP.add(email);
+        protectedNow.push({ email, threads: t.map((x) => `${x.label}:${x.aiTag || "untagged"}`) });
+      }
+    }
+    console.log(`[overlap] protected as LIVE CONVERSATIONS (left in both): ${protectedNow.length}`);
+    for (const p of protectedNow) console.log(`   ${p.email}  (${p.threads.join(", ")})`);
+  }
 
   // Pull each duplicated membership's timeline (both sides), so rule 3 has something to judge on.
   if (WITH_ACTIVITY) {
@@ -241,9 +279,15 @@ async function main() {
 // Drop the surplus memberships, then pin the lock (and our own membership record) to the campaign
 // we kept — so neither a push site nor the next daily reconcile can put them back.
 async function applyRemovals(removals, keepOf) {
-  const client = new MongoClient(config.mongoUri, { serverSelectionTimeoutMS: 8000 });
-  await client.connect();
-  const db = client.db(config.mongoDb);
+  let client = null, db = null;
+  if (!NO_LOCK_PIN) {
+    client = new MongoClient(config.mongoUri, { serverSelectionTimeoutMS: 8000 });
+    await client.connect();          // fail BEFORE removing anything if Mongo is down
+    db = client.db(config.mongoDb);
+  } else {
+    console.log("[overlap] --no-lock-pin: skipping the Mongo lock update. The daily reconcile re-derives");
+    console.log("[overlap]   every lock from SendKit membership, and until then enrollOnce() pushes nobody.");
+  }
 
   let removed = 0, failed = 0;
   for (const [cid, g] of removals) {
@@ -251,6 +295,9 @@ async function applyRemovals(removals, keepOf) {
     removed += r.removed; failed += r.failed;
     console.log(`[overlap] removed ${r.removed}/${g.leadIds.length} from ${g.label}${r.failed ? ` (failed ${r.failed})` : ""}`);
   }
+
+  if (!db) { console.log(`
+[overlap] done. removed=${removed} failed=${failed} (locks not pinned)`); return; }
 
   const lockOps = [], leadOps = [];
   for (const [email, cid] of keepOf) {

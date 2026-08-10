@@ -10,8 +10,8 @@ import { useDash } from "@/lib/ctx";
 // Stage groups. A seed that cleared the blacklist gate sits in enrich_queued until the (slower)
 // enrichment lane picks it up — it must count in both cards below, or the totals visibly jump around
 // as seeds shuttle between enrich_queued and enriching.
-const PAST_COUNT_GATE = ["scraping", "blacklisting", "dropped_blacklist", "enrich_queued", "enriching", "error", "done"];
-const PAST_BLACKLIST_GATE = ["enrich_queued", "enriching", "done"];
+const PAST_COUNT_GATE = ["scraping", "blacklisting", "dropped_blacklist", "enrich_queued", "enriching", "error", "done", "qualified"];
+const PAST_BLACKLIST_GATE = ["enrich_queued", "enriching", "done", "qualified"];
 
 // A blacklist scan drops nothing, so its stage counts say nothing about the funnel — the server
 // sends a measured `funnel` for those runs and it wins wherever present.
@@ -32,6 +32,7 @@ const STAGE_META = {
   dropped_blacklist: { label: "not enough blacklisted", cls: "p-role-based" },
   enrich_queued: { label: "queued for contacts", cls: "p-review" },
   enriching: { label: "finding contacts…", cls: "p-review" },
+  qualified: { label: "qualified · no contacts pulled", cls: "p-verified" },
   done: { label: "done", cls: "p-verified" },
   error: { label: "error", cls: "p-competitor" },
   interrupted: { label: "interrupted (redeploy)", cls: "p-role-based" },
@@ -68,6 +69,7 @@ export default function Campaign() {
   const [results, setResults] = useState([]);
   const [history, setHistory] = useState([]);
   const [starting, setStarting] = useState(false);
+  const [enrich, setEnrich] = useState(true); // pull contacts via Prospeo (paid); off = blacklist verdict only
   const [openRow, setOpenRow] = useState(null);
   const [revealing, setRevealing] = useState(null);
   const [pushing, setPushing] = useState(false);
@@ -199,7 +201,7 @@ export default function Campaign() {
     if (!seeds.trim() || starting) return;
     setStarting(true);
     try {
-      const r = await post("/api/campaign", { seeds, countGate: +countGate, blacklistGate: +blacklistGate });
+      const r = await post("/api/campaign", { seeds, countGate: +countGate, blacklistGate: +blacklistGate, enrich });
       if (r.error) { toast(r.error, "bad"); setStarting(false); return; }
       toast(`Campaign started — ${num(r.seedCount)} seeds`, "info");
       setSeeds("");
@@ -238,8 +240,13 @@ export default function Campaign() {
               blacklisted ≥
               <input type="number" className="search" style={{ width: 56 }} value={blacklistGate} onChange={(e) => setBlacklistGate(e.target.value)} />
             </label>
+            <label className="resn" style={{ display: "flex", alignItems: "center", gap: 6 }}
+              title="ON: after a domain clears both gates, run Prospeo to pull its decision-makers + emails (spends Prospeo credits). OFF: just tell me which seed domains have blacklisted infra — no contacts, no Prospeo — for when you already have their emails.">
+              <input type="checkbox" checked={enrich} onChange={(e) => setEnrich(e.target.checked)} />
+              Find contacts (Prospeo)
+            </label>
             <button className="btn" disabled={starting || !seeds.trim()} onClick={start}>
-              <Icon name={starting ? "refresh" : "spark"} />{starting ? "Starting…" : "Run campaign"}
+              <Icon name={starting ? "refresh" : "spark"} />{starting ? "Starting…" : enrich ? "Run campaign" : "Run (blacklist only)"}
             </button>
           </div>
         </div>
