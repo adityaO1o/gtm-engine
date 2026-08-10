@@ -642,27 +642,17 @@ apiRouter.post("/sources/import", async (req, res) => {
 });
 
 // POST /api/sources/list/:list/active { active } — enable/disable a whole imported list at once.
-// `active` is a single flag per source, but an influencer can belong to SEVERAL lists (cold-email
-// people overlap heavily). A naive updateMany({lists:list}) would deactivate members shared with
-// OTHER still-active lists (and re-activate ones you paused elsewhere). So we track the paused-list
-// set and, when pausing, only deactivate members whose EVERY list is now paused.
+// An explicit list pause/resume applies to EVERY member of the list — including members shared with
+// another list — so pausing a list you no longer want really does turn ALL of it off (the row flips
+// to "paused" and stays that way). Members are scraped once and marked done, so pausing one that also
+// sits in another list barely affects that other list. We still record the paused-list set so the
+// intent is visible, but the flag write is what the auto engine actually reads.
 apiRouter.post("/sources/list/:list/active", async (req, res) => {
   const list = decodeURIComponent(req.params.list);
   const active = !!req.body?.active;
-  let r;
-  if (active) {
-    // Resuming: the list is active again, so every member of it should be on.
-    await engineState().updateOne({ _id: "paused_lists" }, { $pull: { lists: list } }, { upsert: true }).catch(() => {});
-    r = await sources().updateMany({ lists: list }, { $set: { active: true } });
-  } else {
-    await engineState().updateOne({ _id: "paused_lists" }, { $addToSet: { lists: list } }, { upsert: true }).catch(() => {});
-    const paused = (await engineState().findOne({ _id: "paused_lists" }).catch(() => null))?.lists || [list];
-    // members of this list with NO list outside the paused set (i.e. nothing else keeps them active)
-    r = await sources().updateMany(
-      { $and: [{ lists: list }, { lists: { $not: { $elemMatch: { $nin: paused } } } }] },
-      { $set: { active: false } },
-    );
-  }
+  await engineState().updateOne({ _id: "paused_lists" },
+    active ? { $pull: { lists: list } } : { $addToSet: { lists: list } }, { upsert: true }).catch(() => {});
+  const r = await sources().updateMany({ lists: list }, { $set: { active } });
   res.json({ ok: true, list, active, matched: r.matchedCount });
 });
 
