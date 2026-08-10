@@ -308,6 +308,13 @@ const csvCell = (v) => {
   if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;                 // neutralize spreadsheet formula injection
   return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 };
+// Free-mail providers aren't a company domain, so we never derive one from them.
+const EXPORT_FREE_MAIL = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "proton.me", "protonmail.com", "gmx.com", "live.com", "msn.com", "yahoo.co.in", "rediffmail.com"]);
+const exportCompanyDomain = (r) => {
+  if (r.company_domain) return r.company_domain;
+  const d = (r.email || "").split("@")[1]?.toLowerCase();
+  return d && !EXPORT_FREE_MAIL.has(d) ? d : "";
+};
 apiRouter.get("/export", async (req, res) => {
   let rows;
   if (req.query.urls) {
@@ -316,8 +323,9 @@ apiRouter.get("/export", async (req, res) => {
   } else {
     rows = await leads().find(buildLeadFilter(req.query)).sort({ score: -1 }).limit(50000).toArray();
   }
-  const cols = ["name", "email", "email_status", "email_method", "verified_by", "company", "status", "score", "categories", "times_seen", "personal_email", "created_at", "last_engagement_at", "linkedin_url"];
-  const body = rows.map((r) => cols.map((c) => csvCell(Array.isArray(r[c]) ? r[c].join("|") : r[c])).join(",")).join("\n");
+  const cols = ["name", "email", "email_status", "email_method", "verified_by", "company", "company_domain", "status", "score", "categories", "times_seen", "personal_email", "created_at", "last_engagement_at", "linkedin_url"];
+  const valOf = (r, c) => (c === "company_domain" ? exportCompanyDomain(r) : Array.isArray(r[c]) ? r[c].join("|") : r[c]);
+  const body = rows.map((r) => cols.map((c) => csvCell(valOf(r, c))).join(",")).join("\n");
   res.setHeader("Content-Type", "text/csv");
   res.setHeader("Content-Disposition", `attachment; filename="gtm-leads.csv"`);
   res.send(cols.join(",") + "\n" + body);
