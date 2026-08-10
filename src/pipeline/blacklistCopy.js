@@ -14,6 +14,18 @@
 // push time, so pointing the engine at it needs no env var or redeploy.
 export const BLACKLIST_CAMPAIGN_NAME = "Blacklist Campaign";
 
+// Per-workspace PIN: a workspace whose blacklist runs must land in a specific campaign rather than
+// in whatever is called "Blacklist Campaign" there. The SendKit workspace moved onto a duplicate of
+// the original campaign, and a duplicate carries the same name — so name resolution can't tell them
+// apart and the id is the only unambiguous target. Keyed by the workspace slug from
+// SENDKIT_WORKSPACES; add an entry here (no env var / redeploy dance) to repoint a workspace.
+const WORKSPACE_CAMPAIGN_IDS = {
+  sendkit: "6a79d5c7516cc57a06ef9863",     // SendKit workspace → "Blacklist Campaign" duplicate
+};
+
+export const workspaceCampaignId = (workspaceId) =>
+  WORKSPACE_CAMPAIGN_IDS[String(workspaceId || "").trim().toLowerCase()] || "";
+
 // Body is HTML (SendKit sends `body` as HTML). Keep it plain and text-like — no styling, so it reads
 // like a hand-written email rather than a marketing blast.
 const p = (s) => `<p>${s}</p>`;

@@ -16,7 +16,7 @@ import { scrapeRedirectPage, apiRedirectPage, scrapeUsable } from "../services/h
 import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
-import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, leadPayload } from "./blacklistCopy.js";
+import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, workspaceCampaignId, leadPayload } from "./blacklistCopy.js";
 import { isExcludedSeed } from "../services/icp.js";
 import { campaigns, campaignTargets, hostioPages, hostioUsage, leads as leadsCol } from "../db/mongo.js";
 import { config } from "../config.js";
@@ -581,6 +581,15 @@ async function workspaceKey(workspaceId) {
   return config.sendkit.workspaces.find((w) => w.id === workspaceId)?.apiKey;
 }
 
+// The campaign a workspace is PINNED to, if any (see workspaceCampaignId). Matched on the slug and
+// then on the label, so the pin survives someone configuring the workspace as "sendkit-dev|SendKit".
+// The default workspace (no id) is never pinned — it keeps resolving the campaign by name.
+function pinnedCampaignFor(workspaceId) {
+  if (!workspaceId) return "";
+  const label = config.sendkit.workspaces.find((w) => w.id === workspaceId)?.label;
+  return workspaceCampaignId(workspaceId) || workspaceCampaignId(label);
+}
+
 // What a push WOULD do — which SendKit workspace and which campaign in it, whether that campaign
 // already exists (and what sequence it carries), and how many contacts would go. Lets the confirm
 // dialog state the real target instead of guessing.
@@ -599,15 +608,25 @@ export async function pushTarget(campaignId, { workspaceId } = {}) {
     if (n) { contacts += n; companies++; }
   }
 
-  const name = BLACKLIST_CAMPAIGN_NAME;
-  const existing = (await listSendkitCampaigns({ apiKey })).find(
-    (c) => String(c.name || "").trim().toLowerCase() === name.toLowerCase() && c.status !== "archived",
-  );
+  // A pinned workspace resolves by ID, not by name — see workspaceCampaignId. Report the pin's real
+  // name/status so the confirm dialog names the campaign the leads actually land in.
+  const pinned = pinnedCampaignFor(workspaceId);
+  const all = await listSendkitCampaigns({ apiKey });
+  const existing = pinned
+    ? all.find((c) => String(c.id) === pinned)
+    : all.find((c) => String(c.name || "").trim().toLowerCase() === BLACKLIST_CAMPAIGN_NAME.toLowerCase() && c.status !== "archived");
   const wsLabel = config.sendkit.workspaces.find((w) => w.id === workspaceId)?.label || "Default";
+
+  // A pin that isn't visible in this workspace is a misconfiguration, not a "create it then" case:
+  // say so instead of letting the dialog promise a new campaign we'd refuse to create anyway.
+  if (pinned && !existing) {
+    return { ok: false, error: `pinned campaign ${pinned} not found in the ${wsLabel} workspace` };
+  }
 
   return {
     ok: true, workspaceId: workspaceId || null, workspaceLabel: wsLabel,
-    campaignName: name, campaignId: existing?.id || null, campaignStatus: existing?.status || null,
+    campaignName: existing?.name || BLACKLIST_CAMPAIGN_NAME,
+    campaignId: existing?.id || null, campaignStatus: existing?.status || null,
     exists: !!existing, contacts, companies,
   };
 }
@@ -647,8 +666,19 @@ export async function pushCampaignToSendkit(campaignId, { campaignName, workspac
   // SendKit (no env var / redeploy needed to point at it): an explicit id override wins, otherwise we
   // find the existing "Blacklist Campaign", otherwise we create it once.
   // Resolve the standing campaign INSIDE the chosen workspace — each workspace has its own.
+  // A workspace can also be PINNED to one campaign id (see workspaceCampaignId): the SendKit
+  // workspace now runs its duplicate of the campaign, and a duplicate shares the original's name, so
+  // only the id picks the right one. An explicit campaignName from the caller still wins over the pin.
   const standingName = campaignName || BLACKLIST_CAMPAIGN_NAME;
-  let sendkitCampaignId = workspaceId ? null : config.sendkit.blacklistCampaignId;
+  const pinned = campaignName ? "" : pinnedCampaignFor(workspaceId);
+  let sendkitCampaignId = pinned || (workspaceId ? null : config.sendkit.blacklistCampaignId);
+  if (pinned) {
+    // Verify the pin before pushing: a stale id would otherwise fail deep inside addLeadsToCampaign
+    // (or, worse, silently push nowhere). Never fall back to name resolution here — the whole point
+    // of the pin is that the name is ambiguous in this workspace.
+    const found = (await listSendkitCampaigns({ apiKey })).some((c) => String(c.id) === pinned);
+    if (!found) return { ok: false, error: `pinned campaign ${pinned} not found in this SendKit workspace` };
+  }
   if (!sendkitCampaignId) {
     const existing = (await listSendkitCampaigns({ apiKey })).find(
       (c) => String(c.name || "").trim().toLowerCase() === standingName.toLowerCase() && c.status !== "archived",
