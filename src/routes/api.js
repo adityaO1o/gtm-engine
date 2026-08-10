@@ -31,7 +31,7 @@ import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
 import { startBlacklistScan, estimateBlacklistScan, getBlacklistScan, blacklistScanResults } from "../pipeline/blacklistScan.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, backfillOwnLeadContacts, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -914,6 +914,7 @@ apiRouter.post("/domainscan", async (req, res) => {
 });
 apiRouter.get("/domainscan", async (_req, res) => res.json({ items: await listDomainScans() }));
 apiRouter.post("/campaign/:id/stop", async (req, res) => res.json(await stopCampaign(req.params.id)));
+apiRouter.delete("/campaign/:id", async (req, res) => res.json(await deleteCampaign(req.params.id)));
 apiRouter.post("/blacklist-scan/estimate", async (req, res) => res.json(await estimateBlacklistScan(req.body?.domains)));
 apiRouter.post("/blacklist-scan", async (req, res) => res.json(await startBlacklistScan(req.body?.domains, req.body || {})));
 apiRouter.get("/blacklist-scan/:id", async (req, res) => { const r = await getBlacklistScan(req.params.id); r ? res.json(r) : res.status(404).json({ error: "not found" }); });

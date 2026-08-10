@@ -4,9 +4,11 @@
 // key we send on a lead (blacklistedDomainCount, domain1..4, …) becomes usable in this copy.
 //
 // The copy below is the approved script, kept verbatim — including "Or grab a slot:" in email 3 with
-// nothing after it (there is no booking link yet; keeping it was an explicit call) and email 2's
-// hardcoded "Talk soon, Abbas Somji" sign-off. Don't "tidy" these without asking.
-export const SENDER_NAME = "Abbas Somji";
+// nothing after it (there is no booking link yet; keeping it was an explicit call). Don't "tidy"
+// these without asking.
+//
+// Sign-off is SendKit's built-in {{signature}} (set per-mailbox in the workspace), NOT a pushed
+// variable — we intentionally do not send a senderName field anymore.
 
 // The single standing SendKit campaign every run's qualified leads are added to. Resolved by NAME at
 // push time, so pointing the engine at it needs no env var or redeploy.
@@ -26,7 +28,8 @@ const EMAIL_1 = [
   p("We scanned your whole secondary footprint, not just these four. And since these are blacklisted, on InboxKit you can just rotate them out and keep tracking the rest so this doesn't sneak up again."),
   p("Can run the same check across your client setups too, that's usually where the ugly stuff hides."),
   p("Happy to send the full report over, just reply."),
-  p("{{senderName}}"),
+  p("Talk soon!"),
+  p("{{signature}}"),
 ].join("\n");
 
 const EMAIL_2 = [
@@ -34,7 +37,7 @@ const EMAIL_2 = [
   p("Also happy to run the same audit for your clients, for a start, so you catch anything on their side before they do."),
   p("And if any of these domains are worth keeping alive, you can rotate them with us instead of burning them."),
   p("Let me know and I'll share the details."),
-  p("Talk soon, Abbas Somji"),
+  p("Talk soon,<br>{{signature}}"),
 ].join("\n");
 
 const EMAIL_3 = [
@@ -43,7 +46,7 @@ const EMAIL_3 = [
   p("If deliverability isn't the fire right now, no stress, I'll drop it here."),
   p('Otherwise reply "send it" and the full breakdown\'s yours. Or grab a slot:'),
   p("&nbsp;"),
-  p("{{senderName}}"),
+  p("{{signature}}"),
 ].join("\n");
 
 // Day 0 → wait 3 → Day 3 → wait 3 → Day 6. Emails 2 and 3 reuse subject 1 as "Re:" so they thread.
@@ -86,10 +89,6 @@ export function leadPayload(person, target) {
     secondaryDomainCount: String(target.redirectCount ?? bl.length),
     blacklistedDomainCount: String(target.blacklistedCount ?? bl.length),
     domain1: top[0] || "", domain2: top[1] || "", domain3: top[2] || "", domain4: top[3] || "",
-    // full list (max 10) for the report / manual use — defanged too
-    blacklistedDomains: bl.slice(0, 10).map((d) => defang(d.domain)).join(", "),
-    seedDomain: target.seed,
-    senderName: SENDER_NAME,
     tags: ["gtm-auto", "blacklist-campaign"],
   };
 }

@@ -316,6 +316,23 @@ export async function stopCampaign(id) {
   return { ok: true };
 }
 
+// Delete a campaign run and everything it owns — the campaign doc plus all its per-seed targets.
+// If it's still running, abort the in-flight pool first so nothing keeps writing after the delete.
+// This does NOT touch anything already pushed to SendKit (that lives in SendKit, on its own).
+export async function deleteCampaign(id) {
+  if (!ObjectId.isValid(id)) return { ok: false, error: "bad campaign id" };
+  const _id = new ObjectId(id);
+  const camp = await campaigns().findOne({ _id });
+  if (!camp) return { ok: false, error: "campaign not found" };
+
+  if (camp.status === "running") aborted.add(String(_id)); // stop the pool before we pull the rows out from under it
+  const { deletedCount: targets } = await campaignTargets().deleteMany({ campaignId: _id });
+  await campaigns().deleteOne({ _id });
+  aborted.delete(String(_id));
+  log.warn("campaign deleted by user", { id, targets });
+  return { ok: true, targets };
+}
+
 async function runCampaign(campaignId, targets, gates) {
   await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "running", startedAt: new Date(), updatedAt: new Date() } });
   // Warm the local verdict mirror once up front (first run pulls the existing workspace; after that
@@ -635,8 +652,7 @@ export async function campaignCsv(campaignId) {
   }
 
   const cols = ["email", "firstName", "lastName", "companyName", "jobTitle", "linkedinUrl",
-    "secondaryDomainCount", "blacklistedDomainCount", "domain1", "domain2", "domain3", "domain4",
-    "blacklistedDomains", "seedDomain", "senderName"];
+    "secondaryDomainCount", "blacklistedDomainCount", "domain1", "domain2", "domain3", "domain4"];
   const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const out = [cols.join(",")];
   for (const t of targets) {

@@ -2,7 +2,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import { num, ts } from "@/lib/format";
-import { j, post } from "@/lib/api";
+import { j, post, del } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { useDash } from "@/lib/ctx";
 
@@ -75,6 +75,7 @@ export default function Campaign() {
   const [pushing, setPushing] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
+  const [deleting, setDeleting] = useState(null);
   // Push target comes from the sidebar switcher, so it's picked once and applies everywhere.
   const { workspaces = [], workspaceId = "" } = useDash();
   const [preview, setPreview] = useState(null);
@@ -108,6 +109,26 @@ export default function Campaign() {
       else toast(r.error || "Push failed", "bad");
     } catch { toast("Push failed", "bad"); }
     setPushing(false);
+  }
+
+  // Delete a whole campaign run (its doc + every per-seed row). Anything already pushed to SendKit
+  // lives there independently and is untouched. `fromList` decides where we land + what to refresh.
+  async function deleteCampaign(id, seeds, fromList) {
+    if (deleting) return;
+    if (!window.confirm(
+      `Delete this campaign run permanently?\n\n${num(seeds)} seed domain${seeds === 1 ? "" : "s"} and all their results will be removed. ` +
+      `Anything already pushed to SendKit stays there — only this engine record is deleted.\n\nThis cannot be undone.`
+    )) return;
+    setDeleting(id);
+    try {
+      const r = await del(`/api/campaign/${id}`);
+      if (r.ok) {
+        toast("Campaign deleted", "good");
+        if (!fromList) { clearTimeout(timer.current); setView("list"); setCampaign(null); setResults([]); }
+        loadHistory();
+      } else toast(r.error || "Delete failed", "bad");
+    } catch { toast("Delete failed", "bad"); }
+    setDeleting(null);
   }
 
   async function stopRun() {
@@ -255,7 +276,7 @@ export default function Campaign() {
         {history.length ? (
           <div className="tablewrap">
             <table>
-              <thead><tr><th>Started</th><th>Seeds</th><th>Status</th><th>Gates</th></tr></thead>
+              <thead><tr><th>Started</th><th>Seeds</th><th>Status</th><th>Gates</th><th /></tr></thead>
               <tbody>
                 {history.map((h) => (
                   <tr key={h._id} className="click" onClick={() => openCampaign(h._id)}>
@@ -264,6 +285,13 @@ export default function Campaign() {
                     <td><span className={`pill ${h.status === "running" ? "p-review" : h.status === "error" ? "p-review" : "p-verified"}`}>
                       {h.status === "running" ? <><span className="spin" style={{ width: 11, height: 11 }} /> {h.stage}</> : h.status}</span></td>
                     <td className="sm muted">count ≥ {h.gates?.countGate} · blacklisted ≥ {h.gates?.blacklistGate}</td>
+                    <td className="num-c">
+                      <button className="btn btn-ghost btn-sm" disabled={deleting === h._id}
+                        onClick={(e) => { e.stopPropagation(); deleteCampaign(h._id, h.seedCount, true); }}
+                        title="Delete this campaign run and all its results (SendKit is untouched)">
+                        <Icon name={deleting === h._id ? "refresh" : "trash"} />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -327,6 +355,13 @@ export default function Campaign() {
             </a>
             <button className="btn btn-ghost btn-sm" onClick={() => exportCsv(results)}><Icon name="download" />Full report</button>
           </>
+        ) : null}
+        {campaign && campId ? (
+          <button className="btn btn-ghost btn-sm" style={{ color: "var(--hot)" }} disabled={deleting === campId}
+            onClick={() => deleteCampaign(campId, campaign.seedCount, false)}
+            title="Delete this campaign run and all its results. Anything already pushed to SendKit is untouched.">
+            <Icon name={deleting === campId ? "refresh" : "trash"} />{deleting === campId ? "Deleting…" : "Delete"}
+          </button>
         ) : null}
       </div>
 
