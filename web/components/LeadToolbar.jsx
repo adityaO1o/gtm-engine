@@ -5,7 +5,7 @@ import { num } from "@/lib/format";
 const CATS = ["infra-competitor", "deliverability", "infra", "sequencer", "gtm-eng", "data-tools", "cold-email"];
 
 // The leads filter toolbar. `q` is debounced locally so typing doesn't refetch every keystroke.
-export default function LeadToolbar({ filters, setFilter, count, campaigns, withCampaign, selectedSize, onSelectAll, selectingAll, onSelectPage, onExportFiltered, onExportSelected, onBackfillDomains, backfillingDomains }) {
+export default function LeadToolbar({ filters, setFilter, count, campaigns, withCampaign, selectedSize, onSelectAll, selectingAll, onSelectPage, onExportFiltered, onExportSelected, onBackfillDomains, backfillingDomains, onPurgeIcp, purgingIcp }) {
   const [q, setQ] = useState(filters.q || "");
   useEffect(() => { setQ(filters.q || ""); }, [filters.q]);
   useEffect(() => {
@@ -58,6 +58,12 @@ export default function LeadToolbar({ filters, setFilter, count, campaigns, with
         <button className="btn btn-ghost btn-sm" disabled={backfillingDomains} onClick={onBackfillDomains}
           title="Fill the company domain on leads that don't have one — from their work email, then from the company name.">
           <Icon name={backfillingDomains ? "refresh" : "check"} />{backfillingDomains ? "Filling…" : "Fill domains"}
+        </button>
+      ) : null}
+      {onPurgeIcp ? (
+        <button className="btn btn-ghost btn-sm" disabled={purgingIcp} onClick={onPurgeIcp}
+          title="Sweep existing leads: move anyone now out-of-ICP (big tech, banks, …) out of hot/warm and DNC any already in a campaign.">
+          <Icon name={purgingIcp ? "refresh" : "shield"} />{purgingIcp ? "Purging…" : "Purge non-ICP"}
         </button>
       ) : null}
       <button className="btn btn-ghost btn-sm" onClick={onExportFiltered}><Icon name="download" />Export</button>

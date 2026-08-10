@@ -33,6 +33,7 @@ import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.j
 import { startBlacklistScan, estimateBlacklistScan, getBlacklistScan, blacklistScanResults } from "../pipeline/blacklistScan.js";
 import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
 import { backfillCompanyDomains, backfillDomainsStatus } from "../pipeline/backfillDomains.js";
+import { reclassifyIcp, reclassifyIcpStatus } from "../pipeline/reclassifyIcp.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -262,6 +263,15 @@ apiRouter.post("/leads/backfill-domains", (req, res) => {
   res.json({ ok: true, started: true });
 });
 apiRouter.get("/leads/backfill-domains/status", (_req, res) => res.json(backfillDomainsStatus()));
+
+// POST /api/leads/reclassify-icp — sweep existing leads and move any now-non-ICP ones (big tech,
+// banks, …) out of hot/warm to "out-of-icp"/cold, DNC'ing those already in a campaign. Background.
+apiRouter.post("/leads/reclassify-icp", (_req, res) => {
+  if (reclassifyIcpStatus().running) return res.json({ ok: false, error: "already running" });
+  reclassifyIcp().catch((e) => console.error("reclassify icp error", e.message));
+  res.json({ ok: true, started: true });
+});
+apiRouter.get("/leads/reclassify-icp/status", (_req, res) => res.json(reclassifyIcpStatus()));
 
 // GET /api/leads?status=&email_status=&category=&campaign=&q=&sort=&limit=&skip=
 apiRouter.get("/leads", async (req, res) => {

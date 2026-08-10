@@ -24,7 +24,20 @@ export const NON_ICP_BRANDS = new Set([
   "cognizant", "accenture", "capgemini", "deloitte", "kpmg", "pwc", "ernst young",
   // Indian conglomerates & unicorns
   "reliance", "jio", "tata", "adani", "paytm", "zomato", "swiggy", "ola", "byju", "byjus",
+  // major banks / financial institutions — employees don't buy cold-email infra (foreign + domestic).
+  // Generic "bank" / "banco" / "banque" are handled by NON_ICP_KEYWORDS below; these catch the
+  // one-word names that don't contain "bank".
+  "jpmorgan", "chase", "citi", "citibank", "citigroup", "hsbc", "barclays", "goldman sachs",
+  "morgan stanley", "wells fargo", "bank of america", "deutsche bank", "ubs", "credit suisse",
+  "standard chartered", "bnp paribas", "santander", "natwest", "lloyds", "scotiabank", "nomura",
+  "mizuho", "macquarie", "capital one", "american express", "amex", "hdfc", "icici", "axis bank",
+  "kotak", "yes bank", "state bank of india", "sbi", "punjab national", "revolut", "monzo",
 ]);
+
+// Whole-word keywords: if any word of the company name matches, it's out of ICP. Kept separate so
+// broad categories (any bank) don't need every institution enumerated. Whole-word only, so "bank"
+// matches "HSBC Bank" but not "DataBank".
+export const NON_ICP_KEYWORDS = new Set(["bank", "banco", "banque", "bancorp"]);
 
 export const NON_ICP_DOMAINS = new Set([
   "google.com", "youtube.com", "alphabet.com",
@@ -56,6 +69,7 @@ export function isOutOfIcp({ company = "", emailDomain = "" } = {}) {
     if (bn.includes(" ")) { if (full.includes(bn)) return true; } // multi-word brand -> substring
     else if (words.includes(bn)) return true;                     // single-word brand -> whole word
   }
+  for (const k of NON_ICP_KEYWORDS) if (words.includes(k)) return true; // category keyword -> whole word
   return false;
 }
 
