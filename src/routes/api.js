@@ -32,6 +32,7 @@ import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
 import { startBlacklistScan, estimateBlacklistScan, getBlacklistScan, blacklistScanResults } from "../pipeline/blacklistScan.js";
 import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
+import { backfillCompanyDomains, backfillDomainsStatus } from "../pipeline/backfillDomains.js";
 import { safeEqual } from "../lib/auth.js";
 import { config } from "../config.js";
 
@@ -252,6 +253,15 @@ apiRouter.get("/leads/ids", async (req, res) => {
   const rows = await leads().find(filter, { projection: { linkedin_url: 1, _id: 0 } }).limit(20000).toArray();
   res.json({ ids: rows.map((r) => r.linkedin_url), count: rows.length });
 });
+
+// POST /api/leads/backfill-domains — fill company_domain where missing (email @-domain, then Clearbit
+// on company name). Runs in the background; GET .../status polls it.
+apiRouter.post("/leads/backfill-domains", (req, res) => {
+  if (backfillDomainsStatus().running) return res.json({ ok: false, error: "already running" });
+  backfillCompanyDomains({ nameCap: parseInt(req.body?.nameCap || "500", 10) }).catch((e) => console.error("backfill domains error", e.message));
+  res.json({ ok: true, started: true });
+});
+apiRouter.get("/leads/backfill-domains/status", (_req, res) => res.json(backfillDomainsStatus()));
 
 // GET /api/leads?status=&email_status=&category=&campaign=&q=&sort=&limit=&skip=
 apiRouter.get("/leads", async (req, res) => {
@@ -1003,7 +1013,7 @@ apiRouter.post("/campaign/:id/backfill-contacts", async (req, res) => {
 // Company enrichment for a blacklist-only run: run Prospeo on the "qualified" seeds (blacklisted infra,
 // contacts not requested at run time) to pull decision-makers + emails. Spends Prospeo credits.
 apiRouter.post("/campaign/:id/enrich-companies", async (req, res) => {
-  const r = await enrichQualifiedCompanies(req.params.id);
+  const r = await enrichQualifiedCompanies(req.params.id, { includeDone: !!req.body?.includeDone });
   res.status(r.ok ? 200 : 400).json(r);
 });
 // On-demand email reveal for one company's contacts (spends Prospeo credits — ~1 per person).

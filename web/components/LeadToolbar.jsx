@@ -5,7 +5,7 @@ import { num } from "@/lib/format";
 const CATS = ["infra-competitor", "deliverability", "infra", "sequencer", "gtm-eng", "data-tools", "cold-email"];
 
 // The leads filter toolbar. `q` is debounced locally so typing doesn't refetch every keystroke.
-export default function LeadToolbar({ filters, setFilter, count, campaigns, withCampaign, selectedSize, onSelectAll, selectingAll, onSelectPage, onExportFiltered, onExportSelected }) {
+export default function LeadToolbar({ filters, setFilter, count, campaigns, withCampaign, selectedSize, onSelectAll, selectingAll, onSelectPage, onExportFiltered, onExportSelected, onBackfillDomains, backfillingDomains }) {
   const [q, setQ] = useState(filters.q || "");
   useEffect(() => { setQ(filters.q || ""); }, [filters.q]);
   useEffect(() => {
@@ -38,7 +38,7 @@ export default function LeadToolbar({ filters, setFilter, count, campaigns, with
         <StatusChip s="cold" label="Cold" />
         {statuses.length ? <span className="chip x" onClick={() => setFilter("status", "")}>clear</span> : null}
       </span>
-      <Sel k="email"><option value="">All emails</option><option value="verified">Verified</option><option value="no-email">No email</option><option value="review">Review</option><option value="unverified">Unverified</option><option value="competitor">Competitor</option><option value="discarded">Discarded</option></Sel>
+      <Sel k="email"><option value="">All emails</option><option value="verified">Verified</option><option value="no-email">No email</option><option value="review">Review</option><option value="unverified">Unverified</option><option value="competitor">Competitor</option><option value="out-of-icp">Out of ICP</option><option value="discarded">Discarded</option></Sel>
       <Sel k="cat"><option value="">All categories</option>{CATS.map((c) => <option key={c} value={c}>{c}</option>)}</Sel>
       <Sel k="source"><option value="">All sources</option><option value="keyword">Keyword</option><option value="influencer">Influencer/CSV</option><option value="hub">Hub</option><option value="manual-post">Manual post</option></Sel>
       <Sel k="recovered"><option value="">All</option><option value="1">Recovered</option></Sel>
@@ -54,6 +54,12 @@ export default function LeadToolbar({ filters, setFilter, count, campaigns, with
         <Icon name={selectingAll ? "refresh" : "check"} />{selectingAll ? "Selecting…" : `Select all${count ? ` (${num(count)})` : ""}`}
       </button>
       <button className="btn btn-ghost btn-sm" onClick={onSelectPage} title="Select only the rows on this page">Page</button>
+      {onBackfillDomains ? (
+        <button className="btn btn-ghost btn-sm" disabled={backfillingDomains} onClick={onBackfillDomains}
+          title="Fill the company domain on leads that don't have one — from their work email, then from the company name.">
+          <Icon name={backfillingDomains ? "refresh" : "check"} />{backfillingDomains ? "Filling…" : "Fill domains"}
+        </button>
+      ) : null}
       <button className="btn btn-ghost btn-sm" onClick={onExportFiltered}><Icon name="download" />Export</button>
       <button className="btn btn-sm" onClick={onExportSelected}><Icon name="download" />Selected · {selectedSize}</button>
     </div>

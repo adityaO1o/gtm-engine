@@ -168,7 +168,8 @@ function CampaignDetail({ campaign, bucket, label, onBack }) {
         ))}
       </div>
       <LeadToolbar filters={L.filters} setFilter={L.setFilter} count={L.data.count} campaigns={[]} withCampaign={false}
-        selectedSize={L.selected.size} onSelectPage={L.selectPage} onExportFiltered={exportFiltered} onExportSelected={exportSelected} />
+        selectedSize={L.selected.size} onSelectAll={() => L.toggleAll(true)} selectingAll={L.selectingAll}
+        onSelectPage={L.selectPage} onExportFiltered={exportFiltered} onExportSelected={exportSelected} />
       <LeadTable rows={L.data.rows} loading={L.loading} selected={L.selected} toggle={L.toggle} toggleAll={L.toggleAll} onRowClick={openLead} onReverify={openReverify} sort={L.filters.sort} onSort={(f) => L.setFilter("sort", f)} />
       <Pager count={L.data.count} page={L.page} setPage={L.setPage} size={L.size} setSize={L.setSize} />
     </>

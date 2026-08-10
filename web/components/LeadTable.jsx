@@ -2,6 +2,17 @@ import Icon from "@/components/Icon";
 import { num, ts } from "@/lib/format";
 import { StatusBadge, EmailPill, MethodLabel, VerifiedCell, SourceCell } from "@/lib/cells";
 
+// Free-mail providers — not a company domain, so we never show them as one in the derived fallback.
+const FREE_MAIL = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "proton.me", "protonmail.com", "gmx.com", "live.com", "msn.com", "yahoo.co.in", "rediffmail.com"]);
+// The company domain to show: the stored one, else derived from the work email (@ part), skipping
+// free inboxes. Derived values are shown muted since they aren't persisted until a backfill runs.
+function companyDomainCell(x) {
+  if (x.company_domain) return { domain: x.company_domain, derived: false };
+  const d = (x.email || "").split("@")[1]?.toLowerCase();
+  if (d && !FREE_MAIL.has(d)) return { domain: d, derived: true };
+  return { domain: "", derived: false };
+}
+
 export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClick, onReverify, loading, sort, onSort, selectingAll, count }) {
   if (loading && !rows.length) {
     return <div className="tablewrap"><div className="loading"><span className="spin" />Loading leads…</div></div>;
@@ -20,7 +31,7 @@ export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClic
         <thead>
           <tr>
             <th className="chkcol" title={count ? `Selects all ${count.toLocaleString()} matching this filter, not just this page` : ""}><input type="checkbox" className="chk" disabled={selectingAll} checked={allChecked} onChange={(e) => toggleAll(e.target.checked)} /></th>
-            <th>Person</th><th>Company</th><th>Status</th>
+            <th>Person</th><th>Company</th><th>Domain</th><th>Status</th>
             <th className={onSort ? "sortable" : ""} onClick={() => onSort && onSort("score")}>Score{sort === "score" && <span className="sortarrow">▼</span>}</th>
             <th>Email</th><th>Found by</th><th>Verified</th><th>Source</th><th>Categories</th><th>Seen</th>
             <th className={onSort ? "sortable" : ""} onClick={() => onSort && onSort("recent")}>Last seen{sort === "recent" && <span className="sortarrow">▼</span>}</th>
@@ -37,6 +48,9 @@ export default function LeadTable({ rows, selected, toggle, toggleAll, onRowClic
                 {x.email ? <span className="em trunc mono" title={x.email}>{x.email}</span> : null}
               </td>
               <td><span className="trunc sm muted" title={x.company || ""}>{x.company || ""}</span></td>
+              <td>{(() => { const cd = companyDomainCell(x); return cd.domain
+                ? <span className={`trunc sm mono${cd.derived ? " muted" : ""}`} title={cd.derived ? `${cd.domain} (from email — not saved yet)` : cd.domain}>{cd.domain}</span>
+                : <span className="muted">—</span>; })()}</td>
               <td><StatusBadge s={x.status} /></td>
               <td className="score">{x.score ?? 0}</td>
               <td>

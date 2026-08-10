@@ -20,6 +20,7 @@ import { findOurLead, upsertLead, addToDnc } from "../services/sendkit.js";
 import { enrollOnce } from "./campaignLocks.js";
 import { scoreFromHistory } from "../services/score.js";
 import { CAMPAIGN_CATEGORY, CAMPAIGN_ID, isCompetitor, sendkitIdsFor, desiredCampaignId } from "../services/campaigns.js";
+import { isOutOfIcp } from "../services/icp.js";
 import { isCompanyPage, isPersonalDomain, nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { bumpUsage } from "../services/usage.js";
 import { config } from "../config.js";
@@ -387,6 +388,19 @@ export async function enrichLead(input) {
     await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
     log.info("competitor", { name, company, email: em.email });
     return { outcome: "competitor", ...scored, name };
+  }
+
+  // Out-of-ICP: employee of a big non-ICP company (Google, Microsoft, Amazon, Flipkart, TCS, …). Not
+  // a prospect — save the record (so a repeat engagement doesn't re-pay to rediscover them) but never
+  // send, and PIN status to "cold" so they don't pollute the hot/warm working set. Reversible: drop
+  // the company from services/icp.js and their status recomputes on the next engagement.
+  if (isOutOfIcp({ company, emailDomain: em.email ? emailDomain(em.email) : "" })) {
+    await leads().updateOne({ linkedin_url: key },
+      { $set: { ...setDoc, status: "cold", email: em.email || null, email_status: "out-of-icp", out_of_icp: true, needs_email: false }, $addToSet: addToSet, $setOnInsert: { created_at: now } }, { upsert: true });
+    await dncIfAlreadyInSendkit(em.email);
+    await bumpUsage(campaign, { trigify_scraped: 1, prospeo_calls: prospeoCalls, prospeo_finds: emailSource === "prospeo" ? 1 : 0 });
+    log.info("out-of-icp", { name, company, email: em.email });
+    return { outcome: "out_of_icp", ...scored, name };
   }
 
   // no email found this time

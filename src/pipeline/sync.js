@@ -10,6 +10,7 @@ import { upsertLeads, addLeadsToCampaign, addToDnc } from "../services/sendkit.j
 import { planEnrolment } from "./campaignLocks.js";
 import { reconcileDnc } from "./dncSync.js";
 import { resolveKey, campaignByKey, isCompetitor, sendkitIdsFor, INTAKE_SENDKIT_ID } from "../services/campaigns.js";
+import { isOutOfIcp } from "../services/icp.js";
 import { nameMatchesEmail, emailDomain } from "../services/quality.js";
 import { log } from "../lib/logger.js";
 
@@ -40,6 +41,10 @@ async function syncOne(d) {
   if (d.email) {
     if (isCompetitor({ company: d.company || "", emailDomain: emailDomain(d.email) })) {
       await blockLead(d, { email_status: "competitor", is_competitor: true });
+      return;
+    }
+    if (isOutOfIcp({ company: d.company || "", emailDomain: emailDomain(d.email) })) {
+      await blockLead(d, { email_status: "out-of-icp", out_of_icp: true, status: "cold" });
       return;
     }
     if (!nameMatchesEmail(d.name || "", d.email)) {

@@ -17,6 +17,7 @@ import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
 import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, leadPayload } from "./blacklistCopy.js";
+import { isExcludedSeed } from "../services/icp.js";
 import { campaigns, campaignTargets, hostioPages, hostioUsage, leads as leadsCol } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
@@ -410,15 +411,19 @@ export async function resumeCampaign(id) {
 // stage "qualified" (blacklisted infra, no contacts pulled). This runs Prospeo on exactly those —
 // people search + email reveal — so their decision-makers' emails come through and they move to "done".
 // Runs in the background (like resume) so a big batch doesn't block the request; the UI polls the funnel.
-export async function enrichQualifiedCompanies(id) {
+export async function enrichQualifiedCompanies(id, { includeDone = false } = {}) {
   if (!ObjectId.isValid(id)) return { ok: false, error: "bad campaign id" };
   const _id = new ObjectId(id);
   const camp = await campaigns().findOne({ _id });
   if (!camp) return { ok: false, error: "campaign not found" };
   if (camp.status === "running") return { ok: false, error: "already running" };
 
-  const pending = await campaignTargets().find({ campaignId: _id, stage: "qualified" }).toArray();
-  if (!pending.length) return { ok: false, error: "no qualified companies awaiting enrichment" };
+  // Normally we enrich the "qualified" seeds (blacklisted infra, contacts weren't requested at run
+  // time). `includeDone` also re-runs Prospeo on already-"done" companies — for an old run that was
+  // enriched before this feature existed, or to refresh stale contacts.
+  const wantStages = includeDone ? ["qualified", "done"] : ["qualified"];
+  const pending = await campaignTargets().find({ campaignId: _id, stage: { $in: wantStages } }).toArray();
+  if (!pending.length) return { ok: false, error: includeDone ? "no companies to enrich" : "no qualified companies awaiting enrichment" };
 
   await campaigns().updateOne({ _id }, { $set: { status: "running", stage: "enriching", finishedAt: null, updatedAt: new Date() } });
 
@@ -436,8 +441,12 @@ export async function enrichQualifiedCompanies(id) {
 }
 
 export async function startCampaign(rawSeeds, opts = {}) {
-  const seeds = parseSeeds(rawSeeds);
-  if (!seeds.length) throw new Error("no valid domains in the list");
+  const parsed = parseSeeds(rawSeeds);
+  // Drop non-ICP giants (google.com, linkedin.com, flipkart.com, …) BEFORE they cost any credits —
+  // their employees don't buy cold-email sending infra. Edit the list in services/icp.js.
+  const excludedSeeds = parsed.filter((s) => isExcludedSeed(s));
+  const seeds = parsed.filter((s) => !isExcludedSeed(s));
+  if (!seeds.length) throw new Error(`no valid ICP domains in the list${excludedSeeds.length ? ` (${excludedSeeds.length} excluded as non-ICP)` : ""}`);
   const gates = {
     countGate: parseInt(opts.countGate, 10) || config.campaign.countGate,
     blacklistGate: parseInt(opts.blacklistGate, 10) || config.campaign.blacklistGate,
@@ -465,7 +474,7 @@ export async function startCampaign(rawSeeds, opts = {}) {
     campaigns().updateOne({ _id: insertedId }, { $set: { status: "error", error: e.message, finishedAt: new Date() } }).catch(() => {});
   });
 
-  return { id: String(insertedId), seedCount: seeds.length, gates };
+  return { id: String(insertedId), seedCount: seeds.length, gates, excluded: excludedSeeds.length };
 }
 
 // Funnel tallies + live activity for the dashboard poll: stage counts, how many seeds are SETTLED vs

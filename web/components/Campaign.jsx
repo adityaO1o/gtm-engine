@@ -167,17 +167,17 @@ export default function Campaign() {
 
   // Company enrichment: for a blacklist-only run, run Prospeo on the "qualified" companies (blacklisted
   // infra, contacts weren't requested at run time) to pull their decision-makers + emails.
-  async function enrichCompanies() {
+  async function enrichCompanies(includeDone = false) {
     if (enrichingCompanies) return;
-    const n = stages.qualified || 0;
+    const n = includeDone ? (stages.done || 0) : (stages.qualified || 0);
     if (!window.confirm(
-      `Run company enrichment on ${num(n)} qualified compan${n === 1 ? "y" : "ies"} with blacklisted infra?\n\n` +
+      `Run Prospeo enrichment on ${num(n)} compan${n === 1 ? "y" : "ies"}${includeDone ? " (re-running already-done ones)" : " with blacklisted infra"}?\n\n` +
       `This spends Prospeo credits (~1 search credit per company + a few email-reveal credits each) and pulls ` +
       `their decision-makers' emails so they can be pushed to SendKit.`
     )) return;
     setEnrichingCompanies(true);
     try {
-      const r = await post(`/api/campaign/${campId}/enrich-companies`, {});
+      const r = await post(`/api/campaign/${campId}/enrich-companies`, { includeDone });
       if (r.ok) { toast(`Enriching ${num(r.queued)} companies — emails will fill in`, "info"); poll(campId); }
       else toast(r.error || "Enrichment failed", "bad");
     } catch { toast("Enrichment failed", "bad"); }
@@ -247,7 +247,7 @@ export default function Campaign() {
     try {
       const r = await post("/api/campaign", { seeds, countGate: +countGate, blacklistGate: +blacklistGate, enrich });
       if (r.error) { toast(r.error, "bad"); setStarting(false); return; }
-      toast(`Campaign started — ${num(r.seedCount)} seeds`, "info");
+      toast(`Campaign started — ${num(r.seedCount)} seeds${r.excluded ? ` · ${num(r.excluded)} non-ICP excluded` : ""}`, "info");
       setSeeds("");
       openCampaign(r.id);
     } catch { toast("Failed to start campaign", "bad"); }
@@ -366,9 +366,14 @@ export default function Campaign() {
           </span>
         ) : null}
         {stages.qualified && !running ? (
-          <button className="btn btn-ghost btn-sm" disabled={enrichingCompanies} onClick={enrichCompanies}
+          <button className="btn btn-ghost btn-sm" disabled={enrichingCompanies} onClick={() => enrichCompanies(false)}
             title="Run Prospeo on the qualified blacklisted-infra companies to pull decision-makers + emails. Spends Prospeo credits.">
             <Icon name={enrichingCompanies ? "refresh" : "mail"} />{enrichingCompanies ? "Enriching…" : `Company enrichment (${num(stages.qualified)})`}
+          </button>
+        ) : !running && stages.done ? (
+          <button className="btn btn-ghost btn-sm" disabled={enrichingCompanies} onClick={() => enrichCompanies(true)}
+            title="Re-run Prospeo on the already-done companies (e.g. an old run enriched before this existed, or to refresh contacts). Spends Prospeo credits.">
+            <Icon name={enrichingCompanies ? "refresh" : "mail"} />{enrichingCompanies ? "Enriching…" : `Re-enrich contacts (${num(stages.done)})`}
           </button>
         ) : null}
         {results.length && !running ? (
