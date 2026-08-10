@@ -598,6 +598,16 @@ apiRouter.post("/sources/:id/active", async (req, res) => {
   } catch { return res.status(400).json({ error: "bad id" }); }
   res.json({ ok: true, active });
 });
+// POST /api/sources/bulk-active { ids:[], active } — pause/resume MANY influencers at once (the
+// multi-select in the list drill-in). Bad ids are ignored rather than failing the whole batch.
+apiRouter.post("/sources/bulk-active", async (req, res) => {
+  const active = !!req.body?.active;
+  const oids = (Array.isArray(req.body?.ids) ? req.body.ids : [])
+    .map((x) => { try { return new ObjectId(x); } catch { return null; } }).filter(Boolean);
+  if (!oids.length) return res.json({ ok: false, error: "no valid ids" });
+  const r = await sources().updateMany({ _id: { $in: oids } }, { $set: { active } });
+  res.json({ ok: true, active, matched: r.matchedCount, modified: r.modifiedCount });
+});
 
 // POST /api/sources/import { list, items:[{url,label,title}] } — bulk import a CSV of influencers.
 // Imported profiles start PAUSED (active:false): scraping ~4.7k profiles' posts would blow the

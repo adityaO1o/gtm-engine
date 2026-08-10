@@ -186,6 +186,32 @@ function AutoEngineBox({ onRotate }) {
   );
 }
 
+// Standalone influencer/hub table. Defined at MODULE level (not inside Sources) — an inline component
+// is a new type on every render, which makes React remount the whole table and reset its scroll to
+// the top-left on every state change (e.g. a pause/resume toggle). Props keep it pure + stable.
+function SrcTable({ rows, cols, onToggle, onDelete }) {
+  return (
+    <div className="tablewrap" style={{ border: "none" }}><table><thead><tr>{cols.map((c) => <th key={c}>{c}</th>)}<th></th></tr></thead>
+      <tbody>{rows.length ? rows.map((s) => (
+        <tr key={s._id}>
+          <td className="nm">{s.label || "—"}{s.harvestedFrom ? <span className="tag-harv" title="Auto-discovered from a hub page">harvested</span> : <span className="tag-man" title="Added by you">manual</span>}
+            {s.active === false ? <span className="tag-man" title="Paused — skipped by the auto engine">paused</span> : null}
+            {s.scrape_done ? <span className="tag-harv" title={`3-month backlog scraped${s.posts_scraped != null ? ` — ${s.posts_scraped} posts` : ""}. Auto engine won't revisit (done forever).`}>done</span> : null}</td>
+          <td><span className="trunc mono muted" title={s.url}>{s.url}</span></td>
+          <td className="num-c">{(s.posts_scraped ?? s.lastPosts) != null ? num(s.posts_scraped ?? s.lastPosts) : <span className="muted">—</span>}</td>
+          <td className="num-c" style={{ color: "var(--primary-2)" }}>{s.pnd_credits ? num(s.pnd_credits) : <span className="muted">—</span>}</td>
+          <td className="tstamp">{s.last_picked_at || s.lastRun ? ts(s.last_picked_at || s.lastRun) : "never"}</td>
+          <td><div className="rowact">
+            {s.active !== false
+              ? <button className="btn btn-no btn-sm" title="Skip this source on the daily run" onClick={() => onToggle(s._id, false)}><Icon name="pause" /></button>
+              : <button className="btn btn-ok btn-sm" title="Resume scraping this source — uses API credits" onClick={() => onToggle(s._id, true)}><Icon name="bolt" /></button>}
+            <button className="btn btn-ghost btn-sm" onClick={() => onDelete(s._id)}><Icon name="trash" /></button>
+          </div></td>
+        </tr>
+      )) : <tr><td colSpan={6} className="muted" style={{ padding: 16 }}>None yet</td></tr>}</tbody></table></div>
+  );
+}
+
 export default function Sources() {
   const { refreshTop, jobs, pollJobs } = useDash();
   const toast = useToast();
@@ -195,6 +221,7 @@ export default function Sources() {
   const [list, setList] = useState(null);
   const [listPage, setListPage] = useState(0);
   const [listRows, setListRows] = useState({ rows: [], count: 0 });
+  const [sel, setSel] = useState(() => new Set()); // multi-selected member ids in the list drill-in
   const [listQ, setListQ] = useState("");
   const [listSize, setListSize] = useState(100);
   const [inflOpen, setInflOpen] = useState(true);
@@ -237,9 +264,12 @@ export default function Sources() {
 
   useEffect(() => { load(); pollScrape(); return () => clearTimeout(scrapeTimer.current); }, [load, pollScrape]);
   useEffect(() => { j("/api/campaigns/list").then((d) => setAllCamps(d.campaigns || [])).catch(() => {}); }, []);
-  useEffect(() => {
-    if (list) j(`/api/sources/list/${encodeURIComponent(list)}?skip=${listPage * listSize}&limit=${listSize}${listQ ? `&q=${encodeURIComponent(listQ)}` : ""}`).then((d) => setListRows({ rows: d.rows || [], count: d.count || 0 }));
+  const loadListRows = useCallback(() => {
+    if (list) j(`/api/sources/list/${encodeURIComponent(list)}?skip=${listPage * listSize}&limit=${listSize}${listQ ? `&q=${encodeURIComponent(listQ)}` : ""}`).then((d) => setListRows({ rows: d.rows || [], count: d.count || 0 })).catch(() => {});
   }, [list, listPage, listSize, listQ]);
+  useEffect(() => { loadListRows(); }, [loadListRows]);
+  // Clear the multi-select whenever we navigate the drill-in (different list / page / search).
+  useEffect(() => { setSel(new Set()); }, [list, listPage, listQ]);
 
   // handlers
   const addSrc = async (type, url, clear) => { if (!url.trim()) return; await post("/api/sources", { type, url: url.trim() }); clear(); load(); toast(`${type === "hub" ? "Hub" : "Influencer"} added`, "good"); };
@@ -292,6 +322,20 @@ export default function Sources() {
     toast(on ? "Influencer resumed" : "Influencer paused", "good");
   };
 
+  // Pause/resume MANY selected influencers at once. Optimistic (rows update in place, no refetch) so
+  // the table doesn't jump back to the top — on failure we resync from the server.
+  const bulkSetActive = async (on) => {
+    const ids = [...sel];
+    if (!ids.length) return;
+    const inSel = new Set(ids);
+    setListRows((r) => ({ ...r, rows: r.rows.map((s) => (inSel.has(s._id) ? { ...s, active: on } : s)) }));
+    setData((d) => ({ ...d, sources: d.sources.map((s) => (inSel.has(s._id) ? { ...s, active: on } : s)) }));
+    setSel(new Set());
+    const r = await post("/api/sources/bulk-active", { ids, active: on }).catch(() => null);
+    if (!r?.ok) { toast(r?.error ? `Failed: ${r.error}` : "Bulk update failed", "bad"); loadListRows(); return; }
+    toast(`${on ? "Resumed" : "Paused"} ${num(r.modified ?? ids.length)} influencer${ids.length === 1 ? "" : "s"}`, "good");
+  };
+
   // Both start paths go through the same route, which can now legitimately refuse (a keyword run is
   // in progress, or another post is already being scraped). Report that instead of claiming success.
   const startScrape = async (body, okMsg) => {
@@ -335,10 +379,25 @@ export default function Sources() {
         <div className="toolbar"><button className="btn btn-ghost btn-sm" onClick={() => setList(null)}><Icon name="back" />All sources</button>
           <input className="search" placeholder="Search name / profile / title…" style={{ minWidth: 220 }}
             value={listQ} onChange={(e) => { setListQ(e.target.value); setListPage(0); }} />
-          <div className="grow" /><span className="resn"><b>{num(count)}</b> influencers in “{list}”</span></div>
-        <div className="tablewrap"><table><thead><tr><th>Name</th><th>Title</th><th>Profile</th><th>Posts</th><th title="PND credits spent scraping this person's engagers">PND cr</th><th>Last run</th><th></th></tr></thead>
+          <div className="grow" />
+          {sel.size ? (
+            <>
+              <span className="resn"><b>{num(sel.size)}</b> selected</span>
+              <button className="btn btn-ok btn-sm" onClick={() => bulkSetActive(true)}><Icon name="bolt" />Resume</button>
+              <button className="btn btn-no btn-sm" onClick={() => bulkSetActive(false)}><Icon name="pause" />Pause</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setSel(new Set())}>Clear</button>
+            </>
+          ) : null}
+          <span className="resn"><b>{num(count)}</b> influencers in “{list}”</span></div>
+        <div className="tablewrap"><table><thead><tr>
+          <th className="chkcol"><input type="checkbox" className="chk" title="Select all on this page"
+            checked={rows.length > 0 && rows.every((s) => sel.has(s._id))}
+            onChange={(e) => { const on = e.target.checked; setSel((prev) => { const n = new Set(prev); rows.forEach((s) => on ? n.add(s._id) : n.delete(s._id)); return n; }); }} /></th>
+          <th>Name</th><th>Title</th><th>Profile</th><th>Posts</th><th title="PND credits spent scraping this person's engagers">PND cr</th><th>Last run</th><th></th></tr></thead>
           <tbody>{rows.map((s) => (
             <tr key={s._id}>
+              <td className="chkcol"><input type="checkbox" className="chk" checked={sel.has(s._id)}
+                onChange={() => setSel((prev) => { const n = new Set(prev); n.has(s._id) ? n.delete(s._id) : n.add(s._id); return n; })} /></td>
               <td className="nm">{s.label || "—"}{s.active !== false ? <span className="tag-harv">on</span> : <span className="tag-man">paused</span>}
                 {s.scrape_done ? <span className="tag-harv" title={`3-month backlog scraped${s.posts_scraped != null ? ` — ${s.posts_scraped} posts` : ""}. Done forever.`}>done</span> : null}</td>
               <td><span className="trunc sm muted" title={s.title || ""}>{s.title || ""}</span></td>
@@ -367,26 +426,6 @@ export default function Sources() {
 
   const infl = data.sources.filter((s) => s.type === "influencer");
   const hubs = data.sources.filter((s) => s.type === "hub");
-  const SrcTable = ({ rows, cols }) => (
-    <div className="tablewrap" style={{ border: "none" }}><table><thead><tr>{cols.map((c) => <th key={c}>{c}</th>)}<th></th></tr></thead>
-      <tbody>{rows.length ? rows.map((s) => (
-        <tr key={s._id}>
-          <td className="nm">{s.label || "—"}{s.harvestedFrom ? <span className="tag-harv" title="Auto-discovered from a hub page">harvested</span> : <span className="tag-man" title="Added by you">manual</span>}
-            {s.active === false ? <span className="tag-man" title="Paused — skipped by the auto engine">paused</span> : null}
-            {s.scrape_done ? <span className="tag-harv" title={`3-month backlog scraped${s.posts_scraped != null ? ` — ${s.posts_scraped} posts` : ""}. Auto engine won't revisit (done forever).`}>done</span> : null}</td>
-          <td><span className="trunc mono muted" title={s.url}>{s.url}</span></td>
-          <td className="num-c">{(s.posts_scraped ?? s.lastPosts) != null ? num(s.posts_scraped ?? s.lastPosts) : <span className="muted">—</span>}</td>
-          <td className="num-c" style={{ color: "var(--primary-2)" }}>{s.pnd_credits ? num(s.pnd_credits) : <span className="muted">—</span>}</td>
-          <td className="tstamp">{s.last_picked_at || s.lastRun ? ts(s.last_picked_at || s.lastRun) : "never"}</td>
-          <td><div className="rowact">
-            {s.active !== false
-              ? <button className="btn btn-no btn-sm" title="Skip this source on the daily run" onClick={() => setSrcActive(s._id, false)}><Icon name="pause" /></button>
-              : <button className="btn btn-ok btn-sm" title="Resume scraping this source — uses API credits" onClick={() => setSrcActive(s._id, true)}><Icon name="bolt" /></button>}
-            <button className="btn btn-ghost btn-sm" onClick={() => delSrc(s._id)}><Icon name="trash" /></button>
-          </div></td>
-        </tr>
-      )) : <tr><td colSpan={6} className="muted" style={{ padding: 16 }}>None yet</td></tr>}</tbody></table></div>
-  );
 
   return (
     <>
@@ -474,14 +513,14 @@ export default function Sources() {
             <button className="btn btn-ghost btn-sm" onClick={() => setInflOpen((v) => !v)}>{inflOpen ? "Hide" : "Expand"}</button></div>
           <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><input className="search" placeholder="LinkedIn profile URL or handle" style={{ flex: 1, minWidth: 0 }} value={inInfl} onChange={(e) => setInInfl(e.target.value)} />
             <button className="btn btn-sm" onClick={() => addSrc("influencer", inInfl, () => setInInfl(""))}><Icon name="plus" />Add</button></div>
-          {inflOpen ? <SrcTable rows={infl} cols={["Name", "Profile", "Posts", "PND cr", "Last run"]} /> : null}
+          {inflOpen ? <SrcTable rows={infl} cols={["Name", "Profile", "Posts", "PND cr", "Last run"]} onToggle={setSrcActive} onDelete={delSrc} /> : null}
         </div>
         <div className="chartbox" style={{ minWidth: 0, overflow: "hidden" }}>
           <div className="toolbar"><h4 style={{ margin: 0 }}>Hubs <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>({hubs.length})</span></h4><div className="grow" />
             <button className="btn btn-ghost btn-sm" onClick={() => setHubsOpen((v) => !v)}>{hubsOpen ? "Hide" : "Expand"}</button></div>
           <div className="toolbar" style={{ marginBottom: "var(--s3)" }}><input className="search" placeholder="linkedin.com/top-content/... URL" style={{ flex: 1, minWidth: 0 }} value={inHub} onChange={(e) => setInHub(e.target.value)} />
             <button className="btn btn-sm" onClick={() => addSrc("hub", inHub, () => setInHub(""))}><Icon name="plus" />Add</button></div>
-          {hubsOpen ? <SrcTable rows={hubs} cols={["Hub", "URL", "Posts", "PND cr", "Last run"]} /> : null}
+          {hubsOpen ? <SrcTable rows={hubs} cols={["Hub", "URL", "Posts", "PND cr", "Last run"]} onToggle={setSrcActive} onDelete={delSrc} /> : null}
         </div>
       </div>
     </>
