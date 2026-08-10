@@ -157,7 +157,7 @@ export function registerTools(server, api) {
   tool("gtm_resume_outreach_campaign", "Reprocess only the seeds of a campaign that have no final verdict (errored or interrupted). Already-settled seeds keep their result and cost nothing.",
     { id: z.string() }, ({ id }) => api("POST", `/api/campaign/${encodeURIComponent(id)}/resume`, { body: {} }));
 
-  tool("gtm_push_campaign_to_sendkit", "Push a campaign's contacts into the target workspace's Blacklist Campaign as a DRAFT, each lead carrying its own variables. Nothing is sent — the campaign is started in SendKit by a human. Check gtm_campaign_push_target first to see exactly where it would land.",
+  tool("gtm_push_campaign_to_sendkit", "Push a campaign's contacts into the target workspace's standing blacklist campaign, each lead carrying its own variables. Nothing is sent — the campaign is started in SendKit by a human. Check gtm_campaign_push_target first to see exactly where it would land.",
     { id: z.string(), workspaceId: z.string().optional().describe("workspace slug — omit for the default") },
     ({ id, workspaceId }) => api("POST", `/api/campaign/${encodeURIComponent(id)}/push-sendkit`, { body: { workspaceId } }));
 

@@ -75,9 +75,9 @@ export const config = {
   sendkit: {
     key: req("SENDKIT_KEY"),
     base: process.env.SENDKIT_BASE || "https://api.sendkit.ai",
-    // Optional override pinning the standing "Blacklist Campaign" to a specific id. Normally left
-    // empty: the engine resolves that campaign by NAME at push time, so no env var / redeploy is
-    // needed. Only set this to point at a campaign whose name differs.
+    // Optional override for the DEFAULT workspace's blacklist campaign id. Normally left empty: the
+    // per-workspace pins in blacklistCopy.js (WORKSPACE_CAMPAIGN_IDS) already carry the ids, and
+    // editing one there needs no env var / redeploy dance. This just wins over them when set.
     blacklistCampaignId: process.env.SENDKIT_BLACKLIST_CAMPAIGN_ID || "",
 
     // Teammates each run their OWN SendKit workspace, so campaign leads can be pushed into any of

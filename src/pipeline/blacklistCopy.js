@@ -15,13 +15,18 @@
 export const BLACKLIST_CAMPAIGN_NAME = "Blacklist Campaign";
 
 // Per-workspace PIN: a workspace whose blacklist runs must land in a specific campaign rather than
-// in whatever is called "Blacklist Campaign" there. The SendKit workspace moved onto a duplicate of
-// the original campaign, and a duplicate carries the same name — so name resolution can't tell them
-// apart and the id is the only unambiguous target. Keyed by the workspace slug from
-// SENDKIT_WORKSPACES; add an entry here (no env var / redeploy dance) to repoint a workspace.
+// in whatever is called "Blacklist Campaign" there. Both workspaces have moved off the original onto
+// a fresh copy of it, and those copies don't have distinct names to resolve on ("Blacklist Campaign"
+// duplicated keeps the name), so the id is the only unambiguous target. Keyed by the workspace slug
+// from SENDKIT_WORKSPACES; edit an id here (no env var / redeploy dance) to repoint a workspace.
 const WORKSPACE_CAMPAIGN_IDS = {
   sendkit: "6a79d5c7516cc57a06ef9863",     // SendKit workspace → "Blacklist Campaign" duplicate
+  inboxkit: "6a79fec5f85a2db29186a6b9",    // InboxKit workspace → "New Blacklist Campaign"
 };
+
+// InboxKit is ALSO the workspace behind SENDKIT_KEY, so a push with no workspace selected lands
+// there too and must follow the same pin. SENDKIT_BLACKLIST_CAMPAIGN_ID still overrides it.
+export const DEFAULT_BLACKLIST_CAMPAIGN_ID = WORKSPACE_CAMPAIGN_IDS.inboxkit;
 
 export const workspaceCampaignId = (workspaceId) =>
   WORKSPACE_CAMPAIGN_IDS[String(workspaceId || "").trim().toLowerCase()] || "";
