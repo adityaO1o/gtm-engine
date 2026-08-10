@@ -131,12 +131,14 @@ const COMPETITOR_BRANDS = new Set([
   "infraforge", "primeforge", "mailreef", "inframail", "mailscale", "maildeck",
   "aerosend", "hypertide", "warpleads", "saleshandy", "woodpecker", "quickmail",
   "reply.io", "smartreach", "mailshake", "gmass", "apollo", "zoominfo", "snov",
+  "clay", "heyreach", "warmly",
 ]);
 const COMPETITOR_DOMAINS = new Set([
   "smartlead.ai", "instantly.ai", "emailbison.com", "lemlist.com", "salesforge.ai",
   "plusvibe.ai", "scaledmail.com", "premiuminboxes.com", "zapmail.ai", "maildoso.com",
   "mailforge.ai", "infraforge.ai", "primeforge.ai", "mailreef.com", "apollo.io",
   "zoominfo.com", "snov.io", "saleshandy.com", "woodpecker.co", "quickmail.com",
+  "clay.com", "heyreach.io", "warmly.ai",
 ]);
 
 const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9.]/g, "");

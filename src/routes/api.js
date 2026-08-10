@@ -319,7 +319,7 @@ const csvCell = (v) => {
   return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 };
 // Free-mail providers aren't a company domain, so we never derive one from them.
-const EXPORT_FREE_MAIL = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "proton.me", "protonmail.com", "gmx.com", "live.com", "msn.com", "yahoo.co.in", "rediffmail.com"]);
+const EXPORT_FREE_MAIL = new Set(["gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "yahoo.co.in", "rocketmail.com", "hotmail.com", "outlook.com", "live.com", "msn.com", "aol.com", "icloud.com", "me.com", "mac.com", "proton.me", "protonmail.com", "gmx.com", "mail.com", "yandex.com", "hey.com", "rediffmail.com"]);
 const exportCompanyDomain = (r) => {
   if (r.company_domain) return r.company_domain;
   const d = (r.email || "").split("@")[1]?.toLowerCase();

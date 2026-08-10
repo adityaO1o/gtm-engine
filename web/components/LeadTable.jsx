@@ -3,7 +3,7 @@ import { num, ts } from "@/lib/format";
 import { StatusBadge, EmailPill, MethodLabel, VerifiedCell, SourceCell } from "@/lib/cells";
 
 // Free-mail providers — not a company domain, so we never show them as one in the derived fallback.
-const FREE_MAIL = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "proton.me", "protonmail.com", "gmx.com", "live.com", "msn.com", "yahoo.co.in", "rediffmail.com"]);
+const FREE_MAIL = new Set(["gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "yahoo.co.in", "rocketmail.com", "hotmail.com", "outlook.com", "live.com", "msn.com", "aol.com", "icloud.com", "me.com", "mac.com", "proton.me", "protonmail.com", "gmx.com", "mail.com", "yandex.com", "hey.com", "rediffmail.com"]);
 // The company domain to show: the stored one, else derived from the work email (@ part), skipping
 // free inboxes. Derived values are shown muted since they aren't persisted until a backfill runs.
 function companyDomainCell(x) {

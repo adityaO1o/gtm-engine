@@ -32,12 +32,23 @@ export const NON_ICP_BRANDS = new Set([
   "standard chartered", "bnp paribas", "santander", "natwest", "lloyds", "scotiabank", "nomura",
   "mizuho", "macquarie", "capital one", "american express", "amex", "hdfc", "icici", "axis bank",
   "kotak", "yes bank", "state bank of india", "sbi", "punjab national", "revolut", "monzo",
+  // large SaaS whose employees aren't buying cold-email sending infra
+  "upwork", "deel", "monday.com", "webflow", "hubspot",
 ]);
 
 // Whole-word keywords: if any word of the company name matches, it's out of ICP. Kept separate so
 // broad categories (any bank) don't need every institution enumerated. Whole-word only, so "bank"
 // matches "HSBC Bank" but not "DataBank".
-export const NON_ICP_KEYWORDS = new Set(["bank", "banco", "banque", "bancorp"]);
+export const NON_ICP_KEYWORDS = new Set(["bank", "banco", "banque", "bancorp", "school", "schools", "university", "college"]);
+
+// Education / school domains are noise (a lead who signed up with a school email) — never ICP.
+// .edu / .edu.xx, .k12.*, .sch.* are reliable signals. We deliberately do NOT match bare ".ac"
+// (real startups like sending.ac live on the Ascension-Island TLD).
+export function isEducationDomain(domain = "") {
+  const d = (domain || "").toLowerCase().trim();
+  if (!d) return false;
+  return /(^|\.)edu(\.[a-z]{2,})?$/.test(d) || /\.k12\./.test(d) || /\.sch\./.test(d);
+}
 
 export const NON_ICP_DOMAINS = new Set([
   "google.com", "youtube.com", "alphabet.com",
@@ -52,6 +63,7 @@ export const NON_ICP_DOMAINS = new Set([
   "cognizant.com", "accenture.com", "capgemini.com", "deloitte.com", "kpmg.com", "pwc.com", "ey.com",
   "reliance.com", "ril.com", "jio.com", "tata.com", "adani.com",
   "paytm.com", "zomato.com", "swiggy.com", "olacabs.com", "byjus.com",
+  "upwork.com", "deel.com", "monday.com", "webflow.com", "hubspot.com",
 ]);
 
 // Is this person's employer out of our ICP? Match by email domain (exact) or company name (whole-word
@@ -59,6 +71,7 @@ export const NON_ICP_DOMAINS = new Set([
 export function isOutOfIcp({ company = "", emailDomain = "" } = {}) {
   const d = (emailDomain || "").toLowerCase().trim();
   if (d && NON_ICP_DOMAINS.has(d)) return true;
+  if (isEducationDomain(d)) return true;
 
   const words = (company || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
   if (!words.length) return false;
@@ -80,6 +93,7 @@ export function isExcludedSeed(domain = "") {
   const d = (domain || "").toLowerCase().trim();
   if (!d) return false;
   if (NON_ICP_DOMAINS.has(d)) return true;
+  if (isEducationDomain(d)) return true;
   const label = d.split(".")[0];
   if (!label) return false;
   for (const b of NON_ICP_BRANDS) {
