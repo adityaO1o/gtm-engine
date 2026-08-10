@@ -5,7 +5,7 @@ import { num } from "@/lib/format";
 const CATS = ["infra-competitor", "deliverability", "infra", "sequencer", "gtm-eng", "data-tools", "cold-email"];
 
 // The leads filter toolbar. `q` is debounced locally so typing doesn't refetch every keystroke.
-export default function LeadToolbar({ filters, setFilter, count, campaigns, withCampaign, selectedSize, onSelectPage, onExportFiltered, onExportSelected }) {
+export default function LeadToolbar({ filters, setFilter, count, campaigns, withCampaign, selectedSize, onSelectAll, selectingAll, onSelectPage, onExportFiltered, onExportSelected }) {
   const [q, setQ] = useState(filters.q || "");
   useEffect(() => { setQ(filters.q || ""); }, [filters.q]);
   useEffect(() => {
@@ -47,7 +47,13 @@ export default function LeadToolbar({ filters, setFilter, count, campaigns, with
       <input className="search" placeholder="Search name, email, company" value={q} onChange={(e) => setQ(e.target.value)} />
       <div className="grow" />
       <span className="resn"><b>{num(count)}</b> result{count === 1 ? "" : "s"}</span>
-      <button className="btn btn-ghost btn-sm" onClick={onSelectPage}><Icon name="check" />Select all</button>
+      {/* "Select all" means EVERY row matching the current filter (asks the server for all ids), not
+          just the visible page. The old button quietly selected only the page — 50 of N. */}
+      <button className="btn btn-ghost btn-sm" disabled={selectingAll || !count} onClick={onSelectAll}
+        title={count ? `Selects all ${num(count)} matching this filter, not just this page` : ""}>
+        <Icon name={selectingAll ? "refresh" : "check"} />{selectingAll ? "Selecting…" : `Select all${count ? ` (${num(count)})` : ""}`}
+      </button>
+      <button className="btn btn-ghost btn-sm" onClick={onSelectPage} title="Select only the rows on this page">Page</button>
       <button className="btn btn-ghost btn-sm" onClick={onExportFiltered}><Icon name="download" />Export</button>
       <button className="btn btn-sm" onClick={onExportSelected}><Icon name="download" />Selected · {selectedSize}</button>
     </div>

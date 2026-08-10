@@ -406,6 +406,35 @@ export async function resumeCampaign(id) {
   return { ok: true, resumed: pending.length, alreadySettled: camp.seedCount - pending.length };
 }
 
+// Company enrichment for a blacklist-only run. When "Find contacts" was off, qualified seeds stop at
+// stage "qualified" (blacklisted infra, no contacts pulled). This runs Prospeo on exactly those —
+// people search + email reveal — so their decision-makers' emails come through and they move to "done".
+// Runs in the background (like resume) so a big batch doesn't block the request; the UI polls the funnel.
+export async function enrichQualifiedCompanies(id) {
+  if (!ObjectId.isValid(id)) return { ok: false, error: "bad campaign id" };
+  const _id = new ObjectId(id);
+  const camp = await campaigns().findOne({ _id });
+  if (!camp) return { ok: false, error: "campaign not found" };
+  if (camp.status === "running") return { ok: false, error: "already running" };
+
+  const pending = await campaignTargets().find({ campaignId: _id, stage: "qualified" }).toArray();
+  if (!pending.length) return { ok: false, error: "no qualified companies awaiting enrichment" };
+
+  await campaigns().updateOne({ _id }, { $set: { status: "running", stage: "enriching", finishedAt: null, updatedAt: new Date() } });
+
+  (async () => {
+    await runPool(pending, (t) => (isAborted(_id) ? Promise.resolve() : enrichSeed(t)), { concurrency: config.campaign.enrichConcurrency });
+    if (isAborted(_id)) { aborted.delete(String(_id)); log.warn("company enrichment ended after stop", { campaignId: String(_id) }); return; }
+    await campaigns().updateOne({ _id }, { $set: { status: "done", stage: "done", finishedAt: new Date(), updatedAt: new Date() } });
+    log.info("company enrichment finished", { campaignId: String(_id), enriched: pending.length });
+  })().catch((e) => {
+    log.error("company enrichment crashed", { err: e.message, id });
+    campaigns().updateOne({ _id }, { $set: { status: "done", stage: "done", error: e.message, finishedAt: new Date() } }).catch(() => {});
+  });
+
+  return { ok: true, queued: pending.length };
+}
+
 export async function startCampaign(rawSeeds, opts = {}) {
   const seeds = parseSeeds(rawSeeds);
   if (!seeds.length) throw new Error("no valid domains in the list");

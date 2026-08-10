@@ -75,6 +75,7 @@ export default function Campaign() {
   const [pushing, setPushing] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
+  const [enrichingCompanies, setEnrichingCompanies] = useState(false);
   const [deleting, setDeleting] = useState(null);
   // Push target comes from the sidebar switcher, so it's picked once and applies everywhere.
   const { workspaces = [], workspaceId = "" } = useDash();
@@ -82,6 +83,9 @@ export default function Campaign() {
   const timer = useRef(null);
 
   const campId = campaign?.id || campaign?._id;
+  // Which SendKit workspace a run was pushed to, by its stored id. Falls back to a generic label when
+  // it went to the server's default workspace (id stored as null) or the list hasn't loaded yet.
+  const wsLabel = (id) => workspaces.find((w) => w.id === id)?.label || "SendKit";
 
   async function pushToSendkit() {
     const contacts = results.reduce((a, r) => a + (r.people || []).filter((p) => p.email).length, 0);
@@ -159,6 +163,25 @@ export default function Campaign() {
       else toast(r.error || "Backfill failed", "bad");
     } catch { toast("Backfill failed", "bad"); }
     setBackfilling(false);
+  }
+
+  // Company enrichment: for a blacklist-only run, run Prospeo on the "qualified" companies (blacklisted
+  // infra, contacts weren't requested at run time) to pull their decision-makers + emails.
+  async function enrichCompanies() {
+    if (enrichingCompanies) return;
+    const n = stages.qualified || 0;
+    if (!window.confirm(
+      `Run company enrichment on ${num(n)} qualified compan${n === 1 ? "y" : "ies"} with blacklisted infra?\n\n` +
+      `This spends Prospeo credits (~1 search credit per company + a few email-reveal credits each) and pulls ` +
+      `their decision-makers' emails so they can be pushed to SendKit.`
+    )) return;
+    setEnrichingCompanies(true);
+    try {
+      const r = await post(`/api/campaign/${campId}/enrich-companies`, {});
+      if (r.ok) { toast(`Enriching ${num(r.queued)} companies — emails will fill in`, "info"); poll(campId); }
+      else toast(r.error || "Enrichment failed", "bad");
+    } catch { toast("Enrichment failed", "bad"); }
+    setEnrichingCompanies(false);
   }
 
   async function showPreview(email) {
@@ -276,7 +299,7 @@ export default function Campaign() {
         {history.length ? (
           <div className="tablewrap">
             <table>
-              <thead><tr><th>Started</th><th>Seeds</th><th>Status</th><th>Gates</th><th /></tr></thead>
+              <thead><tr><th>Started</th><th>Seeds</th><th>Status</th><th>Gates</th><th>Pushed to</th><th /></tr></thead>
               <tbody>
                 {history.map((h) => (
                   <tr key={h._id} className="click" onClick={() => openCampaign(h._id)}>
@@ -285,6 +308,13 @@ export default function Campaign() {
                     <td><span className={`pill ${h.status === "running" ? "p-review" : h.status === "error" ? "p-review" : "p-verified"}`}>
                       {h.status === "running" ? <><span className="spin" style={{ width: 11, height: 11 }} /> {h.stage}</> : h.status}</span></td>
                     <td className="sm muted">count ≥ {h.gates?.countGate} · blacklisted ≥ {h.gates?.blacklistGate}</td>
+                    <td>
+                      {h.sendkitCampaignId ? (
+                        <span className="pill p-verified" title={`${num(h.sendkitLeadCount || 0)} leads pushed · draft in SendKit`}>
+                          <Icon name="check" style={{ width: 11, height: 11 }} />{wsLabel(h.sendkitWorkspaceId)}{h.sendkitLeadCount ? ` · ${num(h.sendkitLeadCount)}` : ""}
+                        </span>
+                      ) : <span className="muted sm">not pushed</span>}
+                    </td>
                     <td className="num-c">
                       <button className="btn btn-ghost btn-sm" disabled={deleting === h._id}
                         onClick={(e) => { e.stopPropagation(); deleteCampaign(h._id, h.seedCount, true); }}
@@ -334,6 +364,12 @@ export default function Campaign() {
           <span className="resn" style={{ color: "var(--good)" }}>
             <Icon name="check" />pushed to SendKit ({num(campaign.sendkitLeadCount || 0)} leads) · draft
           </span>
+        ) : null}
+        {stages.qualified && !running ? (
+          <button className="btn btn-ghost btn-sm" disabled={enrichingCompanies} onClick={enrichCompanies}
+            title="Run Prospeo on the qualified blacklisted-infra companies to pull decision-makers + emails. Spends Prospeo credits.">
+            <Icon name={enrichingCompanies ? "refresh" : "mail"} />{enrichingCompanies ? "Enriching…" : `Company enrichment (${num(stages.qualified)})`}
+          </button>
         ) : null}
         {results.length && !running ? (
           <button className="btn btn-ghost btn-sm" disabled={backfilling} onClick={backfillContacts}
