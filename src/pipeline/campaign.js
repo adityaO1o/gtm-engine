@@ -1044,18 +1044,25 @@ export async function recoveredLeadsCsv() {
     "secondaryDomainCount", "blacklistedDomainCount", "domain1", "domain2", "domain3", "domain4"];
   const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const out = [cols.join(",")];
-  let companies = 0;
+  let companies = 0, duplicates = 0;
+  // A company recovered by more than one run appears once per run, so the same person can be emitted
+  // twice. Targets are sorted by blacklistedCount desc, so the FIRST copy of an address is the one
+  // carrying the strongest numbers — keep that and drop the rest.
+  const seen = new Set();
   for (const t of targets) {
     let any = false;
     for (const p of t.people || []) {
       if (!p.email) continue;
+      const key = p.email.trim().toLowerCase();
+      if (seen.has(key)) { duplicates++; continue; }
+      seen.add(key);
       any = true;
       const l = leadPayload(p, t);
       out.push(cols.map((c) => esc(l[c])).join(","));
     }
     if (any) companies++;
   }
-  return { csv: out.join("\n"), rows: out.length - 1, companies };
+  return { csv: out.join("\n"), rows: out.length - 1, companies, duplicates };
 }
 
 // Kick off contact enrichment for every campaign that still holds recovered (stage "qualified")
