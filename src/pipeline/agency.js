@@ -312,6 +312,36 @@ export async function enrichAgencies(runId, { minHits = 1, limit = 5000, include
   return { ok: true, queued: targets.length, matched: total, truncated: total > targets.length };
 }
 
+// ── Run completion ─────────────────────────────────────────────────────────────────────────────
+// Nothing closed a run: startAgencyRun set status "running" and no code ever set it back, so a
+// finished crawl showed as running forever. There is no single "last job" to hang this off — the
+// stages enqueue each other — so completion is simply the absence of outstanding work.
+export async function finalizeFinishedRuns() {
+  const running = await agencyRuns().find({ status: "running" }, { projection: { _id: 1 } }).toArray().catch(() => []);
+  let closed = 0;
+
+  for (const r of running) {
+    const outstanding = await jobs().countDocuments({ runId: r._id, state: { $in: ["queued", "leased"] } });
+    if (outstanding) continue;
+
+    // An agency still sitting in "queued" never got past discovery — its job failed for good. Say so
+    // rather than leaving it looking like it is still waiting its turn.
+    await agencies().updateMany(
+      { runId: r._id, stage: { $in: ["queued", "extracting", "scanning"] } },
+      { $set: { stage: "error", error: "crawl ended before this agency finished", updatedAt: new Date() } },
+    ).catch(() => {});
+
+    const failed = await jobs().countDocuments({ runId: r._id, state: "failed" });
+    await agencyRuns().updateOne({ _id: r._id }, { $set: {
+      status: "done", stage: failed ? "done-with-errors" : "done",
+      failedJobs: failed, finishedAt: new Date(), updatedAt: new Date(),
+    } });
+    closed++;
+    log.info("agency run finished", { runId: String(r._id), failedJobs: failed });
+  }
+  return closed;
+}
+
 // ── Reads for the dashboard ────────────────────────────────────────────────────────────────────
 export async function getAgencyRun(id) {
   if (!ObjectId.isValid(id)) return null;

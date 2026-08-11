@@ -9,7 +9,7 @@
 // other exists, which is exactly the property that lets either be restarted at any moment.
 import { connect } from "./db/mongo.js";
 import { lease, complete, fail, heartbeat, purgeFinished, reschedule, PRIORITY } from "./lib/jobs.js";
-import { scanClient, rollupAgency, finalizeClientVerdicts } from "./pipeline/agency.js";
+import { scanClient, rollupAgency, finalizeClientVerdicts, finalizeFinishedRuns } from "./pipeline/agency.js";
 import { pushDomains, refreshVerdicts } from "./services/blacklistProject.js";
 import { clients } from "./db/mongo.js";
 import { log } from "./lib/logger.js";
@@ -115,6 +115,9 @@ function background() {
   // polling loop, which is what made the mirror both the bottleneck and the budget.
   setInterval(() => { refreshVerdicts().catch(() => {}); }, 20_000);
   setInterval(() => { pushPending().catch((e) => log.warn("push batch failed", { err: e.message })); }, 8_000);
+  // Close runs whose work has drained. Checked on a timer because completion is the absence of
+  // jobs, which no individual job is in a position to notice.
+  setInterval(() => { finalizeFinishedRuns().catch(() => {}); }, 30_000);
 }
 
 async function main() {
