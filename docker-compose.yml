@@ -102,6 +102,57 @@ services:
     depends_on:
       - mongo
 
+  # The Node worker — SECOND process, same image. The web container serves Trigify's per-engager
+  # /enrich calls and the dashboard; neither can afford to queue behind a client scan, which is why
+  # the long work runs here instead. Both lease from the same `jobs` collection.
+  worker:
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    restart: unless-stopped
+    command: ["node", "src/worker.js"]
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: gtm
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      # Same downstreams the funnel uses — the worker runs the real scan, not a copy of it.
+      PROSPEO_KEY: ${PROSPEO_KEY}
+      ENRICH_KEY: ${ENRICH_KEY}
+      SENDKIT_KEY: ${SENDKIT_KEY}
+      INGEST_TOKEN: ${INGEST_TOKEN}
+      BLACKLIST_API_KEY: ${BLACKLIST_API_KEY}
+      BLACKLIST_WORKSPACE_ID: ${BLACKLIST_WORKSPACE_ID}
+      BLACKLIST_API_BASE: ${BLACKLIST_API_BASE:-}
+      HOSTIO_TOKEN: ${HOSTIO_TOKEN:-}
+      HOSTIO_MIN_GAP_MS: ${HOSTIO_MIN_GAP_MS:-}
+      HOSTIO_PROXY_MIN_GAP_MS: ${HOSTIO_PROXY_MIN_GAP_MS:-}
+      CAMPAIGN_API_FALLBACK: ${CAMPAIGN_API_FALLBACK:-}
+      CAMPAIGN_BLACKLIST_GATE: ${CAMPAIGN_BLACKLIST_GATE:-}
+      CAMPAIGN_ENRICH_CONCURRENCY: ${CAMPAIGN_ENRICH_CONCURRENCY:-}
+      CAMPAIGN_REVEAL_PER_COMPANY: ${CAMPAIGN_REVEAL_PER_COMPANY:-}
+      PROSPEO_MIN_GAP_MS: ${PROSPEO_MIN_GAP_MS:-}
+      REPORT_PUBLIC_URL: ${REPORT_PUBLIC_URL:-}
+      PROXIES: ${PROXIES}
+    depends_on:
+      - mongo
+
+  # The Go crawler — the fetch-heavy half. Shares nothing with the platform but the Mongo
+  # collections: no RPC, no generated stubs. Scale `replicas` when the crawl is the bottleneck; it
+  # never is when the blacklist checker is.
+  crawler:
+    build:
+      context: ./crawler
+    restart: unless-stopped
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: gtm
+      CRAWL_CONCURRENCY: ${CRAWL_CONCURRENCY:-64}
+      CRAWL_MAX_CASE_STUDIES: ${CRAWL_MAX_CASE_STUDIES:-40}
+      PROXIES: ${PROXIES}
+    depends_on:
+      - mongo
+
   mongo:
     image: mongo:7
     restart: unless-stopped

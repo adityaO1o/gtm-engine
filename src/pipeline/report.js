@@ -136,12 +136,16 @@ async function freshScan(seed) {
 //   reuse=true  (default) hands back the existing link if there is one — the same company chased
 //               twice should not end up with two different URLs in two different emails.
 //   force=true  always mints a fresh report; the old link keeps working and keeps its old date.
-export async function createReport(rawSeed, { reuse = true, force = false } = {}) {
+export async function createReport(rawSeed, { reuse = true, force = false, agency = null } = {}) {
   const seed = normalizeSeed(rawSeed);
   if (!seed) return { ok: false, error: "that doesn't look like a domain" };
 
+  // An AGENCY report is a different document: it is about somebody else's clients, so it carries a
+  // list of companies rather than a list of domains. The agency's own footprint is not the story.
+  if (agency) return createAgencyReport(seed, agency, { reuse, force });
+
   if (reuse && !force) {
-    const existing = await reports().findOne({ seed }, { sort: { generatedAt: -1 } }).catch(() => null);
+    const existing = await reports().findOne({ seed, kind: { $ne: "agency" } }, { sort: { generatedAt: -1 } }).catch(() => null);
     if (existing) return { ok: true, token: existing._id, seed, reused: true, blacklistedCount: existing.blacklistedCount };
   }
 
@@ -171,6 +175,53 @@ export async function createReport(rawSeed, { reuse = true, force = false } = {}
   await reports().insertOne(doc);
   log.info("blacklist report created", { seed, token, blacklisted: doc.blacklistedCount, source: doc.source });
   return { ok: true, token, seed, reused: false, blacklistedCount: doc.blacklistedCount, source: doc.source };
+}
+
+// One report covering several of an agency's clients. Rebuilt on every rollup (the client list
+// changes as scans land), but the TOKEN is stable per agency — the link in a sent email must not
+// stop working because the numbers moved.
+export async function createAgencyReport(agencyDomain, agency, { reuse = true, force = false } = {}) {
+  const existing = await reports().findOne({ seed: agencyDomain, kind: "agency" }).catch(() => null);
+  if (existing && reuse && !force && !agency?.clients) {
+    return { ok: true, token: existing._id, seed: agencyDomain, reused: true, blacklistedCount: existing.blacklistedCount };
+  }
+
+  const clientDocs = (agency.clients || []).map((c) => ({
+    domain: c.clientDomain || c.domain,
+    name: c.clientName || c.name || null,
+    blacklistedCount: c.blacklistedCount || 0,
+    checkedDomains: c.redirectCount ?? null,
+    domains: (c.blacklistedDomains || []).slice(0, 8).map((d) => ({ domain: d.domain, zones: d.zones || [], riskScore: d.riskScore ?? null })),
+  })).filter((c) => c.domain);
+  if (!clientDocs.length) return { ok: false, error: "no blacklisted clients to report" };
+
+  const allZones = clientDocs.flatMap((c) => c.domains.flatMap((d) => d.zones || []));
+  const zoneCounts = new Map();
+  for (const z of allZones) zoneCounts.set(z, (zoneCounts.get(z) || 0) + 1);
+
+  const doc = {
+    kind: "agency",
+    seed: agencyDomain,
+    companyName: agency.companyName || (await companyNameFor(agencyDomain)),
+    generatedAt: new Date(),
+    scannedAt: new Date(),
+    source: "agency-crawl",
+    clientCount: clientDocs.length,
+    blacklistedCount: clientDocs.reduce((a, c) => a + c.blacklistedCount, 0),
+    clients: clientDocs.sort((a, b) => b.blacklistedCount - a.blacklistedCount),
+    zoneSummary: [...zoneCounts.entries()].sort((a, b) => b[1] - a[1]).map(([zone, count]) => ({ zone, count })),
+    views: existing?.views || 0,
+    lastViewedAt: existing?.lastViewedAt || null,
+  };
+
+  if (existing) {
+    await reports().updateOne({ _id: existing._id }, { $set: doc });
+    return { ok: true, token: existing._id, seed: agencyDomain, reused: true, blacklistedCount: doc.blacklistedCount };
+  }
+  const token = newToken();
+  await reports().insertOne({ _id: token, ...doc });
+  log.info("agency report created", { agency: agencyDomain, token, clients: clientDocs.length });
+  return { ok: true, token, seed: agencyDomain, reused: false, blacklistedCount: doc.blacklistedCount };
 }
 
 // Public read. Counting views is the only write a visitor causes, and it's fire-and-forget so a

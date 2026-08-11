@@ -192,6 +192,24 @@ export async function connect() {
   await db.collection("report_requests").createIndex({ createdAt: -1 });
   await db.collection("report_requests").createIndex({ status: 1 });
 
+  // ── Agency crawl ────────────────────────────────────────────────────────────────────────────
+  // Durable work queue shared by the Node worker and the Go crawler. Mongo IS the contract between
+  // them — no RPC, no schema codegen. The lease index is the hot one: every poll is a
+  // findOneAndUpdate over (state, priority, nextRunAt).
+  await db.collection("jobs").createIndex({ state: 1, priority: -1, nextRunAt: 1 });
+  await db.collection("jobs").createIndex({ state: 1, leaseUntil: 1 });     // reclaiming dead leases
+  await db.collection("jobs").createIndex({ key: 1 }, { unique: true });     // enqueue is idempotent
+  await db.collection("jobs").createIndex({ runId: 1, type: 1, state: 1 });
+  await db.collection("agency_runs").createIndex({ createdAt: -1 });
+  await db.collection("agencies").createIndex({ runId: 1, stage: 1 });
+  await db.collection("agencies").createIndex({ domain: 1 });
+  await db.collection("agencies").createIndex({ runId: 1, clientsBlacklisted: -1 });
+  await db.collection("clients").createIndex({ agencyDomain: 1 });
+  await db.collection("clients").createIndex({ clientDomain: 1 });
+  await db.collection("clients").createIndex({ runId: 1, scanned: 1 });
+  // Fetch cache — a re-run must never re-fetch. TTL keeps it from growing without bound.
+  await db.collection("agency_pages").createIndex({ fetchedAt: 1 }, { expireAfterSeconds: 30 * 86400 });
+
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
@@ -240,3 +258,8 @@ export const blacklistVerdicts = () => db.collection("blacklist_verdicts"); // l
 export const sendkitWorkspaces = () => db.collection("sendkit_workspaces"); // per-teammate SendKit targets
 export const reports = () => db.collection("reports");                      // shareable blacklist reports
 export const reportRequests = () => db.collection("report_requests");       // inbound "send me my report"
+export const jobs = () => db.collection("jobs");                            // durable queue (Node + Go)
+export const agencyRuns = () => db.collection("agency_runs");               // one per submitted batch
+export const agencies = () => db.collection("agencies");                    // per-agency crawl state
+export const clients = () => db.collection("clients");                      // agency -> client discoveries
+export const agencyPages = () => db.collection("agency_pages");             // fetch cache

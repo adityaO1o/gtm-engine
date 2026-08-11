@@ -12,3 +12,13 @@ logs/
 rej.txt
 hs.json
 dk.json
+
+# Generated exports — data pulls, not source
+recovered-seeds.csv
+recovered-leads.csv
+dropped-seeds.csv
+retry-seeds.csv
+
+# Go build output
+crawler/gtm-crawler
+crawler/*.exe

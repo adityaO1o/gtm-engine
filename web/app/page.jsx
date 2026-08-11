@@ -11,6 +11,7 @@ import Campaigns from "@/components/Campaigns";
 import Sources from "@/components/Sources";
 import Campaign from "@/components/Campaign";
 import Reports from "@/components/Reports";
+import Agencies from "@/components/Agencies";
 import LeadDrawer from "@/components/LeadDrawer";
 import ReverifyMenu from "@/components/ReverifyMenu";
 import CommandPalette from "@/components/CommandPalette";
@@ -29,9 +30,10 @@ const TABS = [
   { id: "sources", label: "Sources", icon: "radio" },
   { id: "campaign", label: "Blacklist Campaign", icon: "spark" },
   { id: "reports", label: "Reports", icon: "shield" },
+  { id: "agencies", label: "Agencies", icon: "flag" },
 ];
-const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", review: "Review · Decide these emails", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources", campaign: "Blacklist Campaign · seed domains → blacklisted infra → contacts", reports: "Reports · shareable blacklist proof for prospects" };
-const BODIES = { overview: Overview, leads: Leads, handoff: Handoff, review: Review, competitors: Competitors, campaigns: Campaigns, sources: Sources, campaign: Campaign, reports: Reports };
+const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", review: "Review · Decide these emails", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources", campaign: "Blacklist Campaign · seed domains → blacklisted infra → contacts", reports: "Reports · shareable blacklist proof for prospects", agencies: "Agencies · their case studies → their clients → blacklisted infra" };
+const BODIES = { overview: Overview, leads: Leads, handoff: Handoff, review: Review, competitors: Competitors, campaigns: Campaigns, sources: Sources, campaign: Campaign, reports: Reports, agencies: Agencies };
 
 export default function Dashboard() {
   const [view, setView] = useState("overview");

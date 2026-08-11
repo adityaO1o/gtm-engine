@@ -28,6 +28,7 @@ import { upsertLeads, addLeadsToCampaign, addToDnc, listCampaigns, campaignSumma
 import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revokeMcpKey, recentAudit as recentMcpAudit } from "../services/mcpKeys.js";
 import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/domainScan.js";
 import { createReport, listReports, deleteReport, bulkCreateReports, listRequests, setRequestStatus } from "../pipeline/report.js";
+import { startAgencyRun, getAgencyRun, listAgencyRuns, agencyResults, agencyClients, enrichAgencies, agencyLeadsCsv, retryAgencyRun, stopAgencyRun } from "../pipeline/agency.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
@@ -1061,6 +1062,43 @@ apiRouter.post("/campaign/:id/recover-dropped", async (req, res) => {
   const r = await recoverDroppedSeeds(req.params.id, { apply: true });
   res.status(r.ok ? 200 : 400).json(r);
 });
+// ── Agency crawl ───────────────────────────────────────────────────────────────────────────────
+// Submit agency domains; the Go crawler finds their case studies and the Node worker scans the
+// clients behind them. NOTHING here spends a Prospeo credit — agency contacts are pulled only by the
+// enrich endpoint below, which is a button, never a schedule.
+apiRouter.post("/agency", async (req, res) => {
+  const r = await startAgencyRun(req.body?.domains, req.body || {});
+  res.status(r.ok ? 200 : 400).json(r);
+});
+apiRouter.get("/agency", async (req, res) => res.json(await listAgencyRuns(
+  Math.min(parseInt(req.query.size, 10) || 20, 200), { page: parseInt(req.query.page, 10) || 0 },
+)));
+apiRouter.get("/agency/:id", async (req, res) => {
+  const r = await getAgencyRun(req.params.id);
+  r ? res.json(r) : res.status(404).json({ error: "not found" });
+});
+apiRouter.get("/agency/:id/results", async (req, res) => res.json(await agencyResults(req.params.id, {
+  q: S(req.query.q), onlyHits: req.query.onlyHits === "1",
+  page: parseInt(req.query.page, 10) || 0, size: Math.min(parseInt(req.query.size, 10) || 100, 500),
+})));
+apiRouter.get("/agency/:id/clients", async (req, res) => res.json({ items: await agencyClients(req.params.id, S(req.query.domain)) }));
+// THE BUTTON: Prospeo on the agency domain only, and only for agencies that actually have a story.
+apiRouter.post("/agency/:id/enrich", async (req, res) => {
+  const r = await enrichAgencies(req.params.id, {
+    minHits: parseInt(req.body?.minHits, 10) || 1,
+    includeDone: !!req.body?.includeDone,
+    limit: parseInt(req.body?.limit, 10) || 5000,
+  });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+apiRouter.post("/agency/:id/retry", async (req, res) => res.json(await retryAgencyRun(req.params.id)));
+apiRouter.post("/agency/:id/stop", async (req, res) => res.json(await stopAgencyRun(req.params.id)));
+apiRouter.get("/agency/:id/leads.csv", async (req, res) => {
+  const r = await agencyLeadsCsv(req.params.id, { minHits: parseInt(req.query.minHits, 10) || 1 });
+  if (!r) return res.status(404).json({ error: "not found" });
+  res.type("text/csv").set("Content-Disposition", 'attachment; filename="agency-leads.csv"').send(r.csv);
+});
+
 // ── Shareable blacklist reports ────────────────────────────────────────────────────────────────
 // Creating one is free for a company a funnel already scanned (the blacklisted domains are stored on
 // the target); an unscanned seed costs exactly one host.io call.

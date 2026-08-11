@@ -228,6 +228,70 @@ function page(r) {
 </div>`);
 }
 
+// An AGENCY report: the same evidence, addressed to the party responsible for it. The framing is
+// "your clients", not "your domains" — the agency's own estate may be spotless and the pitch still
+// stands, because their clients' mail is their problem.
+function agencyPage(r) {
+  const company = r.companyName || r.seed;
+  const explainers = zoneExplainers(r.zoneSummary || []);
+  const clients = r.clients || [];
+
+  const clientBlocks = clients.map((c) => `
+    <div class="card">
+      <h1 style="font-size:18px">${esc(c.name || c.domain)}</h1>
+      <p class="sub">${esc(c.domain)} · <b style="color:var(--bad)">${fmt(c.blacklistedCount)}</b> blacklisted sending domain${c.blacklistedCount === 1 ? "" : "s"}${c.checkedDomains ? ` of ${fmt(c.checkedDomains)} found` : ""}</p>
+      ${c.domains?.length ? `<div class="scroll" style="margin-top:12px"><table>
+        <thead><tr><th>Domain</th><th>Listed on</th><th>Risk</th></tr></thead>
+        <tbody>${c.domains.map((d) => `<tr>
+          <td class="mono">${esc(d.domain)}</td>
+          <td>${(d.zones || []).map((z) => `<span class="z" title="${esc(z)}">${esc(zoneLabel(z) || z)}</span>`).join(" ") || "<span class=\"muted\">—</span>"}</td>
+          <td class="num">${d.riskScore == null ? "—" : esc(d.riskScore)}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+      ${c.blacklistedCount > (c.domains?.length || 0) ? `<p class="hint">Showing the ${c.domains.length} highest-risk of ${fmt(c.blacklistedCount)}.</p>` : ""}` : ""}
+    </div>`).join("");
+
+  return shell(`Client blacklist report · ${company}`, `<div class="wrap">
+    <div class="card">
+      <h1>${esc(company)} — client sending infrastructure report</h1>
+      <p class="sub">${esc(r.seed)} · scanned ${esc(day(r.scannedAt || r.generatedAt))}</p>
+      <div class="hero">
+        <div class="big">${fmt(r.clientCount)}<small> client${r.clientCount === 1 ? "" : "s"} affected</small></div>
+        <div class="stat">${fmt(r.blacklistedCount)}<small>blacklisted domains in total</small></div>
+      </div>
+      <div class="note">These are domains belonging to companies you work with. Mail sent through them
+      is being filtered before it reaches an inbox — usually with no bounce to say so.</div>
+    </div>
+
+    ${explainers.length ? `<div class="card">
+      <h2>Which blacklists flagged them</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Blacklist</th><th>Domains listed</th><th>What it is</th></tr></thead>
+        <tbody>${explainers.map((e) => `<tr><td><b>${esc(e.name)}</b></td><td class="num">${fmt(e.count)}</td><td class="muted">${esc(e.blurb)}</td></tr>`).join("")}</tbody>
+      </table></div>
+    </div>` : ""}
+
+    <div class="card"><h2>Affected clients</h2>
+      <p class="sub">Each one below is a company whose sending domains are currently listed.</p></div>
+    ${clientBlocks}
+
+    <div class="card">
+      <h2>What this means for you</h2>
+      <ul class="why">
+        <li>Campaigns you run for these clients are landing in spam more often than the numbers suggest — deliverability failures look like poor performance.</li>
+        <li>Reputation follows the domain. Swapping the mailbox or the sending tool does not clear a listed domain.</li>
+        <li>Several of these lists escalate to the whole network block if listings are left alone.</li>
+        <li>A listed domain is usually faster to retire and replace than to delist.</li>
+      </ul>
+    </div>
+
+    <p class="foot">
+      Data from public DNSBL sources, checked ${esc(day(r.scannedAt || r.generatedAt))}. Blacklist status changes over time — this page is a snapshot, not a live feed.<br>
+      ${BRAND_URL ? `<a href="${esc(BRAND_URL)}" style="color:inherit">${esc(BRAND)}</a>` : esc(BRAND)}
+    </p>
+  </div>`);
+}
+
 const NOT_FOUND = shell("Report not found", `<div class="wrap narrow"><div class="card" style="text-align:center">
   <h1 style="font-size:20px">This report link isn't valid</h1>
   <p class="sub">It may have been removed, or the link may be incomplete — check that the whole URL was copied.</p>
@@ -260,5 +324,5 @@ reportRouter.get("/r/:token", async (req, res) => {
   if (!r) return res.status(404).type("html").send(NOT_FOUND);
   // Private: a shared link is per-prospect, so no CDN or proxy should hold a copy of it.
   res.set("Cache-Control", "private, max-age=60").set("X-Robots-Tag", "noindex, nofollow");
-  res.type("html").send(page(r));
+  res.type("html").send(r.kind === "agency" ? agencyPage(r) : page(r));
 });

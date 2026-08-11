@@ -212,6 +212,47 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
   }
 }
 
+// Scan ONE domain end to end, with no gates and no Prospeo — "what is this company's sending
+// footprint and how much of it is listed". The agency crawl's clients come through here.
+//
+// Gates are deliberately absent: a client is EVIDENCE, not a prospect, so there is no threshold at
+// which we stop caring — we want the number even when it's zero. The result is written to
+// campaign_targets, which means the next agency listing the same client, and the seed funnel itself,
+// both get it for free.
+export async function runSingleSeed(seed, { campaignId = null } = {}) {
+  const _id = `single:${seed}`;
+  try {
+    await campaignTargets().updateOne(
+      { seed, singleScan: true },
+      { $setOnInsert: { seed, singleScan: true, campaignId, stage: "scraping", createdAt: new Date() }, $set: { updatedAt: new Date() } },
+      { upsert: true },
+    );
+    const target = await campaignTargets().findOne({ seed, singleScan: true }, { projection: { _id: 1 } });
+
+    const p1 = await cachedPage1(seed, campaignId);
+    if (!p1.ok) {
+      await setTarget(target._id, { stage: "error", error: "host.io page unreadable" });
+      return { ok: false, error: "could not read the redirect list" };
+    }
+
+    const domains = (p1.domains || []).filter(Boolean);
+    const { listed, unresolved } = await blacklistOf([...new Set(domains)]);
+    listed.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
+
+    await setTarget(target._id, {
+      stage: "done", redirectCount: p1.total ?? null, confirmedCount: domains.length,
+      blacklistedCount: listed.length, blacklistedDomains: listed,
+      unresolvedCount: unresolved.length, activity: null, error: null,
+    });
+    return {
+      ok: true, redirectCount: p1.total ?? null, confirmedCount: domains.length,
+      blacklistedCount: listed.length, blacklistedDomains: listed, unresolved: unresolved.length,
+    };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 // Contacts we ALREADY own for this company — our hot/warm engagers whose work email is on this
 // domain. These seed lists are built from those very leads, so when Prospeo returns nothing for a
 // company we usually still have a real, already-verified person there. Costs zero credits.
