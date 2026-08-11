@@ -67,6 +67,11 @@ services:
       # Read by the code but previously absent here, so they could be set and still never arrive —
       # the same silent trap that hid WEBSHARE_GATEWAY and CAMPAIGN_API_FALLBACK.
       ALLOW_IPS: ${ALLOW_IPS:-}
+      # Hosts that serve ONLY the public /r/<token> reports (everything else redirects away, so a
+      # prospect never meets the dashboard login). Defaults in code to blacklist-report.com; listed
+      # here so adding report.inboxkit.com later is a Dokploy env edit, not a code change.
+      REPORT_HOSTS: ${REPORT_HOSTS:-}
+      REPORT_HOME_URL: ${REPORT_HOME_URL:-}
       GIT_SHA: ${GIT_SHA:-}
       INTAKE_SENDKIT_ID: ${INTAKE_SENDKIT_ID:-}
       JINA_DIRECT: ${JINA_DIRECT:-}
