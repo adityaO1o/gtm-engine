@@ -104,6 +104,20 @@ func main() {
 	lanes := envInt("CRAWL_CONCURRENCY", 64)
 	log.Printf("crawler up: lanes=%d proxies=%d db=%s uri=%s", lanes, len(proxies), dbName, redact(uri))
 
+	// Prove WHICH database this is, not just its name. Two Mongo servers can both be called "gtm";
+	// only their contents tell them apart. `leads` holds tens of thousands of documents on the real
+	// one, so a zero there means this process is talking to a different server entirely — which no
+	// amount of checking the connection string would reveal.
+	if names, err := c.db.ListCollectionNames(ctx, bson.M{}); err != nil {
+		log.Printf("STARTUP: cannot list collections: %v", err)
+	} else {
+		leads, _ := c.db.Collection("leads").EstimatedDocumentCount(ctx)
+		log.Printf("STARTUP: collections=%d leads=%d (leads=0 means this is NOT the platform's database)", len(names), leads)
+		if len(names) < 25 {
+			log.Printf("STARTUP: collection names: %v", names)
+		}
+	}
+
 	// Say what this process can actually SEE at startup. "Container is up" and "container can read
 	// the queue" are different claims, and only the second one matters.
 	if n, err := c.db.Collection("jobs").CountDocuments(ctx, bson.M{}); err != nil {
