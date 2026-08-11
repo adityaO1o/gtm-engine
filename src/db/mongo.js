@@ -210,6 +210,9 @@ export async function connect() {
   // The batch pusher polls for candidates awaiting their first push; without this it scans the whole
   // collection every eight seconds.
   await db.collection("clients").createIndex({ pushed: 1 });
+  // Agency domains harvested from search, so a later sweep never pays to rediscover them.
+  await db.collection("agency_sources").createIndex({ sourcedAt: -1 });
+  await db.collection("agency_sources").createIndex({ used: 1 });
   // Fetch cache — a re-run must never re-fetch. TTL keeps it from growing without bound.
   await db.collection("agency_pages").createIndex({ fetchedAt: 1 }, { expireAfterSeconds: 30 * 86400 });
 
@@ -266,3 +269,4 @@ export const agencyRuns = () => db.collection("agency_runs");               // o
 export const agencies = () => db.collection("agencies");                    // per-agency crawl state
 export const clients = () => db.collection("clients");                      // agency -> client discoveries
 export const agencyPages = () => db.collection("agency_pages");             // fetch cache
+export const agencySources = () => db.collection("agency_sources");         // agency domains from search

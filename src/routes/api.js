@@ -29,6 +29,7 @@ import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revoke
 import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/domainScan.js";
 import { createReport, listReports, deleteReport, bulkCreateReports, listRequests, setRequestStatus } from "../pipeline/report.js";
 import { startAgencyRun, getAgencyRun, listAgencyRuns, agencyResults, agencyClients, enrichAgencies, agencyLeadsCsv, retryAgencyRun, stopAgencyRun } from "../pipeline/agency.js";
+import { sourceAgencies, listAgencySources, markSourcesUsed } from "../pipeline/agencySource.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
@@ -1083,6 +1084,34 @@ apiRouter.get("/debug/mongo", async (_req, res) => {
 // Submit agency domains; the Go crawler finds their case studies and the Node worker scans the
 // clients behind them. NOTHING here spends a Prospeo credit — agency contacts are pulled only by the
 // enrich endpoint below, which is a button, never a schedule.
+// Harvest agency domains from search instead of typing a list. One Serper credit per query, up to
+// 100 results each; directories are excluded by name because they outrank real agencies for exactly
+// these searches and their "case studies" are other companies'.
+apiRouter.post("/agency/source", async (req, res) => {
+  const r = await sourceAgencies({
+    target: Math.min(parseInt(req.body?.target, 10) || 2000, 20000),
+    maxQueries: Math.min(parseInt(req.body?.maxQueries, 10) || 300, 2000),
+  });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+apiRouter.get("/agency/sources", async (req, res) => res.json(await listAgencySources({ unusedOnly: req.query.unused === "1" })));
+apiRouter.get("/agency/sources.csv", async (_req, res) => {
+  const r = await listAgencySources({});
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const out = ["domain,title,query,geo,used,sourced_at"];
+  for (const i of r.items) out.push([i._id, i.title, i.query, i.geo, !!i.used, i.sourcedAt?.toISOString?.() || ""].map(esc).join(","));
+  res.type("text/csv").set("Content-Disposition", 'attachment; filename="agency-sources.csv"').send(out.join("\n"));
+});
+// Start a crawl straight from what was sourced, so the list never has to round-trip through a file.
+apiRouter.post("/agency/from-sources", async (req, res) => {
+  const limit = Math.min(parseInt(req.body?.limit, 10) || 2000, 50000);
+  const { items } = await listAgencySources({ unusedOnly: true, limit });
+  if (!items.length) return res.status(400).json({ ok: false, error: "no unused sourced domains — run sourcing first" });
+  const domains = items.map((i) => i._id);
+  const r = await startAgencyRun(domains, req.body || {});
+  if (r.ok) await markSourcesUsed(domains);
+  res.status(r.ok ? 200 : 400).json({ ...r, fromSources: domains.length });
+});
 apiRouter.post("/agency", async (req, res) => {
   const r = await startAgencyRun(req.body?.domains, req.body || {});
   res.status(r.ok ? 200 : 400).json(r);
