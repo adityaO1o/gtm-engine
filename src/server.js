@@ -9,6 +9,7 @@ import { connect } from "./db/mongo.js";
 import { enrichRouter } from "./routes/enrich.js";
 import { apiRouter } from "./routes/api.js";
 import { mcpRouter } from "./routes/mcp.js";
+import { reportRouter } from "./routes/report.js";
 import { basicAuth } from "./lib/auth.js";
 import { poolSize } from "./lib/proxies.js";
 import { startAutoLoop } from "./pipeline/autoScrape.js";
@@ -79,6 +80,11 @@ app.use("/", enrichLimiter, enrichRouter);
 // Hosted MCP — public URL, guarded by per-teammate secret keys (checked INSIDE the router, not by
 // basic-auth), so it is mounted BEFORE /api. No IP allowlist: teammates connect from anywhere.
 app.use("/mcp", mcpRouter);
+
+// Shareable blacklist reports (blacklist-report.com/r/<token>). PUBLIC by design — the prospect who
+// gets the link has no account and no allowlisted IP — so it mounts before basic-auth and the
+// unguessable token is the only gate. Same reasoning as /mcp above.
+app.use("/", authLimiter, reportRouter);
 
 // Dashboard API — IP allowlist + brute-force guard + basic-auth + rate-limit.
 app.use("/api", ipAllow, authLimiter, apiLimiter, basicAuth, apiRouter);

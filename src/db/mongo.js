@@ -181,6 +181,11 @@ export async function connect() {
   // SendKit workspace). _id is a slug; the default workspace is still SENDKIT_KEY from env.
   await db.collection("sendkit_workspaces").createIndex({ label: 1 });
 
+  // Shareable blacklist reports. _id is the URL token; `seed` is looked up to reuse an existing
+  // report instead of minting a second link for the same company.
+  await db.collection("reports").createIndex({ seed: 1 });
+  await db.collection("reports").createIndex({ generatedAt: -1 });
+
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
@@ -227,3 +232,4 @@ export const hostioPages = () => db.collection("hostio_pages");            // ca
 export const hostioUsage = () => db.collection("hostio_usage");            // paid API call audit log
 export const blacklistVerdicts = () => db.collection("blacklist_verdicts"); // local mirror: domain -> verdict
 export const sendkitWorkspaces = () => db.collection("sendkit_workspaces"); // per-teammate SendKit targets
+export const reports = () => db.collection("reports");                      // shareable blacklist reports

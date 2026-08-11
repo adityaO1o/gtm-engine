@@ -10,6 +10,7 @@ import Competitors from "@/components/Competitors";
 import Campaigns from "@/components/Campaigns";
 import Sources from "@/components/Sources";
 import Campaign from "@/components/Campaign";
+import Reports from "@/components/Reports";
 import LeadDrawer from "@/components/LeadDrawer";
 import ReverifyMenu from "@/components/ReverifyMenu";
 import CommandPalette from "@/components/CommandPalette";
@@ -27,9 +28,10 @@ const TABS = [
   { id: "campaigns", label: "Campaigns", icon: "mega" },
   { id: "sources", label: "Sources", icon: "radio" },
   { id: "campaign", label: "Blacklist Campaign", icon: "spark" },
+  { id: "reports", label: "Reports", icon: "shield" },
 ];
-const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", review: "Review · Decide these emails", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources", campaign: "Blacklist Campaign · seed domains → blacklisted infra → contacts" };
-const BODIES = { overview: Overview, leads: Leads, handoff: Handoff, review: Review, competitors: Competitors, campaigns: Campaigns, sources: Sources, campaign: Campaign };
+const TITLES = { overview: "Overview", leads: "Leads", handoff: "Hand-off · No email", review: "Review · Decide these emails", competitors: "Competitors", campaigns: "Campaigns", sources: "Sources", campaign: "Blacklist Campaign · seed domains → blacklisted infra → contacts", reports: "Reports · shareable blacklist proof for prospects" };
+const BODIES = { overview: Overview, leads: Leads, handoff: Handoff, review: Review, competitors: Competitors, campaigns: Campaigns, sources: Sources, campaign: Campaign, reports: Reports };
 
 export default function Dashboard() {
   const [view, setView] = useState("overview");

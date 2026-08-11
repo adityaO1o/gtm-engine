@@ -27,6 +27,7 @@ import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_
 import { upsertLeads, addLeadsToCampaign, addToDnc, listCampaigns, campaignSummary, updateCampaignSchedule } from "../services/sendkit.js";
 import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revokeMcpKey, recentAudit as recentMcpAudit } from "../services/mcpKeys.js";
 import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/domainScan.js";
+import { createReport, listReports, deleteReport, bulkCreateReports } from "../pipeline/report.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
@@ -1048,6 +1049,24 @@ apiRouter.post("/campaign/:id/recover-dropped", async (req, res) => {
   const r = await recoverDroppedSeeds(req.params.id, { apply: true });
   res.status(r.ok ? 200 : 400).json(r);
 });
+// ── Shareable blacklist reports ────────────────────────────────────────────────────────────────
+// Creating one is free for a company a funnel already scanned (the blacklisted domains are stored on
+// the target); an unscanned seed costs exactly one host.io call.
+apiRouter.get("/reports", async (_req, res) => res.json(await listReports({})));
+apiRouter.post("/reports", async (req, res) => {
+  const r = await createReport(S(req.body?.seed), { force: !!req.body?.force });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+apiRouter.post("/reports/bulk", async (req, res) => {
+  const r = await bulkCreateReports({
+    campaignId: S(req.body?.campaignId) || null,
+    minBlacklisted: parseInt(req.body?.minBlacklisted, 10) || 3,
+    limit: parseInt(req.body?.limit, 10) || 500,
+  });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+apiRouter.delete("/reports/:token", async (req, res) => res.json(await deleteReport(req.params.token)));
+
 // Every seed that was EVER dropped, with the verdict explaining why: recovered / still-unknown /
 // genuinely-clean / non-icp / no-cached-pages. Read-only.
 apiRouter.get("/blacklist/dropped.csv", async (_req, res) => {
