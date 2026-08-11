@@ -18,7 +18,7 @@ import { pushDomains, refreshVerdicts, syncAllVerdicts, verdictsFor } from "../s
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
 import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, workspaceCampaignId, DEFAULT_BLACKLIST_CAMPAIGN_ID, leadPayload } from "./blacklistCopy.js";
 import { isExcludedSeed } from "../services/icp.js";
-import { campaigns, campaignTargets, hostioPages, hostioUsage, leads as leadsCol } from "../db/mongo.js";
+import { campaigns, campaignTargets, hostioPages, hostioUsage, reports as reportsCol, leads as leadsCol } from "../db/mongo.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
@@ -996,28 +996,42 @@ export async function droppedSeedsCsv(campaignId) {
 export async function listRecoveredSeeds({ csv = false } = {}) {
   const rows = await campaignTargets().find(
     { recoveredAt: { $exists: true } },
-    { projection: { seed: 1, campaignId: 1, stage: 1, blacklistedCount: 1, confirmedCount: 1, blacklistedDomains: 1, recoveredAt: 1 } },
+    { projection: { seed: 1, campaignId: 1, stage: 1, blacklistedCount: 1, confirmedCount: 1, blacklistedDomains: 1, companyName: 1, people: 1, recoveredAt: 1 } },
   ).sort({ blacklistedCount: -1 }).toArray();
+
+  // The shareable report for each seed, if one has been generated — the whole point of the file is
+  // that it can be worked straight down, and a seed without its link means opening another tab.
+  const bySeed = new Map(
+    (await reportsCol().find({ seed: { $in: [...new Set(rows.map((r) => r.seed))] } },
+      { projection: { seed: 1, blacklistedCount: 1 } }).toArray().catch(() => []))
+      .map((r) => [r.seed, r._id]),
+  );
 
   const items = rows.map((r) => ({
     seed: r.seed,
+    companyName: r.companyName || "",
     campaignId: String(r.campaignId),
     stage: r.stage,
     blacklisted: r.blacklistedCount || 0,
     checked: r.confirmedCount || 0,
+    contacts: (r.people || []).filter((p) => p.email).length,
     topDomains: (r.blacklistedDomains || []).slice(0, 5).map((d) => d.domain),
     zones: [...new Set((r.blacklistedDomains || []).flatMap((d) => d.zones || []))].slice(0, 5),
+    reportToken: bySeed.get(r.seed) || "",
     recoveredAt: r.recoveredAt,
   }));
   if (!csv) return { ok: true, count: items.length, items };
 
+  const host = process.env.REPORT_PUBLIC_URL || "https://blacklist-report.com";
   const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const out = ["seed,blacklisted_domains,domains_checked,top_blacklisted,listed_zones,stage,campaign_id,recovered_at"];
+  const out = ["seed,company,blacklisted_domains,domains_checked,contacts,report_url,top_blacklisted,listed_zones,stage,campaign_id,recovered_at"];
   for (const i of items) {
-    out.push([i.seed, i.blacklisted, i.checked, i.topDomains.join("|"), i.zones.join("|"), i.stage, i.campaignId,
+    out.push([i.seed, i.companyName || "", i.blacklisted, i.checked, i.contacts,
+      i.reportToken ? `${host}/r/${i.reportToken}` : "",
+      i.topDomains.join("|"), i.zones.join("|"), i.stage, i.campaignId,
       i.recoveredAt ? new Date(i.recoveredAt).toISOString() : ""].map(esc).join(","));
   }
-  return { ok: true, count: items.length, csv: out.join("\n") };
+  return { ok: true, count: items.length, withReport: items.filter((i) => i.reportToken).length, csv: out.join("\n") };
 }
 
 // The SendKit lead payload for the RECOVERED seeds only, across every campaign at once. Same columns
