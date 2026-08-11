@@ -9,7 +9,7 @@ import { connect } from "./db/mongo.js";
 import { enrichRouter } from "./routes/enrich.js";
 import { apiRouter } from "./routes/api.js";
 import { mcpRouter } from "./routes/mcp.js";
-import { reportRouter } from "./routes/report.js";
+import { reportRouter, reportLanding } from "./routes/report.js";
 import { basicAuth } from "./lib/auth.js";
 import { poolSize } from "./lib/proxies.js";
 import { startAutoLoop } from "./pipeline/autoScrape.js";
@@ -87,9 +87,10 @@ app.use("/mcp", mcpRouter);
 app.use("/", authLimiter, reportRouter);
 
 // Both domains reach this same app, so without this the report host would also serve the dashboard:
-// a prospect who trims the URL to the bare domain would be met by an internal login box. On the
-// report host, /r/* (handled above) is the ONLY thing that exists — everything else leaves for the
-// marketing site rather than advertising that there is something here to log into.
+// a stranger who trims the URL to the bare domain would be met by an internal login box. On the
+// report host only two things exist — the request form at / and /r/<token> (handled above). The rest
+// 404s rather than redirecting, because a redirect would name the product this domain belongs to,
+// and the whole point of this surface is that it doesn't.
 const REPORT_HOSTS = new Set(
   (process.env.REPORT_HOSTS || "blacklist-report.com,www.blacklist-report.com")
     .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
@@ -97,7 +98,11 @@ const REPORT_HOSTS = new Set(
 app.use((req, res, next) => {
   if (!REPORT_HOSTS.has(String(req.hostname || "").toLowerCase())) return next();
   if (req.path === "/health") return next();
-  return res.redirect(302, process.env.REPORT_HOME_URL || "https://inboxkit.com");
+  // The root is the request form — the only thing a stranger can reach without a token.
+  if (req.path === "/" && req.method === "GET") return reportLanding(req, res);
+  // Everything else on this host does not exist. A 404 rather than a redirect, so the report domain
+  // never advertises which product it belongs to.
+  return res.status(404).type("html").send("<!doctype html><meta charset=utf-8><meta name=robots content=noindex><title>Not found</title><p style=\"font:15px -apple-system,Segoe UI,Roboto,sans-serif;text-align:center;margin:18vh auto;color:#697386\">Not found.");
 });
 
 // Dashboard API — IP allowlist + brute-force guard + basic-auth + rate-limit.

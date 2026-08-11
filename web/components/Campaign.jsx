@@ -5,6 +5,7 @@ import { num, ts } from "@/lib/format";
 import { j, post, del } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { useDash } from "@/lib/ctx";
+import Pager from "@/components/Pager";
 
 // The funnel stages, in order, with how to read each tally off the campaign's stage counts.
 // Stage groups. A seed that cleared the blacklist gate sits in enrich_queued until the (slower)
@@ -38,24 +39,7 @@ const STAGE_META = {
   interrupted: { label: "interrupted (redeploy)", cls: "p-role-based" },
 };
 
-function csvEscape(v) { return `"${String(v ?? "").replace(/"/g, '""')}"`; }
-function exportCsv(rows) {
-  const out = [["company", "redirectCount", "blacklistedCount", "blacklistedDomains", "person", "title", "seniority", "department", "email", "email_status", "linkedin"]];
-  for (const r of rows) {
-    const bl = (r.blacklistedDomains || []).map((d) => d.domain).join("|");
-    if (r.people?.length) {
-      for (const p of r.people) out.push([r.seed, r.redirectCount, r.blacklistedCount, bl, p.name, p.job_title, p.seniority, p.department, p.email || "", p.email_status || "", p.linkedin_url]);
-    } else {
-      out.push([r.seed, r.redirectCount, r.blacklistedCount, bl, "", "", "", "", "", "", ""]);
-    }
-  }
-  const csv = out.map((r) => r.map(csvEscape).join(",")).join("\n");
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-  a.download = "campaign-prospects.csv";
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
+
 
 export default function Campaign() {
   const toast = useToast();
@@ -67,7 +51,18 @@ export default function Campaign() {
   const rateRef = useRef({ at: 0, processed: 0 });
   const [campaign, setCampaign] = useState(null);
   const [results, setResults] = useState([]);
+  // Results are PAGED server-side: one run holds 22k seeds, each row carrying its people[] and
+  // blacklistedDomains[]. Loading them all was megabytes per poll and a table the browser choked on.
+  const [resCount, setResCount] = useState(0);
+  const [resPage, setResPage] = useState(0);
+  const [resSize, setResSize] = useState(100);
+  const [resQ, setResQ] = useState("");
+  const [debouncedResQ, setDebouncedResQ] = useState("");
+  const [contacts, setContacts] = useState(0);
   const [history, setHistory] = useState([]);
+  const [histCount, setHistCount] = useState(0);
+  const [histPage, setHistPage] = useState(0);
+  const [histSize, setHistSize] = useState(25);
   const [starting, setStarting] = useState(false);
   const [enrich, setEnrich] = useState(true); // pull contacts via Prospeo (paid); off = blacklist verdict only
   const [openRow, setOpenRow] = useState(null);
@@ -88,8 +83,11 @@ export default function Campaign() {
   const wsLabel = (id) => workspaces.find((w) => w.id === id)?.label || "SendKit";
 
   async function pushToSendkit() {
-    const contacts = results.reduce((a, r) => a + (r.people || []).filter((p) => p.email).length, 0);
-    if (!contacts) { toast("No contacts with a revealed email yet", "bad"); return; }
+    // Ask the server for the run's real contact total — reducing over `results` would only ever count
+    // the page currently on screen.
+    let total = contacts;
+    try { total = (await j(`/api/campaign/${campId}/contacts-count`)).contacts || 0; } catch { /* fall back to the cached count */ }
+    if (!total) { toast("No contacts with a revealed email yet", "bad"); return; }
 
     // Ask the server exactly where this would land, so the prompt states the real target instead of
     // assuming (each workspace has its own campaign, with its own copy).
@@ -206,14 +204,22 @@ export default function Campaign() {
     setRevealing(null);
   }
 
-  const loadHistory = useCallback(() => { j("/api/campaign").then((d) => setHistory(d.items || [])).catch(() => {}); }, []);
+  const loadHistory = useCallback(() => {
+    j(`/api/campaign?page=${histPage}&size=${histSize}`)
+      .then((d) => { setHistory(d.items || []); setHistCount(d.count || 0); })
+      .catch(() => {});
+  }, [histPage, histSize]);
   useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  // Debounced so typing doesn't fire a query per keystroke against a 22k-row collection.
+  useEffect(() => { const t = setTimeout(() => { setDebouncedResQ(resQ); setResPage(0); }, 300); return () => clearTimeout(t); }, [resQ]);
 
   const poll = useCallback(function p(id) {
     clearTimeout(timer.current);
-    Promise.all([j(`/api/campaign/${id}`), j(`/api/campaign/${id}/results`)]).then(([c, r]) => {
+    const qs = `page=${resPage}&size=${resSize}&q=${encodeURIComponent(debouncedResQ)}`;
+    Promise.all([j(`/api/campaign/${id}`), j(`/api/campaign/${id}/results?${qs}`)]).then(([c, r]) => {
       if (!c || c.error) return;
-      setCampaign(c); setResults(r.items || []);
+      setCampaign(c); setResults(r.items || []); setResCount(r.count || 0);
       // ETA from the processing rate (seeds settled per second) between polls.
       if (c.status === "running" && c.seedCount) {
         const now = Date.now(), prev = rateRef.current;
@@ -236,10 +242,20 @@ export default function Campaign() {
       if (c.status === "running") timer.current = setTimeout(() => p(id), 1500);
       else loadHistory();
     }).catch(() => {});
-  }, [loadHistory]);
+  }, [loadHistory, resPage, resSize, debouncedResQ]);
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  const openCampaign = useCallback((id) => { setView("detail"); setCampaign(null); setResults([]); setOpenRow(null); setEtaText(""); rateRef.current = { at: 0, processed: 0 }; poll(id); }, [poll]);
+  // Paging/searching an open campaign refetches it. campId is read through a ref-free guard: poll()
+  // already carries the id, so this only fires once a campaign is actually open.
+  useEffect(() => { if (campId) poll(campId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [resPage, resSize, debouncedResQ]);
+
+  const openCampaign = useCallback((id) => {
+    setView("detail"); setCampaign(null); setResults([]); setResCount(0); setOpenRow(null);
+    setResPage(0); setResQ(""); setDebouncedResQ(""); setEtaText("");
+    rateRef.current = { at: 0, processed: 0 };
+    j(`/api/campaign/${id}/contacts-count`).then((d) => setContacts(d.contacts || 0)).catch(() => setContacts(0));
+    poll(id);
+  }, [poll]);
 
   async function start() {
     if (!seeds.trim() || starting) return;
@@ -330,6 +346,9 @@ export default function Campaign() {
         ) : (
           <div className="tablewrap"><div className="empty"><Icon name="spark" /><b>No campaigns yet</b>Paste domains above and run one.</div></div>
         )}
+        {histCount > histSize || histPage > 0
+          ? <Pager count={histCount} page={histPage} setPage={setHistPage} size={histSize} setSize={setHistSize} />
+          : null}
       </>
     );
   }
@@ -376,25 +395,27 @@ export default function Campaign() {
             <Icon name={enrichingCompanies ? "refresh" : "mail"} />{enrichingCompanies ? "Enriching…" : `Re-enrich contacts (${num(stages.done)})`}
           </button>
         ) : null}
-        {results.length && !running ? (
+        {resCount && !running ? (
           <button className="btn btn-ghost btn-sm" disabled={backfilling} onClick={backfillContacts}
             title="For companies Prospeo found nobody at, use our own hot/warm engagers on that domain. Free — no Prospeo credits.">
             <Icon name={backfilling ? "refresh" : "users"} />{backfilling ? "Filling…" : "Fill from our leads"}
           </button>
         ) : null}
-        {results.length && !running ? (
+        {resCount && !running ? (
           <button className="btn btn-ghost btn-sm" disabled={pushing} onClick={pushToSendkit}
             title="Creates a DRAFT SendKit campaign with the blacklist sequence + per-lead variables. Nothing is sent.">
             <Icon name={pushing ? "refresh" : "mega"} />{pushing ? "Pushing…" : "Push to SendKit"}
           </button>
         ) : null}
-        {results.length ? (
+        {resCount ? (
           <>
             {/* the exact rows that go to SendKit — same payload, same variables */}
             <a className="btn btn-ghost btn-sm" href={`/api/campaign/${campId}/csv`} download>
               <Icon name="download" />Campaign CSV
             </a>
-            <button className="btn btn-ghost btn-sm" onClick={() => exportCsv(results)}><Icon name="download" />Full report</button>
+            <a className="btn btn-ghost btn-sm" href={`/api/campaign/${campId}/results.csv`} download>
+              <Icon name="download" />Full report
+            </a>
           </>
         ) : null}
         {campaign && campId ? (
@@ -446,6 +467,16 @@ export default function Campaign() {
           })}
         </div>
       ) : <div className="tablewrap"><div className="loading"><span className="spin" />Loading campaign…</div></div>}
+
+      {campaign ? (
+        <div className="toolbar">
+          <input className="search" style={{ maxWidth: 300 }} placeholder="Search a seed domain…"
+            value={resQ} onChange={(e) => setResQ(e.target.value)} />
+          {resQ ? <button className="btn btn-ghost btn-sm" onClick={() => setResQ("")}><Icon name="x" />Clear</button> : null}
+          <div className="grow" />
+          <span className="resn"><b>{num(resCount)}</b> seed{resCount === 1 ? "" : "s"}{debouncedResQ ? " matching" : ""}</span>
+        </div>
+      ) : null}
 
       {results.length ? (
         <>
@@ -548,9 +579,10 @@ export default function Campaign() {
               </tbody>
             </table>
           </div>
+          <Pager count={resCount} page={resPage} setPage={setResPage} size={resSize} setSize={setResSize} />
         </>
       ) : campaign && !running ? (
-        <div className="tablewrap"><div className="empty"><Icon name="search" /><b>No qualifying prospects</b>No company passed both gates. Try lowering the thresholds.</div></div>
+        <div className="tablewrap"><div className="empty"><Icon name="search" /><b>{debouncedResQ ? "No seed matches that search" : "No qualifying prospects"}</b>{debouncedResQ ? "Try a different domain." : "No company passed both gates. Try lowering the thresholds."}</div></div>
       ) : null}
 
       {preview ? (

@@ -186,6 +186,12 @@ export async function connect() {
   await db.collection("reports").createIndex({ seed: 1 });
   await db.collection("reports").createIndex({ generatedAt: -1 });
 
+  // Inbound report requests from the public landing page (work email + matching company domain).
+  // Unique on email+seed so a visitor hammering the form makes one request, not fifty.
+  await db.collection("report_requests").createIndex({ email: 1, seed: 1 }, { unique: true });
+  await db.collection("report_requests").createIndex({ createdAt: -1 });
+  await db.collection("report_requests").createIndex({ status: 1 });
+
   log.info("mongo connected", { db: config.mongoDb });
   return db;
 }
@@ -233,3 +239,4 @@ export const hostioUsage = () => db.collection("hostio_usage");            // pa
 export const blacklistVerdicts = () => db.collection("blacklist_verdicts"); // local mirror: domain -> verdict
 export const sendkitWorkspaces = () => db.collection("sendkit_workspaces"); // per-teammate SendKit targets
 export const reports = () => db.collection("reports");                      // shareable blacklist reports
+export const reportRequests = () => db.collection("report_requests");       // inbound "send me my report"

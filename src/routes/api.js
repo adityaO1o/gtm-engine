@@ -27,12 +27,12 @@ import { CAMPAIGNS, campaignByKey, campaignLabel, sendkitIdsFor, INTAKE_SENDKIT_
 import { upsertLeads, addLeadsToCampaign, addToDnc, listCampaigns, campaignSummary, updateCampaignSchedule } from "../services/sendkit.js";
 import { createKey as createMcpKey, listKeys as listMcpKeys, revokeKey as revokeMcpKey, recentAudit as recentMcpAudit } from "../services/mcpKeys.js";
 import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/domainScan.js";
-import { createReport, listReports, deleteReport, bulkCreateReports } from "../pipeline/report.js";
+import { createReport, listReports, deleteReport, bulkCreateReports, listRequests, setRequestStatus } from "../pipeline/report.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
 import { startBlacklistScan, estimateBlacklistScan, getBlacklistScan, blacklistScanResults } from "../pipeline/blacklistScan.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, recoverDroppedSeeds, droppedSeedsCsv, listRecoveredSeeds, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, recoverDroppedSeeds, droppedSeedsCsv, listRecoveredSeeds, campaignResultsCsv, campaignContactCount, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
 import { backfillCompanyDomains, backfillDomainsStatus } from "../pipeline/backfillDomains.js";
 import { reclassifyIcp, reclassifyIcpStatus } from "../pipeline/reclassifyIcp.js";
 import { safeEqual } from "../lib/auth.js";
@@ -970,7 +970,9 @@ apiRouter.post("/campaign", async (req, res) => {
     res.json({ started: true, ...r });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
-apiRouter.get("/campaign", async (_req, res) => res.json({ items: await listOutreachCampaigns() }));
+apiRouter.get("/campaign", async (req, res) => res.json(await listOutreachCampaigns(
+  Math.min(parseInt(req.query.size, 10) || 20, 200), { page: parseInt(req.query.page, 10) || 0 },
+)));
 apiRouter.get("/hostio/usage", async (_req, res) => res.json(await hostioUsageReport()));
 
 // Live API credit balances, bypassing the 5-minute service caches — after a big campaign the cached
@@ -1016,7 +1018,17 @@ apiRouter.get("/campaign/:id", async (req, res) => {
   if (!c) return res.status(404).json({ error: "not found" });
   res.json(c);
 });
-apiRouter.get("/campaign/:id/results", async (req, res) => res.json({ items: await getCampaignResults(req.params.id) }));
+apiRouter.get("/campaign/:id/results", async (req, res) => res.json(await getCampaignResults(req.params.id, {
+  q: S(req.query.q), stage: S(req.query.stage),
+  page: parseInt(req.query.page, 10) || 0, size: Math.min(parseInt(req.query.size, 10) || 100, 1000),
+})));
+// Whole run as CSV — built server-side so "Full report" never silently means "the page I'm on".
+apiRouter.get("/campaign/:id/results.csv", async (req, res) => {
+  const csv = await campaignResultsCsv(req.params.id);
+  if (csv == null) return res.status(404).json({ error: "not found" });
+  res.type("text/csv").set("Content-Disposition", `attachment; filename="campaign-${req.params.id}.csv"`).send(csv);
+});
+apiRouter.get("/campaign/:id/contacts-count", async (req, res) => res.json({ contacts: await campaignContactCount(req.params.id) }));
 // Resume an interrupted/stalled campaign — reprocesses only the seeds without a final verdict, so
 // already-enriched companies keep their result (and don't spend their Prospeo credits again).
 apiRouter.post("/campaign/:id/resume", async (req, res) => {
@@ -1052,7 +1064,14 @@ apiRouter.post("/campaign/:id/recover-dropped", async (req, res) => {
 // ── Shareable blacklist reports ────────────────────────────────────────────────────────────────
 // Creating one is free for a company a funnel already scanned (the blacklisted domains are stored on
 // the target); an unscanned seed costs exactly one host.io call.
-apiRouter.get("/reports", async (_req, res) => res.json(await listReports({})));
+apiRouter.get("/reports", async (req, res) => res.json(await listReports({
+  q: S(req.query.q), page: parseInt(req.query.page, 10) || 0, size: Math.min(parseInt(req.query.size, 10) || 50, 500),
+})));
+// Inbound requests from the public landing page.
+apiRouter.get("/report-requests", async (req, res) => res.json(await listRequests({
+  status: S(req.query.status), page: parseInt(req.query.page, 10) || 0, size: Math.min(parseInt(req.query.size, 10) || 50, 500),
+})));
+apiRouter.post("/report-requests/:id", async (req, res) => res.json(await setRequestStatus(req.params.id, S(req.body?.status))));
 apiRouter.post("/reports", async (req, res) => {
   const r = await createReport(S(req.body?.seed), { force: !!req.body?.force });
   res.status(r.ok ? 200 : 400).json(r);

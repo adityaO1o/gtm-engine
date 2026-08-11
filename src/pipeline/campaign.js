@@ -548,16 +548,60 @@ export async function getCampaign(id) {
 // EVERY seed's full funnel result (not just qualified ones) — so you can see each domain's whole
 // journey: host.io redirect count, how many our discovery confirmed, how many were blacklisted, and
 // what Prospeo returned. Sorted so the most-qualified prospects surface first, dropped ones last.
-export async function getCampaignResults(id) {
-  if (!ObjectId.isValid(id)) return [];
-  return campaignTargets().find(
-    { campaignId: new ObjectId(id) },
-    { projection: { campaignId: 0 } },
-  ).sort({ blacklistedCount: -1, confirmedCount: -1, redirectCount: -1 }).toArray();
+//
+// PAGED. One run holds 22,333 seeds, and each row carries its people[] and blacklistedDomains[] —
+// sending them all was megabytes per poll and a table the browser had to lay out in full.
+export async function getCampaignResults(id, { q = "", stage = "", page = 0, size = 100 } = {}) {
+  if (!ObjectId.isValid(id)) return { items: [], count: 0 };
+  const find = { campaignId: new ObjectId(id) };
+  if (stage) find.stage = stage;
+  if (q) find.seed = new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  const [items, count] = await Promise.all([
+    campaignTargets().find(find, { projection: { campaignId: 0 } })
+      .sort({ blacklistedCount: -1, confirmedCount: -1, redirectCount: -1 })
+      .skip(page * size).limit(size).toArray(),
+    campaignTargets().countDocuments(find),
+  ]);
+  return { items, count };
 }
 
-export async function listCampaigns(limit = 20) {
-  return campaigns().find({}).sort({ createdAt: -1 }).limit(limit).toArray();
+// The whole run as CSV, built server-side. The dashboard used to assemble this from the rows it had
+// already loaded — which silently became "the current page" once results were paged.
+export async function campaignResultsCsv(id) {
+  if (!ObjectId.isValid(id)) return null;
+  const cols = ["seed", "stage", "redirect_count", "confirmed", "blacklisted", "blacklisted_domains", "contacts", "company"];
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const out = [cols.join(",")];
+  const cursor = campaignTargets().find({ campaignId: new ObjectId(id) })
+    .sort({ blacklistedCount: -1, confirmedCount: -1, redirectCount: -1 });
+  for await (const r of cursor) {
+    out.push([
+      r.seed, r.stage, r.redirectCount ?? "", r.confirmedCount ?? 0, r.blacklistedCount ?? 0,
+      (r.blacklistedDomains || []).map((d) => d.domain).join("|"),
+      (r.people || []).filter((p) => p.email).length, r.companyName || "",
+    ].map(esc).join(","));
+  }
+  return out.join("\n");
+}
+
+// How many contacts this run actually produced — the number the header used to derive by reducing
+// over every loaded row, which stops being the truth as soon as the rows are paged.
+export async function campaignContactCount(id) {
+  if (!ObjectId.isValid(id)) return 0;
+  const [r] = await campaignTargets().aggregate([
+    { $match: { campaignId: new ObjectId(id), peopleCount: { $gt: 0 } } },
+    { $project: { n: { $size: { $filter: { input: { $ifNull: ["$people", []] }, as: "p", cond: { $ne: ["$$p.email", null] } } } } } },
+    { $group: { _id: null, total: { $sum: "$n" } } },
+  ]).toArray();
+  return r?.total || 0;
+}
+
+export async function listCampaigns(limit = 20, { page = 0 } = {}) {
+  const [items, count] = await Promise.all([
+    campaigns().find({}).sort({ createdAt: -1 }).skip(page * limit).limit(limit).toArray(),
+    campaigns().countDocuments({}),
+  ]);
+  return { items, count };
 }
 
 // On-demand Stage 5a: reveal the actual emails for ONE company's contacts. search-person returns

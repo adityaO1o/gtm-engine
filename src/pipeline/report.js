@@ -15,7 +15,7 @@ import { splitDomain } from "../lib/permute.js";
 import { runPool } from "../lib/pool.js";
 import { apiRedirectPage } from "../services/hostio.js";
 import { pushDomains, syncAllVerdicts, verdictsFor } from "../services/blacklistProject.js";
-import { campaignTargets, hostioPages, hostioUsage, reports, leads as leadsCol } from "../db/mongo.js";
+import { campaignTargets, hostioPages, hostioUsage, reports, reportRequests, leads as leadsCol } from "../db/mongo.js";
 import { log } from "../lib/logger.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -33,6 +33,16 @@ function newToken() {
 export function normalizeSeed(raw) {
   const { label, tld } = splitDomain(raw);
   return label && tld ? `${label}.${tld}` : "";
+}
+
+// The registrable domain — subdomains dropped. splitDomain keeps them (a funnel seed is a specific
+// host), but "does this person work here" is a question about the company, not the host.
+//   mail.acme.com -> acme.com      acme.co.uk -> acme.co.uk      mail.acme.co.uk -> acme.co.uk
+export function registrable(raw) {
+  const { label, tld } = splitDomain(raw);
+  if (!label || !tld) return "";
+  const bits = label.split(".").filter(Boolean);
+  return `${bits[bits.length - 1]}.${tld}`;
 }
 
 // A human company name for the report header. "acme.com's 507 domains" reads like a machine wrote
@@ -172,16 +182,101 @@ export async function readReport(token) {
   return doc;
 }
 
-export async function listReports({ limit = 200 } = {}) {
-  const items = await reports().find({}, {
-    projection: { seed: 1, companyName: 1, generatedAt: 1, blacklistedCount: 1, totalDomains: 1, views: 1, lastViewedAt: 1, source: 1 },
-  }).sort({ generatedAt: -1 }).limit(limit).toArray();
-  return { ok: true, items: items.map((i) => ({ token: i._id, ...i, _id: undefined })) };
+const rx = (s) => new RegExp(String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+
+export async function listReports({ q = "", page = 0, size = 50 } = {}) {
+  const find = q ? { $or: [{ seed: rx(q) }, { companyName: rx(q) }] } : {};
+  const [items, count] = await Promise.all([
+    reports().find(find, {
+      projection: { seed: 1, companyName: 1, generatedAt: 1, blacklistedCount: 1, totalDomains: 1, views: 1, lastViewedAt: 1, source: 1 },
+    }).sort({ generatedAt: -1 }).skip(page * size).limit(size).toArray(),
+    reports().countDocuments(find),
+  ]);
+  return { ok: true, count, items: items.map((i) => ({ token: i._id, ...i, _id: undefined })) };
 }
 
 export async function deleteReport(token) {
   const { deletedCount } = await reports().deleteOne({ _id: String(token || "") });
   return { ok: !!deletedCount, deleted: deletedCount };
+}
+
+// ── Inbound requests from the public landing page ──────────────────────────────────────────────
+// A visitor asks for their own company's report. The gate is that the email's domain must BE the
+// company domain they typed: it proves they work there, keeps a competitor from pulling a rival's
+// footprint, and gives us an address the report can actually be sent to.
+
+// Free-mail providers. Not an anti-abuse measure so much as the whole point: a gmail address tells
+// us nothing about which company's infrastructure the visitor is entitled to see.
+const FREE_MAIL = new Set([
+  "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.in", "yahoo.co.uk", "hotmail.com", "outlook.com",
+  "live.com", "msn.com", "aol.com", "icloud.com", "me.com", "mac.com", "proton.me", "protonmail.com",
+  "pm.me", "gmx.com", "gmx.net", "mail.com", "zoho.com", "yandex.com", "rediffmail.com", "tutanota.com",
+  "hey.com", "fastmail.com", "hushmail.com", "qq.com", "163.com", "126.com", "naver.com",
+]);
+
+export function validateRequest(rawEmail, rawDomain) {
+  const email = String(rawEmail || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, field: "email", error: "That doesn't look like a valid email address." };
+
+  const emailDomain = email.split("@")[1];
+  if (FREE_MAIL.has(emailDomain)) {
+    return { ok: false, field: "email", error: "Please use your work email — a personal address can't be matched to a company." };
+  }
+
+  const seed = registrable(rawDomain);
+  if (!seed) return { ok: false, field: "domain", error: "That doesn't look like a valid company domain." };
+
+  // Compare REGISTRABLE domains, so mail.acme.com and acme.com are the same company. Plenty of
+  // companies mail from a subdomain, and a visitor typing "mail.acme.com" is not an impostor —
+  // rejecting them would be a bug wearing the costume of a security check. A rival still can't pass,
+  // because they'd need an address at acme.com to begin with.
+  if (registrable(emailDomain) !== seed) {
+    return { ok: false, field: "domain", error: `Your email is @${emailDomain}, which doesn't match ${seed}. Both must be the same company.` };
+  }
+  return { ok: true, email, seed };
+}
+
+export async function createRequest(rawEmail, rawDomain, meta = {}) {
+  const v = validateRequest(rawEmail, rawDomain);
+  if (!v.ok) return v;
+
+  const now = new Date();
+  // Upsert on email+seed: refreshing the form or double-clicking submit must not queue a second
+  // request, and a returning visitor should update their existing one rather than duplicate it.
+  await reportRequests().updateOne(
+    { email: v.email, seed: v.seed },
+    {
+      $set: { updatedAt: now, ip: meta.ip || null, userAgent: (meta.userAgent || "").slice(0, 200) },
+      $setOnInsert: { email: v.email, seed: v.seed, status: "new", createdAt: now, reportToken: null },
+      $inc: { submissions: 1 },
+    },
+    { upsert: true },
+  );
+  log.info("report requested", { seed: v.seed, email: v.email });
+
+  // If a funnel already scanned this company, the report costs nothing and can be ready before we
+  // even reply — so build it in the background and attach it. Never blocks the visitor's response.
+  createReport(v.seed, { reuse: true })
+    .then((r) => { if (r.ok) return reportRequests().updateOne({ email: v.email, seed: v.seed }, { $set: { reportToken: r.token, blacklistedCount: r.blacklistedCount } }); })
+    .catch(() => {});
+
+  return { ok: true, email: v.email, seed: v.seed };
+}
+
+export async function listRequests({ status = "", page = 0, size = 50 } = {}) {
+  const find = status ? { status } : {};
+  const [items, count] = await Promise.all([
+    reportRequests().find(find).sort({ createdAt: -1 }).skip(page * size).limit(size).toArray(),
+    reportRequests().countDocuments(find),
+  ]);
+  return { ok: true, count, items };
+}
+
+export async function setRequestStatus(id, status) {
+  if (!["new", "sent", "ignored"].includes(status)) return { ok: false, error: "bad status" };
+  if (!ObjectId.isValid(id)) return { ok: false, error: "bad id" };
+  await reportRequests().updateOne({ _id: new ObjectId(id) }, { $set: { status, updatedAt: new Date() } });
+  return { ok: true };
 }
 
 // Generate reports in bulk for seeds a funnel already scanned — free, since every one of them comes
