@@ -19,10 +19,10 @@ services:
       - "3001"
     environment:
       PORT: 3001
-      # Overridable. `mongo` is a service alias, and on a shared Dokploy network that name can
-      # resolve to a different stack's container — which looks like an empty database rather than a
-      # connection error. Set MONGO_URI in Dokploy to the exact container name to pin it.
-      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
+      # NOT overridable, deliberately. This alias already resolves to the database holding the real
+      # data, and a shared MONGO_URI override once pointed the app at an empty one — 72k leads
+      # "vanished" until it was removed. The workers get their own knob below; this one stays fixed.
+      MONGO_URI: mongodb://mongo:27017
       MONGO_DB: gtm
       INGEST_TOKEN: ${INGEST_TOKEN}
       PROSPEO_KEY: ${PROSPEO_KEY}
@@ -116,7 +116,7 @@ services:
     restart: unless-stopped
     command: ["node", "src/worker.js"]
     environment:
-      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
+      MONGO_URI: ${WORKER_MONGO_URI:-mongodb://mongo:27017}
       MONGO_DB: gtm
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
       # Same downstreams the funnel uses — the worker runs the real scan, not a copy of it.
@@ -148,7 +148,7 @@ services:
       context: ./crawler
     restart: unless-stopped
     environment:
-      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
+      MONGO_URI: ${WORKER_MONGO_URI:-mongodb://mongo:27017}
       MONGO_DB: gtm
       CRAWL_CONCURRENCY: ${CRAWL_CONCURRENCY:-64}
       CRAWL_MAX_CASE_STUDIES: ${CRAWL_MAX_CASE_STUDIES:-40}
