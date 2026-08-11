@@ -281,15 +281,23 @@ export async function setRequestStatus(id, status) {
 
 // Generate reports in bulk for seeds a funnel already scanned — free, since every one of them comes
 // from fromCache(). Skips seeds that already have a report so it's safe to re-run.
-export async function bulkCreateReports({ campaignId, minBlacklisted = 3, limit = 500 } = {}) {
+export async function bulkCreateReports({ campaignId, minBlacklisted = 3, limit = 50_000 } = {}) {
   const q = { blacklistedCount: { $gte: minBlacklisted }, stage: { $in: ["done", "qualified"] } };
   if (campaignId) {
     if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
     q.campaignId = new ObjectId(campaignId);
   }
-  const targets = await campaignTargets().find(q, { projection: { seed: 1 } })
-    .sort({ blacklistedCount: -1 }).limit(limit).toArray();
+  const [targets, total] = await Promise.all([
+    campaignTargets().find(q, { projection: { seed: 1 } }).sort({ blacklistedCount: -1 }).limit(limit).toArray(),
+    campaignTargets().countDocuments(q),
+  ]);
   if (!targets.length) return { ok: false, error: "no scanned companies match that filter" };
+
+  // Say so when the cap bit. Sorting by blacklistedCount desc means a silent truncation drops the
+  // LOW end — so the run looks complete while exactly the weakest-but-still-qualifying companies
+  // are missing, which is indistinguishable from "those had no reports to make".
+  const truncated = total > targets.length;
+  if (truncated) log.warn("bulk reports hit the limit", { matched: total, taken: targets.length, dropped: total - targets.length });
 
   const seeds = [...new Set(targets.map((t) => t.seed))];
   const already = new Set((await reports().find({ seed: { $in: seeds } }, { projection: { seed: 1 } }).toArray()).map((r) => r.seed));
@@ -301,6 +309,6 @@ export async function bulkCreateReports({ campaignId, minBlacklisted = 3, limit 
     if (r.ok) created++; else failed++;
   }, { concurrency: 8 });
 
-  log.info("bulk blacklist reports", { requested: seeds.length, skipped: already.size, created, failed });
-  return { ok: true, matched: seeds.length, alreadyHadReport: already.size, created, failed };
+  log.info("bulk blacklist reports", { requested: seeds.length, skipped: already.size, created, failed, truncated });
+  return { ok: true, matched: seeds.length, alreadyHadReport: already.size, created, failed, truncated, ...(truncated ? { notCovered: total - targets.length } : {}) };
 }
