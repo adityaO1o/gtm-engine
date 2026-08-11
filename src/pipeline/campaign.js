@@ -898,6 +898,35 @@ export async function recoverDroppedSeeds(campaignId, { apply = false } = {}) {
   return { ok: true, applied: apply, scanned: dropped.length, recoverable, recovered, noCachedPages, stillUnknown, nonIcp, items };
 }
 
+// Every seed recoverDroppedSeeds brought back, newest first. `recoveredAt` is the marker, so this
+// doubles as the undo list: these are exactly the targets the recovery touched.
+export async function listRecoveredSeeds({ csv = false } = {}) {
+  const rows = await campaignTargets().find(
+    { recoveredAt: { $exists: true } },
+    { projection: { seed: 1, campaignId: 1, stage: 1, blacklistedCount: 1, confirmedCount: 1, blacklistedDomains: 1, recoveredAt: 1 } },
+  ).sort({ blacklistedCount: -1 }).toArray();
+
+  const items = rows.map((r) => ({
+    seed: r.seed,
+    campaignId: String(r.campaignId),
+    stage: r.stage,
+    blacklisted: r.blacklistedCount || 0,
+    checked: r.confirmedCount || 0,
+    topDomains: (r.blacklistedDomains || []).slice(0, 5).map((d) => d.domain),
+    zones: [...new Set((r.blacklistedDomains || []).flatMap((d) => d.zones || []))].slice(0, 5),
+    recoveredAt: r.recoveredAt,
+  }));
+  if (!csv) return { ok: true, count: items.length, items };
+
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const out = ["seed,blacklisted_domains,domains_checked,top_blacklisted,listed_zones,stage,campaign_id,recovered_at"];
+  for (const i of items) {
+    out.push([i.seed, i.blacklisted, i.checked, i.topDomains.join("|"), i.zones.join("|"), i.stage, i.campaignId,
+      i.recoveredAt ? new Date(i.recoveredAt).toISOString() : ""].map(esc).join(","));
+  }
+  return { ok: true, count: items.length, csv: out.join("\n") };
+}
+
 // host.io PAID API usage — totals + recent calls, for the tracking view.
 export async function hostioUsageReport() {
   const [total, today, recent] = await Promise.all([
