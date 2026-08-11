@@ -818,7 +818,7 @@ export async function recoverDroppedSeeds(campaignId, { apply = false } = {}) {
     q.campaignId = new ObjectId(campaignId);
   }
   const dropped = await campaignTargets().find(q).toArray();
-  if (!dropped.length) return { ok: true, applied: apply, scanned: 0, recoverable: 0, recovered: 0, noCachedPages: 0, stillUnknown: 0, items: [] };
+  if (!dropped.length) return { ok: true, applied: apply, scanned: 0, recoverable: 0, recovered: 0, noCachedPages: 0, stillUnknown: 0, nonIcp: 0, items: [] };
 
   // Sync the mirror FIRST. Re-judging against the same stale mirror that caused the drop would just
   // confirm the original mistake.
@@ -853,9 +853,14 @@ export async function recoverDroppedSeeds(campaignId, { apply = false } = {}) {
     for (const [k, v] of await verdictsFor(allDomains.slice(i, i + 5000))) verdicts.set(k, v);
   }
 
-  let recoverable = 0, recovered = 0, noCachedPages = 0, stillUnknown = 0;
+  let recoverable = 0, recovered = 0, noCachedPages = 0, stillUnknown = 0, nonIcp = 0;
   const items = [];
   for (const t of dropped) {
+    // These runs pre-date the ICP exclusion list, so the dropped pile still holds universities,
+    // banks and giants that were later purged on purpose. They are blacklisted often enough to clear
+    // the gate easily — recovering them would quietly undo that purge, so they stay dropped.
+    if (isExcludedSeed(t.seed)) { nonIcp++; continue; }
+
     const domains = [...(domainsOf.get(t.seed) || [])];
     if (!domains.length) { noCachedPages++; continue; }   // pages aged out — only a real re-run can judge it
 
@@ -889,8 +894,8 @@ export async function recoverDroppedSeeds(campaignId, { apply = false } = {}) {
   }
 
   log.warn(apply ? "recovered wrongly-dropped seeds" : "audited wrongly-dropped seeds",
-    { scanned: dropped.length, recoverable, recovered, noCachedPages, stillUnknown });
-  return { ok: true, applied: apply, scanned: dropped.length, recoverable, recovered, noCachedPages, stillUnknown, items };
+    { scanned: dropped.length, recoverable, recovered, noCachedPages, stillUnknown, nonIcp });
+  return { ok: true, applied: apply, scanned: dropped.length, recoverable, recovered, noCachedPages, stillUnknown, nonIcp, items };
 }
 
 // host.io PAID API usage — totals + recent calls, for the tracking view.
