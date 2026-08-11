@@ -32,7 +32,7 @@ import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
 import { startBlacklistScan, estimateBlacklistScan, getBlacklistScan, blacklistScanResults } from "../pipeline/blacklistScan.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, recoverDroppedSeeds, droppedSeedsCsv, listRecoveredSeeds, campaignResultsCsv, campaignContactCount, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, recoverDroppedSeeds, droppedSeedsCsv, listRecoveredSeeds, campaignResultsCsv, campaignContactCount, recoveredLeadsCsv, enrichAllRecovered, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
 import { backfillCompanyDomains, backfillDomainsStatus } from "../pipeline/backfillDomains.js";
 import { reclassifyIcp, reclassifyIcpStatus } from "../pipeline/reclassifyIcp.js";
 import { safeEqual } from "../lib/auth.js";
@@ -1093,6 +1093,15 @@ apiRouter.get("/blacklist/dropped.csv", async (_req, res) => {
   if (!r.ok) return res.status(400).json(r);
   res.type("text/csv").set("Content-Disposition", 'attachment; filename="dropped-seeds.csv"').send(r.csv);
 });
+// Contact enrichment for every recovered seed, across all the campaigns they're spread over.
+// Spends Prospeo credits: ~1 search per company plus up to CAMPAIGN_REVEAL_PER_COMPANY reveals.
+apiRouter.post("/blacklist/enrich-recovered", async (_req, res) => res.json(await enrichAllRecovered()));
+// The recovered seeds as a SendKit-ready lead CSV — same columns as the per-campaign export.
+apiRouter.get("/blacklist/recovered-leads.csv", async (_req, res) => {
+  const r = await recoveredLeadsCsv();
+  res.type("text/csv").set("Content-Disposition", 'attachment; filename="recovered-leads.csv"').send(r.csv);
+});
+
 // The full list of seeds the recovery brought back (the dry-run report only samples 200).
 apiRouter.get("/blacklist/recovered", async (_req, res) => res.json(await listRecoveredSeeds()));
 apiRouter.get("/blacklist/recovered.csv", async (_req, res) => {

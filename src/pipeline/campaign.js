@@ -1020,6 +1020,57 @@ export async function listRecoveredSeeds({ csv = false } = {}) {
   return { ok: true, count: items.length, csv: out.join("\n") };
 }
 
+// The SendKit lead payload for the RECOVERED seeds only, across every campaign at once. Same columns
+// as campaignCsv — same leadPayload builder, so the two files can't drift — but scoped by
+// recoveredAt instead of by campaign, because the recovered seeds are spread over five runs and the
+// point of the file is that they arrive as one list.
+export async function recoveredLeadsCsv() {
+  const targets = await campaignTargets().find({ recoveredAt: { $exists: true }, peopleCount: { $gt: 0 } })
+    .sort({ blacklistedCount: -1 }).toArray();
+
+  // Fill in company names we don't hold on the target, so the copy says "RingCentral's" and not
+  // "ringcentral.com's". One query for all of them, not one per row.
+  const needName = targets.filter((t) => !t.companyName).map((t) => t.seed);
+  if (needName.length) {
+    const rows = await leadsCol().find(
+      { company_domain: { $in: needName }, company: { $nin: [null, ""] } },
+      { projection: { company_domain: 1, company: 1 } },
+    ).toArray().catch(() => []);
+    const byDomain = new Map(rows.map((r) => [r.company_domain, r.company]));
+    for (const t of targets) if (!t.companyName && byDomain.has(t.seed)) t.companyName = byDomain.get(t.seed);
+  }
+
+  const cols = ["email", "firstName", "lastName", "companyName", "jobTitle", "linkedinUrl",
+    "secondaryDomainCount", "blacklistedDomainCount", "domain1", "domain2", "domain3", "domain4"];
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const out = [cols.join(",")];
+  let companies = 0;
+  for (const t of targets) {
+    let any = false;
+    for (const p of t.people || []) {
+      if (!p.email) continue;
+      any = true;
+      const l = leadPayload(p, t);
+      out.push(cols.map((c) => esc(l[c])).join(","));
+    }
+    if (any) companies++;
+  }
+  return { csv: out.join("\n"), rows: out.length - 1, companies };
+}
+
+// Kick off contact enrichment for every campaign that still holds recovered (stage "qualified")
+// seeds — they are spread across five runs, and doing them one endpoint call at a time is just a
+// worse way to spend the same credits.
+export async function enrichAllRecovered() {
+  const ids = await campaignTargets().distinct("campaignId", { stage: "qualified", recoveredAt: { $exists: true } });
+  const started = [];
+  for (const id of ids) {
+    const r = await enrichQualifiedCompanies(String(id)).catch((e) => ({ ok: false, error: e.message }));
+    started.push({ campaignId: String(id), ...r });
+  }
+  return { ok: started.some((s) => s.ok), campaigns: started.length, started };
+}
+
 // host.io PAID API usage — totals + recent calls, for the tracking view.
 export async function hostioUsageReport() {
   const [total, today, recent] = await Promise.all([
