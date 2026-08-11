@@ -43,6 +43,16 @@ type Crawler struct {
 	maxCase int
 }
 
+// Never log a Mongo URI with credentials in it.
+func redact(uri string) string {
+	if i := strings.Index(uri, "@"); i > 0 {
+		if j := strings.Index(uri, "://"); j >= 0 && j+3 < i {
+			return uri[:j+3] + "***@" + uri[i+1:]
+		}
+	}
+	return uri
+}
+
 func envInt(k string, def int) int {
 	if v := os.Getenv(k); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -92,7 +102,25 @@ func main() {
 	}
 
 	lanes := envInt("CRAWL_CONCURRENCY", 64)
-	log.Printf("crawler up: lanes=%d proxies=%d db=%s", lanes, len(proxies), dbName)
+	log.Printf("crawler up: lanes=%d proxies=%d db=%s uri=%s", lanes, len(proxies), dbName, redact(uri))
+
+	// Say what this process can actually SEE at startup. "Container is up" and "container can read
+	// the queue" are different claims, and only the second one matters.
+	if n, err := c.db.Collection("jobs").CountDocuments(ctx, bson.M{}); err != nil {
+		log.Printf("STARTUP: cannot read jobs collection: %v", err)
+	} else {
+		claimable, _ := c.db.Collection("jobs").CountDocuments(ctx, bson.M{
+			"type":  bson.M{"$in": []string{"agency:discover", "case:extract"}},
+			"state": "queued",
+		})
+		log.Printf("STARTUP: jobs total=%d claimable-for-me=%d", n, claimable)
+		if n > 0 && claimable == 0 {
+			var sample bson.M
+			if err := c.db.Collection("jobs").FindOne(ctx, bson.M{}).Decode(&sample); err == nil {
+				log.Printf("STARTUP: sample job type=%v state=%v nextRunAt=%v", sample["type"], sample["state"], sample["nextRunAt"])
+			}
+		}
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -115,6 +143,11 @@ func (c *Crawler) lane(ctx context.Context, n int) {
 	types := []string{"agency:discover", "case:extract"}
 	for ctx.Err() == nil {
 		job, err := c.lease(ctx, types, n)
+		if err != nil {
+			// NEVER swallow this. A connection or decode error looks exactly like "no work to do",
+			// and a queue that is full while every lane reports idle is unreadable from outside.
+			log.Printf("lane %d: lease error: %v", n, err)
+		}
 		if err != nil || job == nil {
 			select {
 			case <-time.After(2 * time.Second):
