@@ -48,20 +48,42 @@ export async function listDomains({ search, status, page = 1, limit = 100, sort,
 const OVERLAP_MS = 60_000; // re-read a minute of overlap so nothing slips between refreshes
 let refreshing = null;
 
+// One page of the workspace's domains, with 429/5xx backoff. The API allows 120 requests/min per key
+// (see /docs), and a run at seedConcurrency 30 pushes hard against that — so a rate limit is an
+// EXPECTED response here, not an exceptional one. It must never be mistaken for "no more pages":
+// that reads listed domains as not-listed. Callers get `ok` and decide what an incomplete read means
+// for them; nothing here fails silently, because a silent failure leaves no trace in the logs at all.
+async function domainsPage({ page, limit = 500, sort, dir }) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const r = await axios.get(`${base()}/projects/${ws()}/domains`, {
+      headers: h(), timeout: 25000, validateStatus: () => true,
+      params: { page, limit, ...(sort ? { sort, dir } : {}) },
+    }).catch(() => null);
+    if (r && r.status === 200) return { ok: true, items: r.data?.items || [] };
+    if (r && r.status !== 429 && r.status < 500) {
+      log.warn("blacklist project page failed", { page, status: r.status });
+      return { ok: false, items: [] };                              // hard error — a retry won't help
+    }
+    await new Promise((s) => setTimeout(s, 800 * 2 ** attempt));    // 0.8s,1.6s,3.2s,6.4s,12.8s
+  }
+  log.warn("blacklist project page gave up", { page, reason: "rate limited or 5xx after 5 tries" });
+  return { ok: false, items: [] };
+}
+
 export async function refreshVerdicts({ maxPages = 40 } = {}) {
   if (refreshing) return refreshing;
   refreshing = (async () => {
     const newest = await blacklistVerdicts().find({}, { projection: { checkedAt: 1 } }).sort({ checkedAt: -1 }).limit(1).toArray();
     const watermark = newest[0]?.checkedAt ? new Date(newest[0].checkedAt).getTime() - OVERLAP_MS : 0;
     let upserted = 0;
+    let ok = true;
 
     for (let page = 1; page <= maxPages; page++) {
-      const r = await axios.get(`${base()}/projects/${ws()}/domains`, {
-        headers: h(), timeout: 25000, validateStatus: () => true,
-        params: { page, limit: 500, sort: "lastCheckedAt", dir: "desc" },
-      }).catch(() => null);
-      if (!r || r.status !== 200) break;
-      const items = r.data?.items || [];
+      const res = await domainsPage({ page, limit: 500, sort: "lastCheckedAt", dir: "desc" });
+      // A failed page is NOT "caught up" — the mirror is now incomplete and the caller has to know,
+      // or it will read domains we simply never heard about as clean.
+      if (!res.ok) { ok = false; break; }
+      const items = res.items;
       if (!items.length) break;
 
       const ops = [];
@@ -81,9 +103,83 @@ export async function refreshVerdicts({ maxPages = 40 } = {}) {
       if (reachedKnown || items.length < 500) break; // caught up with what we already have
     }
     refreshing = null;
-    return upserted;
+    return { ok, upserted };
   })();
   return refreshing;
+}
+
+// Minimal RFC-4180 reader: the export's `registrar` field can legitimately contain a comma, so
+// splitting on "," corrupts every column after it. Quotes are doubled inside a quoted field.
+function parseCsv(text) {
+  const rows = [];
+  let row = [], field = "", quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else quoted = false; }
+      else field += c;
+      continue;
+    }
+    if (c === '"') quoted = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (c !== "\r") field += c;
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// FULL mirror sync in ONE request, via the documented CSV export — columns are
+// domain,status,riskScore,listedCount,listedZones,checkedZones,registrar,nsProvider,tld,addedAt,lastCheckedAt.
+// The paged alternative costs a request per 500 domains against a 120/min budget, so at workspace
+// scale the sync itself is what trips the rate limit the mirror exists to survive.
+//
+// Deliberately UNFILTERED: a `clean` verdict is as load-bearing as a `listed` one, because a domain
+// missing from the mirror counts as unresolved, and exporting only the listed ones would mark every
+// genuinely-clean domain unknown.
+export async function syncAllVerdicts() {
+  const r = await axios.get(`${base()}/projects/${ws()}/domains/export`, {
+    headers: h(), timeout: 120_000, responseType: "text", transformResponse: (d) => d,
+    validateStatus: () => true,
+  }).catch((e) => ({ status: 0, message: e.message }));
+
+  if (r.status !== 200 || typeof r.data !== "string") {
+    log.warn("blacklist project export failed", { status: r.status, err: r.message });
+    return { ok: false, upserted: 0 };
+  }
+
+  const rows = parseCsv(r.data);
+  const header = (rows.shift() || []).map((c) => c.trim());
+  const at = (name) => header.indexOf(name);
+  const [iDomain, iStatus, iRisk, iZones, iChecked] =
+    ["domain", "status", "riskScore", "listedZones", "lastCheckedAt"].map(at);
+  if (iDomain < 0 || iStatus < 0) {
+    log.warn("blacklist project export had unexpected columns", { header: header.join(",") });
+    return { ok: false, upserted: 0 };
+  }
+
+  let upserted = 0;
+  for (let i = 0; i < rows.length; i += 1000) {
+    const ops = [];
+    for (const row of rows.slice(i, i + 1000)) {
+      const domain = String(row[iDomain] || "").trim().toLowerCase();
+      if (!domain) continue;
+      const checkedAt = iChecked >= 0 && row[iChecked] ? new Date(row[iChecked]) : new Date(0);
+      ops.push({ updateOne: {
+        filter: { _id: domain },
+        update: { $set: {
+          status: row[iStatus],
+          riskScore: iRisk >= 0 && row[iRisk] !== "" ? Number(row[iRisk]) : null,
+          zones: iZones >= 0 && row[iZones] ? row[iZones].split("|").filter(Boolean) : [],
+          checkedAt: isNaN(checkedAt) ? new Date(0) : checkedAt,
+        } },
+        upsert: true,
+      } });
+    }
+    if (ops.length) { await blacklistVerdicts().bulkWrite(ops, { ordered: false }).catch(() => {}); upserted += ops.length; }
+  }
+  log.info("blacklist verdict mirror synced from export", { domains: upserted });
+  return { ok: true, upserted };
 }
 
 // Verdicts for just these domains, straight out of the local mirror. -> Map<domain, verdict>
@@ -101,23 +197,6 @@ export async function verdictsFor(domains) {
 let verdictCache = { at: 0, map: new Map() };
 let verdictRefreshing = null;
 
-// One page of the workspace, with 429/5xx backoff — a transient rate limit must NOT look like an
-// empty page (that would cache an incomplete verdict map and wrongly report domains as not-listed).
-async function verdictPage(page) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const r = await axios.get(`${base()}/projects/${ws()}/domains`, {
-      // sort by DOMAIN NAME (stable) — the default riskScore sort shifts between page fetches as
-      // enrichment/rechecks change scores, so domains fall through the cracks of pagination and go
-      // missing from the map. Alphabetical is immutable, so every domain is read exactly once.
-      headers: h(), timeout: 25000, validateStatus: () => true, params: { page, limit: 500, sort: "domain", dir: "asc" },
-    });
-    if (r.status === 200) return { ok: true, items: r.data?.items || [] };
-    if (r.status !== 429 && r.status < 500) return { ok: false, items: [] }; // hard error — don't retry
-    await new Promise((s) => setTimeout(s, 800 * 2 ** attempt)); // 0.8s,1.6s,3.2s,6.4s,12.8s
-  }
-  return { ok: false, items: [] };
-}
-
 export async function getWorkspaceVerdicts({ maxAgeMs = 10000 } = {}) {
   if (verdictCache.map.size && Date.now() - verdictCache.at < maxAgeMs) return verdictCache.map;
   if (verdictRefreshing) return verdictRefreshing;
@@ -125,7 +204,10 @@ export async function getWorkspaceVerdicts({ maxAgeMs = 10000 } = {}) {
     const map = new Map();
     let complete = true;
     for (let page = 1; page <= 400; page++) {
-      const { ok, items } = await verdictPage(page);
+      // sort by DOMAIN NAME (stable) — the default riskScore sort shifts between page fetches as
+      // enrichment/rechecks change scores, so domains fall through the cracks of pagination and go
+      // missing from the map. Alphabetical is immutable, so every domain is read exactly once.
+      const { ok, items } = await domainsPage({ page, limit: 500, sort: "domain", dir: "asc" });
       if (!ok) { complete = false; break; } // a page failed — the map is partial, don't trust it
       if (!items.length) break;
       for (const it of items) {

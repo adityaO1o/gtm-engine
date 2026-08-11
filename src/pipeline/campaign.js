@@ -14,7 +14,7 @@ import { splitDomain } from "../lib/permute.js";
 import { runPool } from "../lib/pool.js";
 import { scrapeRedirectPage, apiRedirectPage, scrapeUsable } from "../services/hostio.js";
 import { searchPeople, findEmail } from "../services/prospeo.js";
-import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
+import { pushDomains, refreshVerdicts, syncAllVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
 import { BLACKLIST_SEQUENCE, BLACKLIST_CAMPAIGN_NAME, workspaceCampaignId, DEFAULT_BLACKLIST_CAMPAIGN_ID, leadPayload } from "./blacklistCopy.js";
 import { isExcludedSeed } from "../services/icp.js";
@@ -90,14 +90,20 @@ async function setTarget(id, fields) {
 }
 
 // Push a fresh batch of domains to the blacklist checker and wait (via the shared workspace-verdict
-// map) until they're checked — then return which are listed. The wait is bounded and the map is
-// shared across all seeds, so concurrent seeds' domains get checked together.
+// map) until they're checked — then return which are listed AND which we never got an answer for.
+// The wait is bounded and the map is shared across all seeds, so concurrent seeds' domains get
+// checked together.
+//
+// UNRESOLVED IS NOT CLEAN. A domain the checker rate-limited us out of, or that was still being
+// checked when the bounded wait expired, has no verdict — and reporting it as "not listed" is how a
+// company with genuinely bad infra ends up in dropped_blacklist, which resume treats as final.
 async function blacklistOf(domains) {
-  if (!domains.length) return [];
+  if (!domains.length) return { listed: [], unresolved: [] };
 
   // Anything we already have a verdict for locally needs no round-trip at all.
   let map = await verdictsFor(domains);
-  const unknown = domains.filter((d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; });
+  const isUnknown = (d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; };
+  const unknown = domains.filter(isUnknown);
 
   if (unknown.length) {
     await pushDomains(unknown);                       // queues only the ones we don't know yet
@@ -106,14 +112,17 @@ async function blacklistOf(domains) {
       await sleep(1200);
       await refreshVerdicts();                        // incremental: a page or two, not the workspace
       map = await verdictsFor(domains);
-      const stillUnknown = unknown.filter((d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; });
-      if (!stillUnknown.length || Date.now() >= deadline) break;
+      if (!unknown.some(isUnknown) || Date.now() >= deadline) break;
     }
   }
 
-  const out = [];
-  for (const d of domains) { const v = map.get(d); if (v && v.status === "listed") out.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] }); }
-  return out;
+  const listed = [], unresolved = [];
+  for (const d of domains) {
+    const v = map.get(d);
+    if (v && v.status === "listed") listed.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] });
+    else if (isUnknown(d)) unresolved.push(d);
+  }
+  return { listed, unresolved };
 }
 
 // DISCOVERY for one seed: free page-1 (count gate) -> blacklist it -> if still under the gate,
@@ -139,10 +148,14 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
 
     const seen = new Set();
     const blacklisted = [];
+    const unresolved = [];
     const feed = async (domains) => {
       const fresh = domains.filter((d) => d && !seen.has(d));
       fresh.forEach((d) => seen.add(d));
-      if (fresh.length) blacklisted.push(...await blacklistOf(fresh));
+      if (!fresh.length) return;
+      const res = await blacklistOf(fresh);
+      blacklisted.push(...res.listed);
+      unresolved.push(...res.unresolved);
     };
 
     await setTarget(t._id, { stage: "blacklisting", activity: "checking page 1 (free)" });
@@ -160,12 +173,20 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
     }
 
     blacklisted.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
-    const common = { confirmedCount: seen.size, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted, apiPagesUsed: apiPages };
+    const common = { confirmedCount: seen.size, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted, unresolvedCount: unresolved.length, apiPagesUsed: apiPages };
     if (blacklisted.length < gates.blacklistGate) {
       // If a page fetch failed we never saw part of this company's footprint, so "not enough
       // blacklisted" isn't a real verdict — leave it retryable rather than dropping it for good.
       if (pageFailed) {
         await setTarget(t._id, { ...common, stage: "error", error: "host.io api page failed mid-pagination", activity: null });
+        return;
+      }
+      // Same reasoning for domains that never came back with a verdict: "under the gate" is only a
+      // real answer once every domain has actually been checked. Dropping here is permanent —
+      // dropped_blacklist is in resume's FINAL set — so an unchecked remainder stays retryable.
+      if (unresolved.length) {
+        log.warn("seed left unresolved by the blacklist checker", { seed: t.seed, unresolved: unresolved.length, checked: seen.size });
+        await setTarget(t._id, { ...common, stage: "error", error: `${unresolved.length} of ${seen.size} domains had no blacklist verdict`, activity: null });
         return;
       }
       await setTarget(t._id, { ...common, stage: "dropped_blacklist", activity: null });
@@ -336,9 +357,11 @@ export async function deleteCampaign(id) {
 
 async function runCampaign(campaignId, targets, gates) {
   await campaigns().updateOne({ _id: campaignId }, { $set: { stage: "running", startedAt: new Date(), updatedAt: new Date() } });
-  // Warm the local verdict mirror once up front (first run pulls the existing workspace; after that
-  // every refresh is incremental) so seeds don't each pay for it.
-  await refreshVerdicts().catch(() => {});
+  // Warm the local verdict mirror once up front so seeds don't each pay for it. The CSV export does
+  // the whole workspace in ONE request; the paged refresh is the fallback, and it caps at 40 pages,
+  // so on a cold mirror it can only ever see the newest 20k domains.
+  const sync = await syncAllVerdicts().catch(() => ({ ok: false }));
+  if (!sync.ok) await refreshVerdicts().catch(() => {});
 
   const queue = [];
   let discoveryDone = false;
@@ -773,6 +796,101 @@ export async function backfillOwnLeadContacts(campaignId) {
   }, { concurrency: 10 });
 
   return { ok: true, scanned: targets.length, companiesFilled: filled, contactsAdded: contacts };
+}
+
+// ── Recovery: seeds dropped for "not enough blacklisted" that never actually had a verdict ───────
+// Before the checker's 120/min rate limit was handled, a 429 during the verdict refresh made
+// unchecked domains read as clean — so a seed with genuinely bad infra could land in
+// dropped_blacklist, which resume treats as FINAL and never retries. This re-judges those seeds
+// against a freshly synced mirror using the redirect pages already in hostio_pages, so it costs ZERO
+// host.io credits and spends no Prospeo.
+//
+// DRY RUN BY DEFAULT — it reports what would be recovered so the damage can be seen before anything
+// moves. `apply` promotes the wrongly-dropped seeds to "qualified" (blacklisted infra, contacts not
+// pulled), which is exactly the state enrichQualifiedCompanies already knows how to finish, keeping
+// the Prospeo spend a human decision.
+//
+// Pass no campaignId to sweep every campaign at once.
+export async function recoverDroppedSeeds(campaignId, { apply = false } = {}) {
+  const q = { stage: "dropped_blacklist" };
+  if (campaignId) {
+    if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
+    q.campaignId = new ObjectId(campaignId);
+  }
+  const dropped = await campaignTargets().find(q).toArray();
+  if (!dropped.length) return { ok: true, applied: apply, scanned: 0, recoverable: 0, recovered: 0, noCachedPages: 0, stillUnknown: 0, items: [] };
+
+  // Sync the mirror FIRST. Re-judging against the same stale mirror that caused the drop would just
+  // confirm the original mistake.
+  const sync = await syncAllVerdicts().catch(() => ({ ok: false }));
+  if (!sync.ok) return { ok: false, error: "could not sync the blacklist mirror — refusing to re-judge on stale data" };
+
+  // Per-campaign gate: an old run may have used a different blacklistGate than today's default.
+  const camps = await campaigns().find(
+    { _id: { $in: [...new Set(dropped.map((t) => String(t.campaignId)))].map((c) => new ObjectId(c)) } },
+    { projection: { gates: 1 } },
+  ).toArray();
+  const gateOf = new Map(camps.map((c) => [String(c._id), c.gates?.blacklistGate ?? config.campaign.blacklistGate]));
+
+  // The domains each seed was judged on, straight from the cached redirect pages — no host.io calls.
+  const seeds = [...new Set(dropped.map((t) => t.seed))];
+  const domainsOf = new Map();
+  for (let i = 0; i < seeds.length; i += 1000) {
+    const pages = await hostioPages().find(
+      { seed: { $in: seeds.slice(i, i + 1000) } }, { projection: { seed: 1, domains: 1 } },
+    ).toArray().catch(() => []);
+    for (const p of pages) {
+      const set = domainsOf.get(p.seed) || new Set();
+      for (const d of p.domains || []) if (d) set.add(d);
+      domainsOf.set(p.seed, set);
+    }
+  }
+
+  // One mirror read for every domain in the sweep, chunked — not one query per seed.
+  const allDomains = [...new Set([...domainsOf.values()].flatMap((s) => [...s]))];
+  const verdicts = new Map();
+  for (let i = 0; i < allDomains.length; i += 5000) {
+    for (const [k, v] of await verdictsFor(allDomains.slice(i, i + 5000))) verdicts.set(k, v);
+  }
+
+  let recoverable = 0, recovered = 0, noCachedPages = 0, stillUnknown = 0;
+  const items = [];
+  for (const t of dropped) {
+    const domains = [...(domainsOf.get(t.seed) || [])];
+    if (!domains.length) { noCachedPages++; continue; }   // pages aged out — only a real re-run can judge it
+
+    const listed = [], unknown = [];
+    for (const d of domains) {
+      const v = verdicts.get(d);
+      if (v && v.status === "listed") listed.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] });
+      else if (!v || v.status === "pending" || v.status === "checking") unknown.push(d);
+    }
+
+    const gate = gateOf.get(String(t.campaignId)) ?? config.campaign.blacklistGate;
+    if (listed.length < gate) {
+      // Under the gate WITH unchecked domains left is still not a verdict — flag it rather than
+      // silently confirming the drop a second time.
+      if (unknown.length) stillUnknown++;
+      continue;
+    }
+
+    recoverable++;
+    listed.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
+    if (items.length < 200) items.push({ seed: t.seed, campaignId: String(t.campaignId), was: t.blacklistedCount || 0, now: listed.length, gate });
+    if (apply) {
+      await setTarget(t._id, {
+        stage: "qualified", activity: "recovered — blacklisted infra, contacts not pulled",
+        blacklistedCount: listed.length, blacklistedDomains: listed,
+        confirmedCount: domains.length, unresolvedCount: unknown.length,
+        recoveredAt: new Date(), error: null,
+      });
+      recovered++;
+    }
+  }
+
+  log.warn(apply ? "recovered wrongly-dropped seeds" : "audited wrongly-dropped seeds",
+    { scanned: dropped.length, recoverable, recovered, noCachedPages, stillUnknown });
+  return { ok: true, applied: apply, scanned: dropped.length, recoverable, recovered, noCachedPages, stillUnknown, items };
 }
 
 // host.io PAID API usage — totals + recent calls, for the tracking view.

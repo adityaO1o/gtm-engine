@@ -12,7 +12,7 @@ import { ObjectId } from "mongodb";
 import { splitDomain } from "../lib/permute.js";
 import { runPool } from "../lib/pool.js";
 import { apiRedirectPage } from "../services/hostio.js";
-import { pushDomains, refreshVerdicts, verdictsFor } from "../services/blacklistProject.js";
+import { pushDomains, refreshVerdicts, syncAllVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { enrichSeed } from "./campaign.js";
 import { campaigns, campaignTargets, hostioPages, hostioUsage } from "../db/mongo.js";
 import { config } from "../config.js";
@@ -51,11 +51,14 @@ async function pageOne(scanId, seed) {
   return { ...res, cached: false };
 }
 
-// Verdicts for a batch, queueing only what we don't already know.
+// Verdicts for a batch, queueing only what we don't already know. Returns the listed domains AND the
+// ones we never got an answer for — a domain the checker rate-limited us out of is UNKNOWN, not
+// clean, and this scan's whole output is a clean/dirty verdict somebody acts on.
 async function blacklistOf(domains) {
-  if (!domains.length) return [];
+  if (!domains.length) return { listed: [], unresolved: [] };
   let map = await verdictsFor(domains);
-  const unknown = domains.filter((d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; });
+  const isUnknown = (d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; };
+  const unknown = domains.filter(isUnknown);
   if (unknown.length) {
     await pushDomains(unknown);
     const deadline = Date.now() + 25_000;
@@ -63,16 +66,16 @@ async function blacklistOf(domains) {
       await sleep(1200);
       await refreshVerdicts();
       map = await verdictsFor(domains);
-      const left = unknown.filter((d) => { const v = map.get(d); return !v || v.status === "pending" || v.status === "checking"; });
-      if (!left.length || Date.now() >= deadline) break;
+      if (!unknown.some(isUnknown) || Date.now() >= deadline) break;
     }
   }
-  const out = [];
+  const listed = [], unresolved = [];
   for (const d of domains) {
     const v = map.get(d);
-    if (v && v.status === "listed") out.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] });
+    if (v && v.status === "listed") listed.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] });
+    else if (isUnknown(d)) unresolved.push(d);
   }
-  return out;
+  return { listed, unresolved };
 }
 
 async function scanSeed(scanId, t, gates, enrich) {
@@ -90,17 +93,34 @@ async function scanSeed(scanId, t, gates, enrich) {
       return;
     }
     const checked = p1.domains || [];
-    const bl = await blacklistOf(checked);
+    const { listed: bl, unresolved } = await blacklistOf(checked);
     const count = p1.total ?? 0;
     // The scan drops nothing — every seed is reported. `qualified` records whether it CLEARS the
     // gates, so the funnel can be counted from measured values instead of from which bucket a seed
     // was thrown into. Reading the funnel off stages is what made this run show 5,270 everywhere.
     const qualified = count >= gates.countGate && bl.length >= gates.blacklistGate;
+
+    // If domains went unchecked AND that's what keeps this seed under the gate, the honest answer is
+    // "we don't know" — not the clean bill of health a 0 in the results column reads as. Mark it an
+    // error so it's visibly incomplete and gets re-run, rather than exported as scanned-and-fine.
+    if (unresolved.length && !qualified) {
+      log.warn("seed left unresolved by the blacklist checker", { seed: t.seed, unresolved: unresolved.length, checked: checked.length });
+      await campaignTargets().updateOne({ _id: t._id }, { $set: {
+        stage: "error", error: `${unresolved.length} of ${checked.length} domains had no blacklist verdict`,
+        redirectCount: count, checkedCount: checked.length, uncheckedCount: unresolved.length,
+        blacklistedCount: bl.length, blacklistedDomains: bl,
+        passedCountGate: count >= gates.countGate, qualified: false,
+        fromCache: !!p1.cached, updatedAt: new Date(),
+      } });
+      return;
+    }
+
     await campaignTargets().updateOne({ _id: t._id }, {
       $set: {
         stage: enrich && qualified ? "enrich_queued" : "done",
         redirectCount: count,
         checkedCount: checked.length,
+        uncheckedCount: unresolved.length,
         blacklistedCount: bl.length,
         blacklistedDomains: bl,
         passedCountGate: count >= gates.countGate,
@@ -152,7 +172,9 @@ export async function startBlacklistScan(rawDomains, opts = {}) {
 
   (async () => {
     await campaigns().updateOne({ _id: insertedId }, { $set: { stage: "running", startedAt: new Date() } });
-    await refreshVerdicts().catch(() => {});
+    // Whole workspace in one request; the paged refresh is the fallback (capped at 40 pages).
+    const sync = await syncAllVerdicts().catch(() => ({ ok: false }));
+    if (!sync.ok) await refreshVerdicts().catch(() => {});
     const targets = await campaignTargets().find({ campaignId: insertedId }).toArray();
     await runPool(targets, (t) => scanSeed(insertedId, t, gates, enrich), { concurrency: config.campaign.seedConcurrency });
     await campaigns().updateOne({ _id: insertedId },

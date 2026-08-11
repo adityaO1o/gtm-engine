@@ -31,7 +31,7 @@ import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
 import { startBlacklistScan, estimateBlacklistScan, getBlacklistScan, blacklistScanResults } from "../pipeline/blacklistScan.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, recoverDroppedSeeds, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
 import { backfillCompanyDomains, backfillDomainsStatus } from "../pipeline/backfillDomains.js";
 import { reclassifyIcp, reclassifyIcpStatus } from "../pipeline/reclassifyIcp.js";
 import { safeEqual } from "../lib/auth.js";
@@ -1032,6 +1032,28 @@ apiRouter.post("/campaign/:id/backfill-contacts", async (req, res) => {
 // contacts not requested at run time) to pull decision-makers + emails. Spends Prospeo credits.
 apiRouter.post("/campaign/:id/enrich-companies", async (req, res) => {
   const r = await enrichQualifiedCompanies(req.params.id, { includeDone: !!req.body?.includeDone });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+// Re-judge seeds sitting in dropped_blacklist against a freshly synced verdict mirror: before the
+// checker's rate limit was handled, unchecked domains read as clean, so seeds with bad infra could
+// be dropped for good (resume treats dropped_blacklist as final). GET = dry-run report, POST =
+// apply. Free either way — cached redirect pages, no host.io and no Prospeo.
+// The sweep lives under /blacklist, NOT /campaign/recover-dropped: the latter would be swallowed by
+// the two-segment /campaign/:id route registered above it.
+apiRouter.get("/campaign/:id/recover-dropped", async (req, res) => {
+  const r = await recoverDroppedSeeds(req.params.id, { apply: false });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+apiRouter.post("/campaign/:id/recover-dropped", async (req, res) => {
+  const r = await recoverDroppedSeeds(req.params.id, { apply: true });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+apiRouter.get("/blacklist/recover-dropped", async (_req, res) => {
+  const r = await recoverDroppedSeeds(null, { apply: false });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+apiRouter.post("/blacklist/recover-dropped", async (_req, res) => {
+  const r = await recoverDroppedSeeds(null, { apply: true });
   res.status(r.ok ? 200 : 400).json(r);
 });
 // On-demand email reveal for one company's contacts (spends Prospeo credits — ~1 per person).
