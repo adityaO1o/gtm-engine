@@ -137,6 +137,13 @@ services:
       PROSPEO_MIN_GAP_MS: ${PROSPEO_MIN_GAP_MS:-}
       REPORT_PUBLIC_URL: ${REPORT_PUBLIC_URL:-}
       PROXIES: ${PROXIES}
+    # Also on the shared network. The compose-local `mongo` sits on this stack's private network,
+    # but the database holding the real data answers on the Dokploy overlay — an address this
+    # container simply had no route to, which shows up as a connection timeout rather than anything
+    # naming the cause. The app's own networking is deliberately untouched.
+    networks:
+      - default
+      - dokploy-network
     depends_on:
       - mongo
 
@@ -153,6 +160,9 @@ services:
       CRAWL_CONCURRENCY: ${CRAWL_CONCURRENCY:-64}
       CRAWL_MAX_CASE_STUDIES: ${CRAWL_MAX_CASE_STUDIES:-40}
       PROXIES: ${PROXIES}
+    networks:
+      - default
+      - dokploy-network
     depends_on:
       - mongo
 
@@ -166,6 +176,11 @@ services:
     #  limiting, ingest token.) Fresh volume name to escape the stale auth-enabled volume.
     volumes:
       - gtm_data_open:/data/db
+
+networks:
+  # Created by Dokploy, shared across stacks — joined, never defined here.
+  dokploy-network:
+    external: true
 
 volumes:
   gtm_data_open:
