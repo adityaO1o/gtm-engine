@@ -31,7 +31,7 @@ import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
 import { startBlacklistScan, estimateBlacklistScan, getBlacklistScan, blacklistScanResults } from "../pipeline/blacklistScan.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, recoverDroppedSeeds, listRecoveredSeeds, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, recoverDroppedSeeds, droppedSeedsCsv, listRecoveredSeeds, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
 import { backfillCompanyDomains, backfillDomainsStatus } from "../pipeline/backfillDomains.js";
 import { reclassifyIcp, reclassifyIcpStatus } from "../pipeline/reclassifyIcp.js";
 import { safeEqual } from "../lib/auth.js";
@@ -1047,6 +1047,13 @@ apiRouter.get("/campaign/:id/recover-dropped", async (req, res) => {
 apiRouter.post("/campaign/:id/recover-dropped", async (req, res) => {
   const r = await recoverDroppedSeeds(req.params.id, { apply: true });
   res.status(r.ok ? 200 : 400).json(r);
+});
+// Every seed that was EVER dropped, with the verdict explaining why: recovered / still-unknown /
+// genuinely-clean / non-icp / no-cached-pages. Read-only.
+apiRouter.get("/blacklist/dropped.csv", async (_req, res) => {
+  const r = await droppedSeedsCsv(null);
+  if (!r.ok) return res.status(400).json(r);
+  res.type("text/csv").set("Content-Disposition", 'attachment; filename="dropped-seeds.csv"').send(r.csv);
 });
 // The full list of seeds the recovery brought back (the dry-run report only samples 200).
 apiRouter.get("/blacklist/recovered", async (_req, res) => res.json(await listRecoveredSeeds()));

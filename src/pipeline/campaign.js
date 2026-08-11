@@ -811,14 +811,21 @@ export async function backfillOwnLeadContacts(campaignId) {
 // the Prospeo spend a human decision.
 //
 // Pass no campaignId to sweep every campaign at once.
-export async function recoverDroppedSeeds(campaignId, { apply = false } = {}) {
-  const q = { stage: "dropped_blacklist" };
+// `detail` widens the sweep to every seed that was EVER dropped (the ones still dropped plus the
+// ones already recovered) and returns a verdict per seed instead of a tally, so the whole pile can be
+// read as one list. It never applies — it is the reporting mode of the same judgement, so the file
+// and the recovery can't disagree.
+export async function recoverDroppedSeeds(campaignId, { apply = false, detail = false } = {}) {
+  const q = detail
+    ? { $or: [{ stage: "dropped_blacklist" }, { recoveredAt: { $exists: true } }] }
+    : { stage: "dropped_blacklist" };
   if (campaignId) {
     if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
     q.campaignId = new ObjectId(campaignId);
   }
+  if (detail) apply = false;
   const dropped = await campaignTargets().find(q).toArray();
-  if (!dropped.length) return { ok: true, applied: apply, scanned: 0, recoverable: 0, recovered: 0, noCachedPages: 0, stillUnknown: 0, nonIcp: 0, items: [] };
+  if (!dropped.length) return { ok: true, applied: apply, scanned: 0, recoverable: 0, recovered: 0, noCachedPages: 0, stillUnknown: 0, nonIcp: 0, items: [], rows: [] };
 
   // Sync the mirror FIRST. Re-judging against the same stale mirror that caused the drop would just
   // confirm the original mistake.
@@ -854,15 +861,28 @@ export async function recoverDroppedSeeds(campaignId, { apply = false } = {}) {
   }
 
   let recoverable = 0, recovered = 0, noCachedPages = 0, stillUnknown = 0, nonIcp = 0;
-  const items = [];
+  const items = [], rows = [];
+  const row = (t, verdict, extra = {}) => {
+    if (detail) rows.push({ seed: t.seed, verdict, campaignId: String(t.campaignId), gate: gateOf.get(String(t.campaignId)) ?? config.campaign.blacklistGate, ...extra });
+  };
+
   for (const t of dropped) {
+    // Already brought back by an earlier run — kept in the detail sweep so the file covers the whole
+    // pile, but there is nothing left to judge.
+    if (t.recoveredAt) {
+      row(t, "recovered", { blacklisted: t.blacklistedCount || 0, checked: t.confirmedCount || 0,
+        topDomains: (t.blacklistedDomains || []).slice(0, 5).map((d) => d.domain),
+        zones: [...new Set((t.blacklistedDomains || []).flatMap((d) => d.zones || []))].slice(0, 5) });
+      continue;
+    }
+
     // These runs pre-date the ICP exclusion list, so the dropped pile still holds universities,
     // banks and giants that were later purged on purpose. They are blacklisted often enough to clear
     // the gate easily — recovering them would quietly undo that purge, so they stay dropped.
-    if (isExcludedSeed(t.seed)) { nonIcp++; continue; }
+    if (isExcludedSeed(t.seed)) { nonIcp++; row(t, "non-icp"); continue; }
 
     const domains = [...(domainsOf.get(t.seed) || [])];
-    if (!domains.length) { noCachedPages++; continue; }   // pages aged out — only a real re-run can judge it
+    if (!domains.length) { noCachedPages++; row(t, "no-cached-pages"); continue; }  // only a real re-run can judge it
 
     const listed = [], unknown = [];
     for (const d of domains) {
@@ -872,15 +892,23 @@ export async function recoverDroppedSeeds(campaignId, { apply = false } = {}) {
     }
 
     const gate = gateOf.get(String(t.campaignId)) ?? config.campaign.blacklistGate;
+    listed.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
+    const shared = {
+      blacklisted: listed.length, checked: domains.length, unchecked: unknown.length,
+      topDomains: listed.slice(0, 5).map((d) => d.domain),
+      zones: [...new Set(listed.flatMap((d) => d.zones || []))].slice(0, 5),
+    };
+
     if (listed.length < gate) {
       // Under the gate WITH unchecked domains left is still not a verdict — flag it rather than
       // silently confirming the drop a second time.
-      if (unknown.length) stillUnknown++;
+      if (unknown.length) { stillUnknown++; row(t, "still-unknown", shared); }
+      else row(t, "genuinely-clean", shared);
       continue;
     }
 
     recoverable++;
-    listed.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
+    row(t, "recoverable", shared);
     if (items.length < 200) items.push({ seed: t.seed, campaignId: String(t.campaignId), was: t.blacklistedCount || 0, now: listed.length, gate });
     if (apply) {
       await setTarget(t._id, {
@@ -895,7 +923,28 @@ export async function recoverDroppedSeeds(campaignId, { apply = false } = {}) {
 
   log.warn(apply ? "recovered wrongly-dropped seeds" : "audited wrongly-dropped seeds",
     { scanned: dropped.length, recoverable, recovered, noCachedPages, stillUnknown, nonIcp });
-  return { ok: true, applied: apply, scanned: dropped.length, recoverable, recovered, noCachedPages, stillUnknown, nonIcp, items };
+
+  if (detail) {
+    // Most-blacklisted first, and within the same count the ones we're sure about ahead of the ones
+    // we aren't — so the file opens on what's actually actionable.
+    const rank = { recovered: 0, recoverable: 0, "still-unknown": 1, "genuinely-clean": 2, "no-cached-pages": 3, "non-icp": 4 };
+    rows.sort((a, b) => (rank[a.verdict] - rank[b.verdict]) || ((b.blacklisted || 0) - (a.blacklisted || 0)));
+  }
+  return { ok: true, applied: apply, scanned: dropped.length, recoverable, recovered, noCachedPages, stillUnknown, nonIcp, items, ...(detail ? { rows } : {}) };
+}
+
+// The whole dropped pile as CSV — one row per seed, with the verdict that explains why it is where
+// it is. Same judgement as the recovery, so the file can never disagree with what was applied.
+export async function droppedSeedsCsv(campaignId) {
+  const r = await recoverDroppedSeeds(campaignId, { detail: true });
+  if (!r.ok) return r;
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const out = ["seed,verdict,blacklisted_domains,domains_checked,unchecked,gate,top_blacklisted,listed_zones,campaign_id"];
+  for (const i of r.rows) {
+    out.push([i.seed, i.verdict, i.blacklisted ?? "", i.checked ?? "", i.unchecked ?? "", i.gate,
+      (i.topDomains || []).join("|"), (i.zones || []).join("|"), i.campaignId].map(esc).join(","));
+  }
+  return { ok: true, count: r.rows.length, csv: out.join("\n") };
 }
 
 // Every seed recoverDroppedSeeds brought back, newest first. `recoveredAt` is the marker, so this
