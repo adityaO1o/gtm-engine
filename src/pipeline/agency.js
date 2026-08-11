@@ -18,9 +18,9 @@
 import { ObjectId } from "mongodb";
 import { splitDomain } from "../lib/permute.js";
 import { runPool } from "../lib/pool.js";
-import { enqueueMany, queueStats, retryFailed, PRIORITY } from "../lib/jobs.js";
+import { enqueue, enqueueMany, reschedule, queueStats, retryFailed, PRIORITY } from "../lib/jobs.js";
 import { isExcludedSeed } from "../services/icp.js";
-import { enrichSeed } from "./campaign.js";
+import { enrichSeed, scanSeedStart, readVerdicts, saveSeedResult } from "./campaign.js";
 import { createReport } from "./report.js";
 import { agencyRuns, agencies, clients, campaignTargets, jobs } from "../db/mongo.js";
 import { config } from "../config.js";
@@ -122,23 +122,76 @@ export async function scanClient({ runId, agencyDomain, clientDomain }) {
     return { ok: true, cached: true, blacklistedCount: prior.blacklistedCount || 0 };
   }
 
-  // Never seen: run the real thing. discoverSeed writes into campaign_targets, so the result is
-  // reusable by every other agency that lists this client — and by the seed funnel.
-  const { runSingleSeed } = await import("./campaign.js");
-  const res = await runSingleSeed(clientDomain, { enrich: false }).catch((e) => ({ ok: false, error: e.message }));
+  // Never seen. PHASE 1 only: read the footprint, record the domains, and return. Nothing waits for
+  // the checker here — the domains are pushed in one batch by the worker's pusher, and a verdict job
+  // reads the answer later. That split is what takes this from 4.7 scans/min to host.io's own
+  // ceiling; the old inline wait meant a worker slept ~45s per client.
+  const res = await scanSeedStart(clientDomain).catch((e) => ({ ok: false, error: e.message }));
   if (!res.ok) {
     await clients().updateOne({ _id }, { $set: { scanned: true, error: res.error || "scan failed", scannedAt: new Date() } });
     return { ok: false, error: res.error };
   }
 
+  if (!res.domains.length) {
+    await clients().updateOne({ _id }, { $set: {
+      scanned: true, source: "scan", blacklistedCount: 0, blacklistedDomains: [],
+      redirectCount: res.redirectCount, scannedAt: new Date(),
+    } });
+    return { ok: true, blacklistedCount: 0 };
+  }
+
   await clients().updateOne({ _id }, { $set: {
-    scanned: true, source: "scan",
-    blacklistedCount: res.blacklistedCount || 0,
-    blacklistedDomains: (res.blacklistedDomains || []).slice(0, 20),
-    redirectCount: res.redirectCount ?? null,
-    scannedAt: new Date(),
+    candidates: res.domains, pushed: false,
+    redirectCount: res.redirectCount, confirmedCount: res.confirmedCount,
+    awaitingVerdicts: true, startedAt: new Date(),
   } });
-  return { ok: true, blacklistedCount: res.blacklistedCount || 0 };
+
+  await enqueue("client:verdict", { runId: String(runId), agencyDomain, clientDomain, round: 1 }, {
+    key: `client:verdict:${runId}:${_id}:1`,
+    runId: typeof runId === "string" ? new ObjectId(runId) : runId,
+    priority: PRIORITY.CRAWL, delayMs: 45_000,
+  });
+  return { ok: true, queuedForVerdicts: res.domains.length };
+}
+
+// PHASE 2. Reads whatever the mirror knows now. A domain the checker has not answered for yet is not
+// clean — so rather than recording a wrong zero, this waits another round. After the last round it
+// finalises with what it has and records how many were never answered, which is visible rather than
+// silently folded into "not listed".
+const VERDICT_ROUNDS = 5;
+
+export async function finalizeClientVerdicts({ runId, agencyDomain, clientDomain, round = 1 }) {
+  const _id = `${agencyDomain}:${clientDomain}`;
+  const doc = await clients().findOne({ _id });
+  if (!doc) return { ok: false, error: "unknown client" };
+  if (doc.scanned) return { ok: true, cached: true };
+
+  const domains = doc.candidates || [];
+  const { listed, unresolved } = await readVerdicts(domains);
+
+  // Still waiting on answers and rounds left — come back rather than call it clean.
+  if (unresolved.length && round < VERDICT_ROUNDS) {
+    const next = round + 1;
+    await enqueue("client:verdict", { runId: String(runId), agencyDomain, clientDomain, round: next }, {
+      key: `client:verdict:${runId}:${_id}:${next}`,
+      runId: typeof runId === "string" ? new ObjectId(runId) : runId,
+      priority: PRIORITY.CRAWL, delayMs: Math.min(60_000 * next, 300_000),
+    });
+    return { ok: true, pending: unresolved.length, round };
+  }
+
+  await clients().updateOne({ _id }, { $set: {
+    scanned: true, source: "scan", awaitingVerdicts: false,
+    blacklistedCount: listed.length, blacklistedDomains: listed.slice(0, 20),
+    unresolvedCount: unresolved.length, scannedAt: new Date(),
+  }, $unset: { candidates: "" } });
+
+  await saveSeedResult(clientDomain, {
+    redirectCount: doc.redirectCount, confirmedCount: doc.confirmedCount,
+    listed, unresolved,
+  }).catch(() => {});
+
+  return { ok: true, blacklistedCount: listed.length, unresolved: unresolved.length };
 }
 
 // ── agency:rollup ──────────────────────────────────────────────────────────────────────────────

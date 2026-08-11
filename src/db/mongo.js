@@ -207,6 +207,9 @@ export async function connect() {
   await db.collection("clients").createIndex({ agencyDomain: 1 });
   await db.collection("clients").createIndex({ clientDomain: 1 });
   await db.collection("clients").createIndex({ runId: 1, scanned: 1 });
+  // The batch pusher polls for candidates awaiting their first push; without this it scans the whole
+  // collection every eight seconds.
+  await db.collection("clients").createIndex({ pushed: 1 });
   // Fetch cache — a re-run must never re-fetch. TTL keeps it from growing without bound.
   await db.collection("agency_pages").createIndex({ fetchedAt: 1 }, { expireAfterSeconds: 30 * 86400 });
 

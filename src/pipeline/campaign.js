@@ -212,6 +212,53 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
   }
 }
 
+// ── Two-phase seed scan, for volume ────────────────────────────────────────────────────────────
+// runSingleSeed below reads the footprint and then WAITS up to 20 seconds for the checker to answer.
+// That wait is most of the wall-clock in a scan, and at 24k clients it is the whole schedule: it put
+// throughput at 4.7 scans/min, of which roughly 45 seconds per scan was a worker sleeping.
+//
+// Split in two, nothing waits. Phase 1 reads the footprint and returns. The domains are pushed to
+// the checker in ONE batched request for thousands of them (the checker's own docs: "the rate limit
+// counts requests, not domains" — pushing per client is what would blow the 120/min budget). Phase 2
+// runs later and reads whatever the mirror knows by then.
+export async function scanSeedStart(seed, { campaignId = null } = {}) {
+  const p1 = await cachedPage1(seed, campaignId);
+  if (!p1.ok) return { ok: false, error: "could not read the redirect list" };
+  const domains = [...new Set((p1.domains || []).filter(Boolean))];
+  return { ok: true, domains, redirectCount: p1.total ?? null, confirmedCount: domains.length };
+}
+
+// Which of these the checker has still not answered for. Phase 2 uses it to decide between
+// finishing and waiting another round.
+export async function readVerdicts(domains) {
+  const map = await verdictsFor(domains);
+  const listed = [], unresolved = [];
+  for (const d of domains) {
+    const v = map.get(d);
+    if (v && v.status === "listed") listed.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] });
+    else if (!v || v.status === "pending" || v.status === "checking") unresolved.push(d);
+  }
+  listed.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
+  return { listed, unresolved };
+}
+
+// Persist a finished two-phase scan into campaign_targets, so every later run — another agency
+// listing the same client, or the seed funnel itself — reads it instead of re-scanning.
+export async function saveSeedResult(seed, { redirectCount, confirmedCount, listed, unresolved, campaignId = null }) {
+  await campaignTargets().updateOne(
+    { seed, singleScan: true },
+    {
+      $setOnInsert: { seed, singleScan: true, campaignId, createdAt: new Date() },
+      $set: {
+        stage: "done", redirectCount: redirectCount ?? null, confirmedCount: confirmedCount ?? 0,
+        blacklistedCount: listed.length, blacklistedDomains: listed,
+        unresolvedCount: unresolved.length, activity: null, error: null, updatedAt: new Date(),
+      },
+    },
+    { upsert: true },
+  );
+}
+
 // Scan ONE domain end to end, with no gates and no Prospeo — "what is this company's sending
 // footprint and how much of it is listed". The agency crawl's clients come through here.
 //

@@ -9,10 +9,12 @@
 // other exists, which is exactly the property that lets either be restarted at any moment.
 import { connect } from "./db/mongo.js";
 import { lease, complete, fail, heartbeat, purgeFinished, reschedule, PRIORITY } from "./lib/jobs.js";
-import { scanClient, rollupAgency } from "./pipeline/agency.js";
+import { scanClient, rollupAgency, finalizeClientVerdicts } from "./pipeline/agency.js";
+import { pushDomains, refreshVerdicts } from "./services/blacklistProject.js";
+import { clients } from "./db/mongo.js";
 import { log } from "./lib/logger.js";
 
-const TYPES = ["client:scan", "agency:rollup"];
+const TYPES = ["client:scan", "client:verdict", "agency:rollup"];
 const WORKER_ID = `node-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const CONCURRENCY = parseInt(process.env.WORKER_CONCURRENCY || "4", 10);
 const IDLE_MS = 2000;
@@ -23,13 +25,28 @@ async function handle(job) {
   switch (job.type) {
     case "client:scan": {
       const res = await scanClient(job.payload);
-      // Re-arm the agency's rollup so its totals include this scan. Debounced, so a burst of scans
-      // for one agency produces a single recount rather than one per client.
-      const { runId, agencyDomain } = job.payload;
-      await reschedule("agency:rollup", { runId, domain: agencyDomain }, {
-        key: `agency:rollup:${runId}:${agencyDomain}`,
-        runId: job.runId, priority: PRIORITY.CRAWL + 10, delayMs: 60_000,
-      }).catch(() => {});
+      // A scan that only QUEUED domains for checking has nothing to roll up yet — the verdict job
+      // does that once an answer actually exists. Cached and skipped clients are final immediately.
+      if (!res.queuedForVerdicts) {
+        const { runId, agencyDomain } = job.payload;
+        await reschedule("agency:rollup", { runId, domain: agencyDomain }, {
+          key: `agency:rollup:${runId}:${agencyDomain}`,
+          runId: job.runId, priority: PRIORITY.CRAWL + 10, delayMs: 60_000,
+        }).catch(() => {});
+      }
+      return res;
+    }
+    case "client:verdict": {
+      const res = await finalizeClientVerdicts(job.payload);
+      // Only a FINISHED client changes an agency's totals; a round that is still waiting must not
+      // trigger a recount that would read its zero as real.
+      if (res.ok && !res.pending) {
+        const { runId, agencyDomain } = job.payload;
+        await reschedule("agency:rollup", { runId, domain: agencyDomain }, {
+          key: `agency:rollup:${runId}:${agencyDomain}`,
+          runId: job.runId, priority: PRIORITY.CRAWL + 10, delayMs: 60_000,
+        }).catch(() => {});
+      }
       return res;
     }
     case "agency:rollup":
@@ -67,8 +84,42 @@ async function lane(n) {
   }
 }
 
+// ── Batched pushing + mirror refresh ───────────────────────────────────────────────────────────
+// The checker allows 120 requests/min and its docs are explicit that the limit counts REQUESTS, not
+// domains: "a single request happily takes thousands". Pushing per client would spend that budget on
+// a few dozen scans a minute; one batch every few seconds spends almost none of it and lifts the
+// ceiling to whatever host.io itself allows.
+const PUSH_BATCH_DOMAINS = 4000;
+
+async function pushPending() {
+  const docs = await clients().find({ pushed: false, candidates: { $exists: true, $ne: [] } },
+    { projection: { candidates: 1 } }).limit(400).toArray().catch(() => []);
+  if (!docs.length) return 0;
+
+  const ids = [], domains = new Set();
+  for (const d of docs) {
+    if (domains.size >= PUSH_BATCH_DOMAINS) break;
+    ids.push(d._id);
+    for (const c of d.candidates || []) domains.add(c);
+  }
+  if (!domains.size) return 0;
+
+  await pushDomains([...domains]);
+  await clients().updateMany({ _id: { $in: ids } }, { $set: { pushed: true, pushedAt: new Date() } });
+  log.info("pushed domains for checking", { clients: ids.length, domains: domains.size });
+  return ids.length;
+}
+
+function background() {
+  // One shared refresh keeps every waiting verdict job current. Previously each scan drove its own
+  // polling loop, which is what made the mirror both the bottleneck and the budget.
+  setInterval(() => { refreshVerdicts().catch(() => {}); }, 20_000);
+  setInterval(() => { pushPending().catch((e) => log.warn("push batch failed", { err: e.message })); }, 8_000);
+}
+
 async function main() {
   await connect();
+  background();
   log.info("worker up", { workerId: WORKER_ID, types: TYPES, concurrency: CONCURRENCY });
 
   // Finished jobs are kept a week for debugging, then dropped — the queue is a work log, not an
