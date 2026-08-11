@@ -86,6 +86,20 @@ app.use("/mcp", mcpRouter);
 // unguessable token is the only gate. Same reasoning as /mcp above.
 app.use("/", authLimiter, reportRouter);
 
+// Both domains reach this same app, so without this the report host would also serve the dashboard:
+// a prospect who trims the URL to the bare domain would be met by an internal login box. On the
+// report host, /r/* (handled above) is the ONLY thing that exists — everything else leaves for the
+// marketing site rather than advertising that there is something here to log into.
+const REPORT_HOSTS = new Set(
+  (process.env.REPORT_HOSTS || "blacklist-report.com,www.blacklist-report.com")
+    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+);
+app.use((req, res, next) => {
+  if (!REPORT_HOSTS.has(String(req.hostname || "").toLowerCase())) return next();
+  if (req.path === "/health") return next();
+  return res.redirect(302, process.env.REPORT_HOME_URL || "https://inboxkit.com");
+});
+
 // Dashboard API — IP allowlist + brute-force guard + basic-auth + rate-limit.
 app.use("/api", ipAllow, authLimiter, apiLimiter, basicAuth, apiRouter);
 
