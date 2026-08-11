@@ -1062,6 +1062,23 @@ apiRouter.post("/campaign/:id/recover-dropped", async (req, res) => {
   const r = await recoverDroppedSeeds(req.params.id, { apply: true });
   res.status(r.ok ? 200 : 400).json(r);
 });
+// Which Mongo is THIS process actually talking to? The alias `mongo` resolves per-container on a
+// shared Docker network, so two services can use an identical URI and reach different servers —
+// which presents as an empty database, not as an error. Reports the resolved address so the workers
+// can be pinned to the same one the app uses.
+apiRouter.get("/debug/mongo", async (_req, res) => {
+  const dns = await import("node:dns");
+  const { leads: leadsCol } = await import("../db/mongo.js");
+  const resolved = await new Promise((r) => dns.lookup("mongo", (e, addr) => r(e ? `lookup failed: ${e.code}` : addr)));
+  res.json({
+    db: config.mongoDb,
+    uri: config.mongoUri,
+    resolvedMongoIp: resolved,
+    leads: await leadsCol().estimatedDocumentCount().catch((e) => `error: ${e.message}`),
+    hint: "point WORKER_MONGO_URI at mongodb://<resolvedMongoIp>:27017",
+  });
+});
+
 // ── Agency crawl ───────────────────────────────────────────────────────────────────────────────
 // Submit agency domains; the Go crawler finds their case studies and the Node worker scans the
 // clients behind them. NOTHING here spends a Prospeo credit — agency contacts are pulled only by the
