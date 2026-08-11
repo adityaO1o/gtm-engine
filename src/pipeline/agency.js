@@ -86,6 +86,38 @@ export async function startAgencyRun(rawDomains, opts = {}) {
   return { ok: true, id: String(runId), agencies: domains.length, gates };
 }
 
+// ── Furniture detection ────────────────────────────────────────────────────────────────────────
+// A blocklist of review sites and press will always be incomplete — the next run finds a badge
+// nobody thought of. But furniture has a signature no list needs: it shows up as the "client" of
+// MANY agencies. A real client belongs to one or two; g2.com came back as the client of four
+// agencies in a fifty-agency sample.
+//
+// Cached, because rollups run constantly and this aggregates the whole run.
+const FURNITURE_MIN_AGENCIES = 3;
+let furnitureCache = { runId: null, at: 0, set: new Set() };
+
+export async function furnitureDomains(runId, { maxAgeMs = 60_000 } = {}) {
+  const key = String(runId);
+  if (furnitureCache.runId === key && Date.now() - furnitureCache.at < maxAgeMs) return furnitureCache.set;
+
+  // Scale the threshold with the run: in a 10k-agency sweep a genuinely popular client could appear
+  // a handful of times, so a fixed 3 would start discarding real ones.
+  const total = await agencies().countDocuments({ runId }).catch(() => 0);
+  const threshold = Math.max(FURNITURE_MIN_AGENCIES, Math.ceil(total * 0.005));
+
+  const rows = await clients().aggregate([
+    { $match: { runId, clientDomain: { $nin: [null, ""] } } },
+    { $group: { _id: "$clientDomain", agencies: { $addToSet: "$agencyDomain" } } },
+    { $project: { n: { $size: "$agencies" } } },
+    { $match: { n: { $gte: threshold } } },
+  ]).toArray().catch(() => []);
+
+  const set = new Set(rows.map((r) => r._id));
+  if (set.size) log.info("furniture domains detected", { runId: key, threshold, domains: [...set].slice(0, 10), count: set.size });
+  furnitureCache = { runId: key, at: Date.now(), set };
+  return set;
+}
+
 // ── client:scan — the Node half, run by the worker ─────────────────────────────────────────────
 // Reuses the seed funnel wholesale rather than reimplementing it: the client is just a seed domain,
 // and everything about reading its footprint and checking it is already solved and already cached.
@@ -94,6 +126,14 @@ export async function scanClient({ runId, agencyDomain, clientDomain }) {
   const doc = await clients().findOne({ _id });
   if (!doc) return { ok: false, error: "unknown client" };
   if (doc.scanned) return { ok: true, cached: true, blacklistedCount: doc.blacklistedCount || 0 };
+
+  // Claimed by too many agencies to be anyone's client — a review badge, a press mention, a partner
+  // logo. Skipped before it costs a scan.
+  const furniture = await furnitureDomains(typeof runId === "string" ? new ObjectId(runId) : runId).catch(() => new Set());
+  if (furniture.has(clientDomain)) {
+    await clients().updateOne({ _id }, { $set: { scanned: true, skipped: "furniture", blacklistedCount: 0, scannedAt: new Date() } });
+    return { ok: true, skipped: "furniture" };
+  }
 
   // Non-ICP clients are evidence we'd never use — a university's mail estate is not a story an
   // agency's sending infra is responsible for.
@@ -202,7 +242,9 @@ export async function rollupAgency({ runId, domain }) {
   const run = await agencyRuns().findOne({ _id: rid }, { projection: { gates: 1 } });
   const gate = run?.gates?.blacklistGate ?? config.campaign.blacklistGate;
 
-  const rows = await clients().find({ runId: rid, agencyDomain: domain }).toArray();
+  const furniture = await furnitureDomains(rid).catch(() => new Set());
+  const rows = (await clients().find({ runId: rid, agencyDomain: domain }).toArray())
+    .filter((r) => !furniture.has(r.clientDomain) && r.skipped !== "furniture");
   const scanned = rows.filter((r) => r.scanned);
   const hits = scanned.filter((r) => (r.blacklistedCount || 0) >= gate)
     .sort((a, b) => (b.blacklistedCount || 0) - (a.blacklistedCount || 0));

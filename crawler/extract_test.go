@@ -151,3 +151,53 @@ func TestParseSitemap(t *testing.T) {
 		t.Errorf("ParseSitemap = %v", got)
 	}
 }
+
+// The real failure from the first 50-agency run: a G2 badge sat in the footer of every page, so it
+// out-counted the single body link that actually named the client — and g2.com became the "client"
+// of four different agencies.
+func TestExtractClientIgnoresChrome(t *testing.T) {
+	base := mustURL(t, "https://agency.com")
+	body := `<html><body>
+		<header><a href="https://g2.com/agency">Reviews</a><a href="https://clutch.co/agency">Clutch</a></header>
+		<main>
+			<h1>How we helped Hypefy scale outbound</h1>
+			<p>We partnered with <a href="https://hypefy.ai">Hypefy</a>.</p>
+		</main>
+		<footer>
+			<a href="https://g2.com/agency">G2</a><a href="https://g2.com/reviews">More reviews</a>
+			<a href="https://g2.com/badge">Badge</a><a href="https://clutch.co/x">Clutch</a>
+		</footer></body></html>`
+
+	hit := ExtractClient(base, "https://agency.com/case-studies/hypefy", body)
+	if hit == nil {
+		t.Fatal("no client extracted")
+	}
+	if hit.Domain != "hypefy.ai" {
+		t.Errorf("domain = %q, want hypefy.ai (chrome links must not win)", hit.Domain)
+	}
+}
+
+func TestReviewAndPressSitesAreNeverClients(t *testing.T) {
+	base := mustURL(t, "https://agency.com")
+	for _, junk := range []string{"g2.com", "clutch.co", "hbr.org", "entrepreneur.com", "statista.com", "capterra.com"} {
+		body := `<html><body><main><p>As seen on <a href="https://` + junk + `/x">them</a>.</p></main></body></html>`
+		if hit := ExtractClient(base, "https://agency.com/case-studies/x", body); hit != nil && hit.Domain != "" {
+			t.Errorf("%s was returned as a client domain", junk)
+		}
+	}
+}
+
+// No outbound link at all — the heading should still yield a name, which is what lifts the pages
+// that produced nothing at all in the first run.
+func TestHeadingNameFallback(t *testing.T) {
+	base := mustURL(t, "https://agency.com")
+	body := `<html><head><title>Agency | B2B lead generation experts</title></head><body>
+		<main><h1>Case Study: Northwind Traders</h1><p>No outbound links here.</p></main></body></html>`
+	hit := ExtractClient(base, "https://agency.com/case-studies/nw", body)
+	if hit == nil || hit.Name != "Northwind Traders" {
+		t.Fatalf("heading fallback failed: %+v", hit)
+	}
+	if hit.Domain != "" {
+		t.Errorf("a name must not become a domain, got %q", hit.Domain)
+	}
+}
