@@ -73,8 +73,12 @@ func main() {
 		log.Fatalf("mongo ping: %v", err)
 	}
 
+	// Split on newlines AND commas, matching src/lib/proxies.js. A comma-separated single-line
+	// PROXIES would otherwise parse as one malformed entry here, silently leaving the crawler with
+	// no proxies at all — which is not a crash, just every request going out from the server's own
+	// IP until it gets blocked.
 	var proxies []string
-	for _, p := range strings.Split(os.Getenv("PROXIES"), "\n") {
+	for _, p := range strings.FieldsFunc(os.Getenv("PROXIES"), func(r rune) bool { return r == '\n' || r == '\r' || r == ',' }) {
 		if s := strings.TrimSpace(p); s != "" {
 			proxies = append(proxies, s)
 		}
