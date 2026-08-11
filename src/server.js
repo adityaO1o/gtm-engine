@@ -84,7 +84,15 @@ app.use("/mcp", mcpRouter);
 // Shareable blacklist reports (blacklist-report.com/r/<token>). PUBLIC by design — the prospect who
 // gets the link has no account and no allowlisted IP — so it mounts before basic-auth and the
 // unguessable token is the only gate. Same reasoning as /mcp above.
-app.use("/", authLimiter, reportRouter);
+//
+// Its OWN limiter, deliberately not authLimiter: this router is mounted at "/", so anything attached
+// here runs for every request in the whole app. Sharing authLimiter meant public report traffic ate
+// the dashboard's brute-force budget and /api requests were counted twice — 25 failures per 15
+// minutes, spent twice as fast, is how the whole app started answering 429.
+// Only FAILED requests count (skipSuccessfulRequests), so a real reader is never limited while
+// someone guessing tokens still is.
+const reportLimiter = rateLimit({ windowMs: 15 * 60_000, max: 100, skipSuccessfulRequests: true, standardHeaders: true, legacyHeaders: false });
+app.use("/", reportLimiter, reportRouter);
 
 // Both domains reach this same app, so without this the report host would also serve the dashboard:
 // a stranger who trims the URL to the bare domain would be met by an internal login box. On the
