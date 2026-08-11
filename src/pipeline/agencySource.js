@@ -69,6 +69,7 @@ let rr = 0;
 async function search(q, gl, num = 100) {
   const keys = KEYS();
   if (!keys.length) return { ok: false, error: "no SERPER_KEYS configured" };
+  let lastStatus = null, lastBody = "";
 
   // Rotate keys so one key's quota doesn't carry the whole sweep.
   for (let i = 0; i < keys.length; i++) {
@@ -78,13 +79,18 @@ async function search(q, gl, num = 100) {
       { headers: { "X-API-KEY": k.key, "Content-Type": "application/json" }, timeout: 25000, validateStatus: () => true },
     ).catch((e) => ({ status: 0, data: e.message }));
 
+    lastStatus = r.status;
+    lastBody = typeof r.data === "string" ? r.data.slice(0, 200) : JSON.stringify(r.data || {}).slice(0, 200);
     if (r.status === 200) return { ok: true, results: r.data?.organic || [] };
     if (r.status === 429) { await new Promise((s) => setTimeout(s, 1500)); continue; }  // throttled, try the next key
     if (r.status === 401 || r.status === 402) { log.warn("serper key rejected", { status: r.status }); continue; }
-    log.warn("serper search failed", { status: r.status, q });
-    return { ok: false, error: `serper ${r.status}` };
+    log.warn("serper search failed", { status: r.status, q, body: lastBody });
+    break;
   }
-  return { ok: false, error: "every serper key failed" };
+  // Carry the status and body back to the caller. Reporting only "it failed" is what made the first
+  // attempt unreadable: nine failures and nothing anywhere saying whether it was the key, the quota
+  // or the request itself.
+  return { ok: false, error: `serper ${lastStatus}`, status: lastStatus, body: lastBody };
 }
 
 function domainOf(url) {
@@ -111,12 +117,13 @@ export async function sourceAgencies({ target = 2000, maxQueries = 300 } = {}) {
 
   const found = new Map();   // domain -> { title, query, geo }
   let used = 0, failed = 0;
+  let lastError = null;
 
   for (const { q, gl, label } of queries) {
     if (found.size >= target || used >= maxQueries) break;
     const r = await search(q, gl);
     used++;
-    if (!r.ok) { failed++; if (failed > 8) break; continue; }
+    if (!r.ok) { failed++; lastError = { error: r.error, status: r.status, body: r.body }; if (failed > 8) break; continue; }
 
     for (const item of r.results) {
       const d = domainOf(item.link || "");
@@ -144,7 +151,7 @@ export async function sourceAgencies({ target = 2000, maxQueries = 300 } = {}) {
   log.info("sourced agency domains", { found: found.size, queriesUsed: used, failed, alreadyKnown: before });
   return {
     ok: true, found: found.size, queriesUsed: used, creditsSpent: used,
-    alreadyKnown: before, failedQueries: failed,
+    alreadyKnown: before, failedQueries: failed, lastError,
     domains: [...found.keys()],
   };
 }
