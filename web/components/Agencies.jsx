@@ -7,6 +7,11 @@ import { j, post } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 
 const REPORT_HOST = "https://blacklist-report.com";
+const ago = (d) => {
+  if (!d) return "—";
+  const s = Math.max(0, Math.round((Date.now() - new Date(d).getTime()) / 1000));
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
+};
 const ts = (d) => (d ? new Date(d).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—");
 
 const STAGE = {
@@ -52,8 +57,10 @@ export default function Agencies() {
       setRun(r); setRows(res.items || []); setCount(res.count || 0);
       // Queue depth is the only honest "still working?" signal — agency counts sit still for
       // minutes while thousands of pages are in flight.
-      const busy = Object.values(r.queue || {}).some((s) => (s.queued || 0) + (s.leased || 0) > 0);
-      if (busy) timer.current = setTimeout(() => p(id), 4000);
+      // Poll while the RUN is running, not only while the queue happens to be non-empty: between
+      // stages the queue empties for a moment, and stopping there is what made a live crawl look dead.
+      const busy = r.status === "running" || Object.values(r.queue || {}).some((s) => (s.queued || 0) + (s.leased || 0) > 0);
+      if (busy) timer.current = setTimeout(() => p(id), 3000);
       else loadRuns();
     }).catch(() => {});
   }, [page, size, dq, onlyHits, loadRuns]);
@@ -177,6 +184,26 @@ export default function Agencies() {
           </>
         ) : null}
       </div>
+
+      {run?.activity?.length ? (
+        <div className="card" style={{ padding: "var(--s3) var(--s4)", marginBottom: "var(--s4)" }}>
+          <div className="section-t" style={{ marginTop: 0 }}>
+            {inFlight ? <><span className="spin" />Working — {num(inFlight)} jobs in flight</> : <>Idle</>}
+            {run.lastActivityAt ? <span className="resn muted" style={{ marginLeft: 8 }}>last update {ago(run.lastActivityAt)}</span> : null}
+          </div>
+          <div style={{ maxHeight: 168, overflowY: "auto" }}>
+            {run.activity.map((a, i) => (
+              <div key={i} className="sm" style={{ display: "flex", gap: 8, padding: "3px 0", borderBottom: "1px solid var(--line)" }}>
+                <span className="muted" style={{ width: 52, flexShrink: 0 }}>{a.what}</span>
+                <span className="mono" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+                <span className="muted">{a.detail}</span>
+                {a.extra ? <span style={{ color: "var(--good)" }}>{a.extra}</span> : null}
+                <span className="muted" style={{ width: 54, textAlign: "right", flexShrink: 0 }}>{ago(a.at)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {run ? (
         <div className="grid g-hero" style={{ marginBottom: "var(--s4)" }}>

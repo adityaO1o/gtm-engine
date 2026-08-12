@@ -201,3 +201,31 @@ func TestHeadingNameFallback(t *testing.T) {
 		t.Errorf("a name must not become a domain, got %q", hit.Domain)
 	}
 }
+
+// The regression that took inboxkit.com from 6 clients to 0: the client link sits outside <main>, so
+// scoping to content found nothing and the extractor gave up instead of looking wider.
+func TestFallsBackToWholePageWhenContentHasNoClient(t *testing.T) {
+	base := mustURL(t, "https://agency.com")
+	body := `<html><body>
+		<main><h1>Client success</h1><p><a href="/contact">Talk to us</a></p></main>
+		<section class="cta-band"><p>Visit <a href="https://leadhaste.com">Leadhaste</a></p></section>
+	</body></html>`
+	hit := ExtractClient(base, "https://agency.com/case-studies/leadhaste", body)
+	if hit == nil || hit.Domain != "leadhaste.com" {
+		t.Fatalf("want leadhaste.com from outside <main>, got %+v", hit)
+	}
+}
+
+// isChrome matched class substrings, so a hero called "banner" or a section called "navy" deleted
+// the page body on exactly the site builders agencies use.
+func TestChromeMatchingIsTokenNotSubstring(t *testing.T) {
+	base := mustURL(t, "https://agency.com")
+	body := `<html><body>
+		<div class="hero-banner section-navy"><p>We helped <a href="https://cymate.io">Cymate</a></p></div>
+		<footer><a href="https://g2.com/x">G2</a><a href="https://g2.com/y">G2</a></footer>
+	</body></html>`
+	hit := ExtractClient(base, "https://agency.com/case-studies/cymate", body)
+	if hit == nil || hit.Domain != "cymate.io" {
+		t.Fatalf("want cymate.io — 'banner'/'navy' are not chrome, got %+v", hit)
+	}
+}

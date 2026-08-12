@@ -59,17 +59,27 @@ func isChrome(n *html.Node) bool {
 	if chromeTags[n.Data] {
 		return true
 	}
+	// Match class/id TOKENS, not substrings. "banner" as a substring hits a hero section and "nav"
+	// hits anything named "navy" — on a Webflow or Framer site that silently deletes the page body,
+	// which is how a working extractor started returning nothing at all.
 	for _, a := range n.Attr {
 		if a.Key != "class" && a.Key != "id" && a.Key != "role" {
 			continue
 		}
-		v := strings.ToLower(a.Val)
-		if strings.Contains(v, "footer") || strings.Contains(v, "header") || strings.Contains(v, "nav") ||
-			strings.Contains(v, "sidebar") || strings.Contains(v, "cookie") || strings.Contains(v, "banner") {
-			return true
+		for _, tok := range strings.FieldsFunc(strings.ToLower(a.Val), func(r rune) bool {
+			return r == ' ' || r == '-' || r == '_'
+		}) {
+			if chromeTokens[tok] {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+var chromeTokens = map[string]bool{
+	"footer": true, "header": true, "nav": true, "navbar": true, "navigation": true,
+	"sidebar": true, "cookie": true, "cookies": true, "menu": true, "topbar": true,
 }
 
 func parseLinksIn(base *url.URL, root *html.Node) []Link {
@@ -314,35 +324,44 @@ func ExtractClient(base *url.URL, pageURL, body string) *ClientHit {
 	}
 	agencyHost := registrableHost(base.Hostname())
 
-	counts := map[string]int{}
-	names := map[string]string{}
-	for _, l := range parseContentLinks(u, body) {
-		lu, err := url.Parse(l.URL)
-		if err != nil {
-			continue
+	tally := func(links []Link) (string, map[string]string) {
+		counts := map[string]int{}
+		names := map[string]string{}
+		for _, l := range links {
+			lu, err := url.Parse(l.URL)
+			if err != nil {
+				continue
+			}
+			h := registrableHost(lu.Hostname())
+			if h == "" || h == agencyHost || notAClient[h] {
+				continue
+			}
+			if strings.HasSuffix(h, ".gov") || strings.HasSuffix(h, ".edu") {
+				continue
+			}
+			counts[h]++
+			if names[h] == "" && l.Text != "" && len(l.Text) < 60 {
+				names[h] = l.Text
+			}
 		}
-		h := registrableHost(lu.Hostname())
-		if h == "" || h == agencyHost || notAClient[h] {
-			continue
+		best, bestN := "", 0
+		for h, n := range counts {
+			if n > bestN {
+				best, bestN = h, n
+			}
 		}
-		// Skip obvious infrastructure subdomains of the agency itself and common trackers.
-		if strings.HasSuffix(h, ".gov") || strings.HasSuffix(h, ".edu") {
-			continue
-		}
-		counts[h]++
-		if names[h] == "" && l.Text != "" && len(l.Text) < 60 {
-			names[h] = l.Text
-		}
+		return best, names
 	}
 
-	best, bestN := "", 0
-	for h, n := range counts {
-		if n > bestN {
-			best, bestN = h, n
-		}
-	}
-	if best != "" {
+	// Content first: that is what stops a footer badge outranking the one link in the body. But
+	// preferring content must never mean IGNORING everything else — plenty of sites put the client
+	// link outside <main>, and treating chrome-exclusion as a hard filter took a working extractor
+	// (6 clients from inboxkit.com) to zero.
+	if best, names := tally(parseContentLinks(u, body)); best != "" {
 		return &ClientHit{Domain: best, Name: names[best], Confidence: "outbound-link"}
+	}
+	if best, names := tally(parseLinks(u, body)); best != "" {
+		return &ClientHit{Domain: best, Name: names[best], Confidence: "outbound-link-page"}
 	}
 
 	// Nothing linked out. Fall back to a NAME, which downstream must still resolve to a domain — the

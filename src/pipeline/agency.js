@@ -361,8 +361,30 @@ export async function getAgencyRun(id) {
     agencies().countDocuments({ runId: rid, enrichedAt: { $ne: null } }),
   ]);
 
+  // What the run is DOING right now. Counts barely move while thousands of pages are in flight, so
+  // a screen showing only totals reads as frozen even when everything is working — which is exactly
+  // how this looked from outside.
+  const [recentAgencies, recentClients] = await Promise.all([
+    agencies().find({ runId: rid }, { projection: { domain: 1, stage: 1, clientsFound: 1, clientsBlacklisted: 1, updatedAt: 1 } })
+      .sort({ updatedAt: -1 }).limit(8).toArray().catch(() => []),
+    clients().find({ runId: rid }, { projection: { agencyDomain: 1, clientDomain: 1, scanned: 1, blacklistedCount: 1, awaitingVerdicts: 1, updatedAt: 1, scannedAt: 1, startedAt: 1 } })
+      .sort({ _id: -1 }).limit(8).toArray().catch(() => []),
+  ]);
+
+  const activity = [
+    ...recentAgencies.map((a) => ({
+      what: "agency", name: a.domain, detail: a.stage,
+      extra: a.clientsFound ? `${a.clientsFound} clients` : "", at: a.updatedAt,
+    })),
+    ...recentClients.map((c) => ({
+      what: "client", name: c.clientDomain || "(unresolved)", detail: c.scanned ? "scanned" : c.awaitingVerdicts ? "awaiting verdicts" : "queued",
+      extra: c.scanned ? `${c.blacklistedCount || 0} blacklisted` : "", at: c.scannedAt || c.startedAt || c.updatedAt,
+    })),
+  ].filter((a) => a.at).sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 10);
+
   return {
-    ...run, id, stages, queue: await queueStats(rid),
+    ...run, id, stages, queue: await queueStats(rid), activity,
+    lastActivityAt: activity[0]?.at || run.updatedAt,
     funnel: { agencies: run.seedCount, clientsFound, clientsScanned, agenciesWithHits: hits, enriched },
   };
 }
