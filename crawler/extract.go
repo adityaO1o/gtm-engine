@@ -41,6 +41,24 @@ var notAClient = map[string]bool{
 	"crunchbase.com": true, "nytimes.com": true, "wsj.com": true, "bbc.co.uk": true, "theguardian.com": true,
 }
 
+// Dedupe key for a page URL. www vs non-www and a trailing slash are the SAME page, but they are
+// different strings — and the index page yields relative links resolved against the bare host while
+// the sitemap lists the www form. Deduping on the raw string fetched every case study twice: six
+// pages reported as twelve.
+func canonicalURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.Host = strings.TrimPrefix(strings.ToLower(u.Host), "www.")
+	u.Scheme = "https"
+	u.Fragment = ""
+	if u.Path != "/" {
+		u.Path = strings.TrimSuffix(u.Path, "/")
+	}
+	return u.String()
+}
+
 type Link struct {
 	URL  string
 	Text string
@@ -248,8 +266,9 @@ func FindCaseStudyIndexes(base *url.URL, homeBody string, sitemapURLs []string) 
 	seen := map[string]bool{}
 	var out []string
 	add := func(u string) {
-		if !seen[u] {
-			seen[u] = true
+		k := canonicalURL(u)
+		if !seen[k] {
+			seen[k] = true
 			out = append(out, u)
 		}
 	}
@@ -280,10 +299,11 @@ func FindCaseStudyPages(base *url.URL, indexBody string, sitemapURLs []string, l
 	seen := map[string]bool{}
 	var out []string
 	add := func(u string) {
-		if seen[u] || len(out) >= limit {
+		k := canonicalURL(u)
+		if seen[k] || len(out) >= limit {
 			return
 		}
-		seen[u] = true
+		seen[k] = true
 		out = append(out, u)
 	}
 

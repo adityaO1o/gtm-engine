@@ -370,8 +370,9 @@ func (c *Crawler) discover(ctx context.Context, job *Job) error {
 	seen := map[string]bool{}
 	var uniq []string
 	for _, p := range pages {
-		if !seen[p] && len(uniq) < c.maxCase {
-			seen[p] = true
+		k := canonicalURL(p)
+		if !seen[k] && len(uniq) < c.maxCase {
+			seen[k] = true
 			uniq = append(uniq, p)
 		}
 	}

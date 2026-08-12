@@ -229,3 +229,22 @@ func TestChromeMatchingIsTokenNotSubstring(t *testing.T) {
 		t.Fatalf("want cymate.io — 'banner'/'navy' are not chrome, got %+v", hit)
 	}
 }
+
+// www and non-www are the same page. The sitemap lists one form and the index page's relative links
+// resolve to the other, so deduping on the raw string fetched every case study twice — inboxkit.com
+// reported 12 pages for its 6.
+func TestCaseStudyDedupeIgnoresWww(t *testing.T) {
+	base := mustURL(t, "https://inboxkit.com")
+	index := `<html><body>
+		<a href="/case-studies/cymate">Cymate</a>
+		<a href="/case-studies/anevo">Anevo</a>
+	</body></html>`
+	sitemap := []string{
+		"https://www.inboxkit.com/case-studies/cymate",
+		"https://www.inboxkit.com/case-studies/anevo/",
+	}
+	got := FindCaseStudyPages(base, index, sitemap, 40)
+	if len(got) != 2 {
+		t.Fatalf("want 2 unique pages, got %d: %v", len(got), got)
+	}
+}

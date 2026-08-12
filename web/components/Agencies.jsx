@@ -35,7 +35,7 @@ export default function Agencies() {
   const [size, setSize] = useState(100);
   const [q, setQ] = useState("");
   const [dq, setDq] = useState("");
-  const [onlyHits, setOnlyHits] = useState(true);
+  const [onlyHits, setOnlyHits] = useState(false);
   const [domains, setDomains] = useState("");
   const [starting, setStarting] = useState(false);
   const [enriching, setEnriching] = useState(false);
@@ -221,6 +221,9 @@ export default function Agencies() {
 
       <div className="toolbar">
         <input className="search" style={{ maxWidth: 280 }} placeholder="Search an agency domain…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <span className="resn muted" title="Clients discovered so far — this fills in live as case studies are read">
+          {num(f.clientsFound || 0)} clients found · {num(f.clientsScanned || 0)} scanned
+        </span>
         {q ? <button className="btn btn-ghost btn-sm" onClick={() => setQ("")}><Icon name="x" />Clear</button> : null}
         <button className={`btn btn-sm ${onlyHits ? "" : "btn-ghost"}`} onClick={() => { setOnlyHits((v) => !v); setPage(0); }}>
           <Icon name="warn" />Only with hits
@@ -240,7 +243,7 @@ export default function Agencies() {
                   return (
                     <tr key={a.domain} className="click" onClick={() => showClients(a.domain)}>
                       <td><span className="nm mono">{a.domain}</span>{a.companyName ? <div className="sm muted">{a.companyName}</div> : null}</td>
-                      <td className="num-c">{num(a.clientsFound || 0)}</td>
+                      <td className="num-c">{a.clientsFound ? <b>{num(a.clientsFound)}</b> : <span className="muted">—</span>}</td>
                       <td className="num-c"><b style={{ color: a.clientsBlacklisted ? "var(--bad)" : "inherit" }}>{num(a.clientsBlacklisted || 0)}</b></td>
                       <td className="sm muted">{(a.topClients || []).slice(0, 3).map((c) => `${c.domain} (${c.blacklisted})`).join(", ") || "—"}</td>
                       <td><span className={`pill ${st.cls}`}>{st.label}</span></td>
