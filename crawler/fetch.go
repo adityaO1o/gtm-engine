@@ -25,10 +25,10 @@ import (
 //     otherwise hold a worker slot until the process restarts
 
 const (
-	maxBodyBytes   = 2 << 20 // 2 MiB
-	fetchTimeout   = 12 * time.Second
-	maxRedirects   = 3
-	perHostLimit   = 2
+	maxBodyBytes    = 2 << 20 // 2 MiB
+	fetchTimeout    = 12 * time.Second
+	maxRedirects    = 3
+	perHostLimit    = 2
 	perHostCooldown = 400 * time.Millisecond
 )
 

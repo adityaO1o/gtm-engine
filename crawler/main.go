@@ -28,19 +28,26 @@ import (
 // versions of rules that must agree.
 
 type Job struct {
-	ID      primitive.ObjectID `bson:"_id"`
-	Type    string             `bson:"type"`
-	Payload bson.M             `bson:"payload"`
-	RunID   primitive.ObjectID `bson:"runId"`
-	Attempts int               `bson:"attempts"`
-	MaxAttempts int            `bson:"maxAttempts"`
+	ID          primitive.ObjectID `bson:"_id"`
+	Type        string             `bson:"type"`
+	Payload     bson.M             `bson:"payload"`
+	RunID       primitive.ObjectID `bson:"runId"`
+	Attempts    int                `bson:"attempts"`
+	MaxAttempts int                `bson:"maxAttempts"`
 }
 
 type Crawler struct {
 	db      *mongo.Database
 	fetch   *Fetcher
+	robots  *robots
 	worker  string
 	maxCase int
+
+	// Runs the user has stopped. Checked before each job so a Stop actually stops work already in the
+	// queue — marking jobs failed does not reach a crawler that is mid-flight and about to enqueue
+	// its children.
+	stoppedMu sync.RWMutex
+	stopped   map[string]time.Time
 }
 
 // Never log a Mongo URI with credentials in it.
@@ -97,8 +104,10 @@ func main() {
 	c := &Crawler{
 		db:      client.Database(dbName),
 		fetch:   NewFetcher(proxies),
+		robots:  newRobots(),
 		worker:  fmt.Sprintf("go-%d", os.Getpid()),
 		maxCase: envInt("CRAWL_MAX_CASE_STUDIES", 200),
+		stopped: map[string]time.Time{},
 	}
 
 	lanes := envInt("CRAWL_CONCURRENCY", 64)
@@ -261,7 +270,37 @@ func min(a, b int) int {
 	return b
 }
 
+// isStopped answers from a short-lived cache so every job does not query for it.
+func (c *Crawler) isStopped(ctx context.Context, runID primitive.ObjectID) bool {
+	key := runID.Hex()
+	c.stoppedMu.RLock()
+	at, ok := c.stopped[key]
+	c.stoppedMu.RUnlock()
+	if ok && time.Since(at) < 20*time.Second {
+		return true
+	}
+
+	var run struct {
+		Status string `bson:"status"`
+	}
+	if err := c.db.Collection("agency_runs").FindOne(ctx, bson.M{"_id": runID}).Decode(&run); err != nil {
+		return false
+	}
+	if run.Status == "stopped" {
+		c.stoppedMu.Lock()
+		c.stopped[key] = time.Now()
+		c.stoppedMu.Unlock()
+		return true
+	}
+	return false
+}
+
 func (c *Crawler) handle(ctx context.Context, job *Job) error {
+	// Stop must reach work already in flight. Without this the crawler finishes its page and enqueues
+	// the children, so a stopped run keeps growing after the button was pressed.
+	if c.isStopped(ctx, job.RunID) {
+		return nil
+	}
 	switch job.Type {
 	case "agency:discover":
 		return c.discover(ctx, job)
@@ -281,6 +320,13 @@ func (c *Crawler) getCached(ctx context.Context, rawURL string) (*Page, error) {
 	err := c.db.Collection("agency_pages").FindOne(ctx, bson.M{"_id": rawURL}).Decode(&cached)
 	if err == nil {
 		return &Page{URL: rawURL, FinalURL: rawURL, Status: cached.Status, Body: cached.Body}, nil
+	}
+
+	// robots.txt is checked here rather than at each call site, so nothing can fetch around it.
+	if u, err := url.Parse(rawURL); err == nil && !strings.HasSuffix(u.Path, "/robots.txt") {
+		if !c.robots.allowed(ctx, c.fetch, u.Scheme, u.Host, u.Path) {
+			return &Page{URL: rawURL, Status: 999, ContentType: "blocked-by-robots"}, nil
+		}
 	}
 
 	p, err := c.fetch.Get(ctx, rawURL)

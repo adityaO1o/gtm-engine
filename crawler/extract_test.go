@@ -15,15 +15,15 @@ func mustURL(t *testing.T, s string) *url.URL {
 
 func TestRegistrableHost(t *testing.T) {
 	cases := map[string]string{
-		"www.acme.com":       "acme.com",
-		"acme.com":           "acme.com",
-		"mail.acme.com":      "acme.com",
-		"deep.sub.acme.com":  "acme.com",
-		"acme.co.uk":         "acme.co.uk",
-		"www.acme.co.uk":     "acme.co.uk",
-		"blog.acme.co.uk":    "acme.co.uk",
-		"acme.co.in":         "acme.co.in",
-		"localhost":          "",
+		"www.acme.com":      "acme.com",
+		"acme.com":          "acme.com",
+		"mail.acme.com":     "acme.com",
+		"deep.sub.acme.com": "acme.com",
+		"acme.co.uk":        "acme.co.uk",
+		"www.acme.co.uk":    "acme.co.uk",
+		"blog.acme.co.uk":   "acme.co.uk",
+		"acme.co.in":        "acme.co.in",
+		"localhost":         "",
 	}
 	for in, want := range cases {
 		if got := registrableHost(in); got != want {
@@ -235,7 +235,6 @@ func TestReviewAndPressSitesAreNeverClients(t *testing.T) {
 	}
 }
 
-
 // The regression that took inboxkit.com from 6 clients to 0: the client link sits outside <main>, so
 // scoping to content found nothing and the extractor gave up instead of looking wider.
 func TestFallsBackToWholePageWhenContentHasNoClient(t *testing.T) {
@@ -280,5 +279,30 @@ func TestCaseStudyDedupeIgnoresWww(t *testing.T) {
 	got := FindCaseStudyPages(base, index, sitemap, 40)
 	if len(got) != 2 {
 		t.Fatalf("want 2 unique pages, got %d: %v", len(got), got)
+	}
+}
+
+func TestParseRobots(t *testing.T) {
+	body := `# comment
+User-agent: BadBot
+Disallow: /
+
+User-agent: *
+Disallow: /admin
+Disallow: /private/
+Allow: /public
+
+User-agent: Googlebot
+Disallow: /nothing-for-us`
+	got := parseRobots(body)
+	if len(got) != 2 || got[0] != "/admin" || got[1] != "/private/" {
+		t.Fatalf("want the wildcard group's rules only, got %v", got)
+	}
+}
+
+// Reading a more specific group and ignoring the wildcard would be worse than reading neither.
+func TestParseRobotsDisallowAll(t *testing.T) {
+	if got := parseRobots("User-agent: *\nDisallow: /"); len(got) != 1 || got[0] != "/" {
+		t.Fatalf("want a whole-site disallow, got %v", got)
 	}
 }

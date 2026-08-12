@@ -186,6 +186,13 @@ export async function createAgencyReport(agencyDomain, agency, { reuse = true, f
     return { ok: true, token: existing._id, seed: agencyDomain, reused: true, blacklistedCount: existing.blacklistedCount };
   }
 
+  // Once somebody has OPENED the report, it stops changing. The seed reports carry a snapshot
+  // promise for a reason: the number quoted in an email must still be the number on the page. A
+  // rollup landing after the prospect read it would silently rewrite what they were told.
+  if (existing?.views > 0 && !force) {
+    return { ok: true, token: existing._id, seed: agencyDomain, reused: true, frozen: true, blacklistedCount: existing.blacklistedCount };
+  }
+
   const clientDocs = (agency.clients || []).map((c) => ({
     domain: c.clientDomain || c.domain,
     name: c.clientName || c.name || null,

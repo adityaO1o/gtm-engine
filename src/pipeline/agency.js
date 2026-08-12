@@ -145,7 +145,7 @@ export async function scanClient({ runId, agencyDomain, clientDomain }) {
   // Clients repeat across agencies, so this is the difference between scanning a domain once and
   // scanning it five times.
   const prior = await campaignTargets().findOne(
-    { seed: clientDomain, blacklistedDomains: { $exists: true } },
+    { seed: clientDomain, blacklistedDomains: { $exists: true }, agencyRunId: { $exists: false } },
     { projection: { blacklistedCount: 1, blacklistedDomains: 1, redirectCount: 1, confirmedCount: 1, companyName: 1 }, sort: { blacklistedCount: -1 } },
   ).catch(() => null);
 
@@ -289,9 +289,12 @@ export async function enrichAgencies(runId, { minHits = 1, limit = 5000, include
     await runPool(targets, async (a) => {
       // enrichSeed writes into campaign_targets, so agency contacts land in the same shape the rest
       // of the platform (SendKit push, CSV export, preview) already understands.
+      // agencyRunId only — NOT campaignId. Stamping an agency run's id into the field the blacklist
+      // funnel keys on put agency rows inside a campaign that does not exist, mixing two funnels'
+      // data for no benefit.
       const t = await campaignTargets().findOneAndUpdate(
         { seed: a.domain, agencyRunId: rid },
-        { $setOnInsert: { seed: a.domain, agencyRunId: rid, campaignId: rid, stage: "enriching", createdAt: new Date() } },
+        { $setOnInsert: { seed: a.domain, agencyRunId: rid, stage: "enriching", createdAt: new Date() } },
         { upsert: true, returnDocument: "after" },
       );
       const target = t?.value || t;
