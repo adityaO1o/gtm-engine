@@ -163,7 +163,7 @@ func main() {
 }
 
 func (c *Crawler) lane(ctx context.Context, n int) {
-	types := []string{"agency:discover", "case:extract"}
+	types := []string{"agency:discover", "case:extract", "client:resolve"}
 	for ctx.Err() == nil {
 		job, err := c.lease(ctx, types, n)
 		if err != nil {
@@ -306,6 +306,8 @@ func (c *Crawler) handle(ctx context.Context, job *Job) error {
 		return c.discover(ctx, job)
 	case "case:extract":
 		return c.extractCase(ctx, job)
+	case "client:resolve":
+		return c.resolveNamed(ctx, job)
 	}
 	return fmt.Errorf("unknown type %s", job.Type)
 }
@@ -486,6 +488,56 @@ func (c *Crawler) enqueueRollup(ctx context.Context, runID primitive.ObjectID, d
 		}}, options.Update().SetUpsert(true))
 }
 
+// client:resolve — a company NAME with no link. Search for it, prove the answer, and only then treat
+// it as a client. Runs at the lowest priority: it is the speculative half of the pipeline and must
+// never delay the pages that already gave us a domain.
+func (c *Crawler) resolveNamed(ctx context.Context, job *Job) error {
+	domain, _ := job.Payload["domain"].(string)
+	name, _ := job.Payload["name"].(string)
+	sourceURL, _ := job.Payload["sourceUrl"].(string)
+	if domain == "" || name == "" {
+		return fmt.Errorf("bad payload")
+	}
+
+	resolved, via := c.ResolveCompanyDomain(ctx, name)
+	if resolved == "" || resolved == registrableHost(domain) {
+		// Unresolved is recorded, not retried forever: a name we cannot prove is not a client we can
+		// use, and pretending otherwise is how the wrong company ends up in a pitch.
+		c.db.Collection("clients").UpdateOne(ctx,
+			bson.M{"_id": fmt.Sprintf("%s:%s:name:%s", job.RunID.Hex(), domain, normaliseName(name))},
+			bson.M{"$setOnInsert": bson.M{
+				"runId": job.RunID, "agencyDomain": domain, "clientName": name, "clientDomain": "",
+				"sourceUrl": sourceURL, "confidence": "unresolved", "scanned": true,
+				"unresolved": true, "createdAt": time.Now(),
+			}}, options.Update().SetUpsert(true))
+		return nil
+	}
+
+	now := time.Now()
+	id := fmt.Sprintf("%s:%s:%s", job.RunID.Hex(), domain, resolved)
+	c.db.Collection("clients").UpdateOne(ctx, bson.M{"_id": id},
+		bson.M{"$setOnInsert": bson.M{
+			"runId": job.RunID, "agencyDomain": domain, "clientDomain": resolved,
+			"clientName": name, "sourceUrl": sourceURL, "confidence": "resolved-" + via,
+			"scanned": false, "blacklistedCount": 0, "createdAt": now,
+		}}, options.Update().SetUpsert(true))
+
+	key := fmt.Sprintf("client:scan:%s:%s", job.RunID.Hex(), id)
+	c.db.Collection("jobs").UpdateOne(ctx, bson.M{"key": key},
+		bson.M{"$setOnInsert": bson.M{
+			"key": key, "type": "client:scan",
+			"payload":  bson.M{"runId": job.RunID.Hex(), "agencyDomain": domain, "clientDomain": resolved},
+			"runId":    job.RunID,
+			"priority": 10, "maxAttempts": 3, "state": "queued", "attempts": 0,
+			"nextRunAt": now, "createdAt": now, "updatedAt": now,
+		}}, options.Update().SetUpsert(true))
+
+	c.db.Collection("agencies").UpdateOne(ctx, bson.M{"runId": job.RunID, "domain": domain},
+		bson.M{"$inc": bson.M{"clientsFound": 1, "clientsResolved": 1}, "$set": bson.M{"stage": "scanning", "updatedAt": now}})
+	log.Printf("resolved %q -> %s (%s)", name, resolved, via)
+	return nil
+}
+
 // case:extract — one case study page -> the client behind it -> a client:scan job for the Node side.
 func (c *Crawler) extractCase(ctx context.Context, job *Job) error {
 	domain, _ := job.Payload["domain"].(string)
@@ -520,7 +572,27 @@ func (c *Crawler) extractCase(ctx context.Context, job *Job) error {
 		}
 	}
 
+	// Nothing linked out. Most agencies name their clients without linking them — a logo grid, a
+	// testimonial byline — so pull the NAMES and resolve them separately rather than losing the page.
 	if len(hits) == 0 {
+		names := ExtractClientNames(base, p.Body)
+		now := time.Now()
+		var docs []mongo.WriteModel
+		for _, n := range names {
+			key := fmt.Sprintf("client:resolve:%s:%s:%s", job.RunID.Hex(), domain, normaliseName(n))
+			docs = append(docs, mongo.NewUpdateOneModel().SetFilter(bson.M{"key": key}).SetUpsert(true).
+				SetUpdate(bson.M{"$setOnInsert": bson.M{
+					"key": key, "type": "client:resolve",
+					"payload":  bson.M{"runId": job.RunID.Hex(), "domain": domain, "name": n, "sourceUrl": pageURL},
+					"runId":    job.RunID,
+					"priority": 5, "maxAttempts": 2, "state": "queued", "attempts": 0,
+					"nextRunAt": now, "createdAt": now, "updatedAt": now,
+				}}))
+		}
+		if len(docs) > 0 {
+			c.db.Collection("jobs").BulkWrite(ctx, docs, options.BulkWrite().SetOrdered(false))
+			log.Printf("%s: %d unlinked names queued for resolution", domain, len(docs))
+		}
 		c.enqueueRollup(ctx, job.RunID, domain)
 		return nil
 	}

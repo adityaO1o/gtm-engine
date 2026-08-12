@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -304,5 +305,60 @@ Disallow: /nothing-for-us`
 func TestParseRobotsDisallowAll(t *testing.T) {
 	if got := parseRobots("User-agent: *\nDisallow: /"); len(got) != 1 || got[0] != "/" {
 		t.Fatalf("want a whole-site disallow, got %v", got)
+	}
+}
+
+func TestNormaliseName(t *testing.T) {
+	cases := map[string]string{
+		"Acme Solutions, Inc.": "acme",
+		"Northwind Ltd":        "northwind",
+		"Contoso Technologies": "contoso",
+		"Hypefy":               "hypefy",
+	}
+	for in, want := range cases {
+		if got := normaliseName(in); got != want {
+			t.Errorf("normaliseName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Logo grids are where the unlinked clients live: an <img alt="Acme logo"> and nothing else.
+func TestExtractClientNamesFromLogos(t *testing.T) {
+	base := mustURL(t, "https://agency.com")
+	body := `<html><body>
+		<header><img alt="Agency logo"></header>
+		<main><h2>Our customers</h2>
+			<img alt="Acme logo">
+			<img alt="Northwind Traders - client">
+			<img alt="Contoso">
+			<img alt="">
+			<img alt="a">
+		</main>
+		<footer><img alt="Trustpilot badge"></footer>
+	</body></html>`
+	got := ExtractClientNames(base, body)
+	if len(got) != 3 {
+		t.Fatalf("want 3 names from the content, got %d: %v", len(got), got)
+	}
+	joined := strings.Join(got, "|")
+	for _, want := range []string{"Acme", "Northwind Traders", "Contoso"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missed %q in %v", want, got)
+		}
+	}
+	if strings.Contains(joined, "Agency") || strings.Contains(joined, "Trustpilot") {
+		t.Errorf("picked up chrome: %v", got)
+	}
+}
+
+func TestSerpDomainsSkipsEnginesAndJunk(t *testing.T) {
+	body := `<a href="https://duckduckgo.com/y.js">x</a>
+	         <a href="https://acme.com/about">Acme</a>
+	         <a href="https://linkedin.com/company/acme">LinkedIn</a>
+	         <a href="https://g2.com/acme">G2</a>
+	         <a href="https://northwind.io">Northwind</a>`
+	got := serpDomains(body, 5)
+	if len(got) != 2 || got[0] != "acme.com" || got[1] != "northwind.io" {
+		t.Fatalf("want the two real sites only, got %v", got)
 	}
 }
