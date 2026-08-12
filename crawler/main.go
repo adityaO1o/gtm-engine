@@ -459,7 +459,7 @@ func (c *Crawler) extractCase(ctx context.Context, job *Job) error {
 		// problem, and guessing here would put wrong companies in front of a prospect.
 		if hit != nil && hit.Name != "" {
 			c.db.Collection("clients").UpdateOne(ctx,
-				bson.M{"_id": fmt.Sprintf("%s:name:%s", domain, hit.Name)},
+				bson.M{"_id": fmt.Sprintf("%s:%s:name:%s", job.RunID.Hex(), domain, hit.Name)},
 				bson.M{"$setOnInsert": bson.M{
 					"runId": job.RunID, "agencyDomain": domain, "clientName": hit.Name,
 					"clientDomain": "", "sourceUrl": pageURL, "confidence": hit.Confidence,
@@ -470,7 +470,11 @@ func (c *Crawler) extractCase(ctx context.Context, job *Job) error {
 		return nil
 	}
 
-	id := fmt.Sprintf("%s:%s", domain, hit.Domain)
+	// Scoped to the RUN. A bare agency:client id is global, so a re-crawl found the document already
+	// present, $setOnInsert did nothing, and the row kept the FIRST run's id — leaving the new run
+	// showing zero clients while extraction was working perfectly. Cross-run scan caching does not
+	// depend on this id; campaign_targets provides it, keyed by the domain itself.
+	id := fmt.Sprintf("%s:%s:%s", job.RunID.Hex(), domain, hit.Domain)
 	c.db.Collection("clients").UpdateOne(ctx, bson.M{"_id": id},
 		bson.M{"$setOnInsert": bson.M{
 			"runId": job.RunID, "agencyDomain": domain, "clientDomain": hit.Domain,

@@ -122,7 +122,7 @@ export async function furnitureDomains(runId, { maxAgeMs = 60_000 } = {}) {
 // Reuses the seed funnel wholesale rather than reimplementing it: the client is just a seed domain,
 // and everything about reading its footprint and checking it is already solved and already cached.
 export async function scanClient({ runId, agencyDomain, clientDomain }) {
-  const _id = `${agencyDomain}:${clientDomain}`;
+  const _id = `${runId}:${agencyDomain}:${clientDomain}`;
   const doc = await clients().findOne({ _id });
   if (!doc) return { ok: false, error: "unknown client" };
   if (doc.scanned) return { ok: true, cached: true, blacklistedCount: doc.blacklistedCount || 0 };
@@ -201,7 +201,7 @@ export async function scanClient({ runId, agencyDomain, clientDomain }) {
 const VERDICT_ROUNDS = 5;
 
 export async function finalizeClientVerdicts({ runId, agencyDomain, clientDomain, round = 1 }) {
-  const _id = `${agencyDomain}:${clientDomain}`;
+  const _id = `${runId}:${agencyDomain}:${clientDomain}`;
   const doc = await clients().findOne({ _id });
   if (!doc) return { ok: false, error: "unknown client" };
   if (doc.scanned) return { ok: true, cached: true };
