@@ -98,7 +98,7 @@ func main() {
 		db:      client.Database(dbName),
 		fetch:   NewFetcher(proxies),
 		worker:  fmt.Sprintf("go-%d", os.Getpid()),
-		maxCase: envInt("CRAWL_MAX_CASE_STUDIES", 40),
+		maxCase: envInt("CRAWL_MAX_CASE_STUDIES", 200),
 	}
 
 	lanes := envInt("CRAWL_CONCURRENCY", 64)
@@ -377,6 +377,12 @@ func (c *Crawler) discover(ctx context.Context, job *Job) error {
 		}
 	}
 
+	if len(pages) > len(uniq) {
+		log.Printf("agency %s: capped at %d case studies (%d found)", domain, len(uniq), len(pages))
+		c.db.Collection("agencies").UpdateOne(ctx, bson.M{"runId": job.RunID, "domain": domain},
+			bson.M{"$set": bson.M{"caseStudiesTruncated": true, "caseStudiesSeen": len(pages)}})
+	}
+
 	if len(uniq) == 0 {
 		// Not a failure. Plenty of agencies simply have no machine-readable case studies, and
 		// retrying them four times would burn the queue for nothing.
@@ -454,48 +460,54 @@ func (c *Crawler) extractCase(ctx context.Context, job *Job) error {
 		return nil // read it, nothing there — not worth a retry
 	}
 
-	hit := ExtractClient(base, pageURL, p.Body)
-	if hit == nil || hit.Domain == "" {
-		// A name with no domain is recorded but not scanned: resolving names to domains is a separate
-		// problem, and guessing here would put wrong companies in front of a prospect.
-		if hit != nil && hit.Name != "" {
-			c.db.Collection("clients").UpdateOne(ctx,
-				bson.M{"_id": fmt.Sprintf("%s:%s:name:%s", job.RunID.Hex(), domain, hit.Name)},
-				bson.M{"$setOnInsert": bson.M{
-					"runId": job.RunID, "agencyDomain": domain, "clientName": hit.Name,
-					"clientDomain": "", "sourceUrl": pageURL, "confidence": hit.Confidence,
-					"scanned": false, "unresolved": true, "createdAt": time.Now(),
-				}}, options.Update().SetUpsert(true))
+	hits := ExtractClients(base, pageURL, p.Body)
+
+	if len(hits) == 0 && LooksJSRendered(p.Body, len(parseLinks(base, p.Body))) {
+		// The page builds itself in the browser, so a plain fetch saw a shell. Render it once and try
+		// again — otherwise this is indistinguishable from an agency that names no one, and we would
+		// silently write off every client-side-rendered site.
+		if rp, err := c.fetch.GetRendered(ctx, pageURL); err == nil && rp.Status == 200 && rp.Body != "" {
+			hits = ExtractClientsFromLinks(base, ParseMarkdownLinks(rp.Body))
+			log.Printf("rendered %s -> %d clients", pageURL, len(hits))
+			c.db.Collection("agencies").UpdateOne(ctx, bson.M{"runId": job.RunID, "domain": domain},
+				bson.M{"$inc": bson.M{"renderedPages": 1}, "$set": bson.M{"updatedAt": time.Now()}})
 		}
+	}
+
+	if len(hits) == 0 {
 		c.enqueueRollup(ctx, job.RunID, domain)
 		return nil
 	}
 
-	// Scoped to the RUN. A bare agency:client id is global, so a re-crawl found the document already
-	// present, $setOnInsert did nothing, and the row kept the FIRST run's id — leaving the new run
-	// showing zero clients while extraction was working perfectly. Cross-run scan caching does not
-	// depend on this id; campaign_targets provides it, keyed by the domain itself.
-	id := fmt.Sprintf("%s:%s:%s", job.RunID.Hex(), domain, hit.Domain)
-	c.db.Collection("clients").UpdateOne(ctx, bson.M{"_id": id},
-		bson.M{"$setOnInsert": bson.M{
-			"runId": job.RunID, "agencyDomain": domain, "clientDomain": hit.Domain,
-			"clientName": hit.Name, "sourceUrl": pageURL, "confidence": hit.Confidence,
-			"scanned": false, "blacklistedCount": 0, "createdAt": time.Now(),
-		}}, options.Update().SetUpsert(true))
-
 	now := time.Now()
-	key := fmt.Sprintf("client:scan:%s:%s", job.RunID.Hex(), id)
-	c.db.Collection("jobs").UpdateOne(ctx, bson.M{"key": key},
-		bson.M{"$setOnInsert": bson.M{
-			"key": key, "type": "client:scan",
-			"payload":  bson.M{"runId": job.RunID.Hex(), "agencyDomain": domain, "clientDomain": hit.Domain},
-			"runId":    job.RunID,
-			"priority": 10, "maxAttempts": 3, "state": "queued", "attempts": 0,
-			"nextRunAt": now, "createdAt": now, "updatedAt": now,
-		}}, options.Update().SetUpsert(true))
+	var jobDocs []mongo.WriteModel
+	for _, hit := range hits {
+		id := fmt.Sprintf("%s:%s:%s", job.RunID.Hex(), domain, hit.Domain)
+		c.db.Collection("clients").UpdateOne(ctx, bson.M{"_id": id},
+			bson.M{"$setOnInsert": bson.M{
+				"runId": job.RunID, "agencyDomain": domain, "clientDomain": hit.Domain,
+				"clientName": hit.Name, "sourceUrl": pageURL, "confidence": hit.Confidence,
+				"scanned": false, "blacklistedCount": 0, "createdAt": now,
+			}}, options.Update().SetUpsert(true))
+
+		key := fmt.Sprintf("client:scan:%s:%s", job.RunID.Hex(), id)
+		jobDocs = append(jobDocs, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"key": key}).
+			SetUpsert(true).
+			SetUpdate(bson.M{"$setOnInsert": bson.M{
+				"key": key, "type": "client:scan",
+				"payload":  bson.M{"runId": job.RunID.Hex(), "agencyDomain": domain, "clientDomain": hit.Domain},
+				"runId":    job.RunID,
+				"priority": 10, "maxAttempts": 3, "state": "queued", "attempts": 0,
+				"nextRunAt": now, "createdAt": now, "updatedAt": now,
+			}}))
+	}
+	if len(jobDocs) > 0 {
+		c.db.Collection("jobs").BulkWrite(ctx, jobDocs, options.BulkWrite().SetOrdered(false))
+	}
 
 	c.db.Collection("agencies").UpdateOne(ctx, bson.M{"runId": job.RunID, "domain": domain},
-		bson.M{"$inc": bson.M{"clientsFound": 1}, "$set": bson.M{"stage": "scanning", "updatedAt": now}})
+		bson.M{"$inc": bson.M{"clientsFound": len(hits)}, "$set": bson.M{"stage": "scanning", "updatedAt": now}})
 
 	c.enqueueRollup(ctx, job.RunID, domain)
 	return nil

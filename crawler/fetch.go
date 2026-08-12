@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -138,6 +139,41 @@ func (f *Fetcher) next() *http.Client {
 	c := f.clients[f.rr%uint64(len(f.clients))]
 	f.rr++
 	return c
+}
+
+// GetRendered re-fetches through r.jina.ai, which runs the page's JavaScript and returns the result
+// as text. Client-only React/Vue sites hand a plain fetch an empty shell, and an agency whose whole
+// site is a shell is indistinguishable from one with no clients — so this is the difference between
+// "we cannot see it" and "there is nothing there".
+//
+// Only ever called AFTER a normal fetch came back empty, so the cost is bounded by how many sites
+// actually need it.
+func (f *Fetcher) GetRendered(ctx context.Context, rawURL string) (*Page, error) {
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://r.jina.ai/"+rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/plain")
+	if k := os.Getenv("JINA_KEY"); k != "" {
+		req.Header.Set("Authorization", "Bearer "+k)
+	}
+
+	resp, err := f.next().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return &Page{URL: rawURL, Status: resp.StatusCode}, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	if err != nil && len(body) == 0 {
+		return nil, err
+	}
+	return &Page{URL: rawURL, FinalURL: rawURL, Status: 200, ContentType: "text/markdown", Body: string(body), Bytes: len(body)}, nil
 }
 
 type Page struct {

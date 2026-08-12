@@ -41,14 +41,13 @@ export async function startAgencyRun(rawDomains, opts = {}) {
   const domains = parseDomains(rawDomains);
   if (!domains.length) return { ok: false, error: "no usable agency domains" };
 
+  // No sampling gate, deliberately. Every client an agency lists is another chance it has something
+  // to answer for, and a client scan costs no credits — only time. sampleFirst and
+  // maxClientsPerAgency used to be declared here and read by nothing, which is worse than absent:
+  // the settings implied a cost control that did not exist.
   const gates = {
-    // Scan this many of an agency's clients first. If none are listed, the rest wait behind every
-    // other agency's sample — so a dud agency costs 5 scans, not 40. Same shape as the seed funnel's
-    // cheap-gates-expensive rule.
-    sampleFirst: Number.isFinite(+opts.sampleFirst) ? +opts.sampleFirst : 5,
     // A client needs at least this many blacklisted domains to count as a hit worth pitching.
     blacklistGate: Number.isFinite(+opts.blacklistGate) ? +opts.blacklistGate : config.campaign.blacklistGate,
-    maxClientsPerAgency: Number.isFinite(+opts.maxClientsPerAgency) ? +opts.maxClientsPerAgency : 40,
   };
 
   const { insertedId: runId } = await agencyRuns().insertOne({

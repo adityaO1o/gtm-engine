@@ -71,28 +71,76 @@ func TestExtractClientIgnoresSocialAndSelf(t *testing.T) {
 	}
 }
 
-// No outbound link at all — fall back to the title, which yields a NAME only. Downstream must not
-// treat that as a domain.
-func TestExtractClientTitleFallback(t *testing.T) {
+// A name with no link is now DROPPED. Agencies name-drop companies they never worked with, and an
+// unresolvable name is both unusable and unverifiable — only a real outbound link counts.
+func TestNameOnlyPagesYieldNothing(t *testing.T) {
 	base := mustURL(t, "https://agency.com")
-	cases := map[string]string{
-		"Case Study: Northwind Traders | Agency":   "Northwind Traders",
-		"How we helped Contoso double revenue":     "Contoso",
-		"Fabrikam case study - Agency":             "Fabrikam",
+	for _, title := range []string{
+		"Case Study: Northwind Traders | Agency",
+		"How we helped Contoso double revenue",
+		"Fabrikam case study - Agency",
+	} {
+		body := `<html><head><title>` + title + `</title></head><body><main><h1>` + title +
+			`</h1><a href="https://agency.com/x">x</a></main></body></html>`
+		if hit := ExtractClient(base, "https://agency.com/case-studies/y", body); hit != nil {
+			t.Errorf("%q: expected nothing, got %+v", title, hit)
+		}
 	}
-	for title, want := range cases {
-		body := `<html><head><title>` + title + `</title></head><body><a href="https://agency.com/x">x</a></body></html>`
-		hit := ExtractClient(base, "https://agency.com/case-studies/y", body)
-		if hit == nil {
-			t.Errorf("%q: no hit", title)
-			continue
+}
+
+// An "Our Clients" page is a grid of logos and a case study often names several companies. Taking
+// only the most-linked one left most of the value on the page.
+func TestExtractsEveryClientOnThePage(t *testing.T) {
+	base := mustURL(t, "https://agency.com")
+	body := `<html><body><main><h2>Our customers</h2>
+		<a href="https://acme.com">Acme</a>
+		<a href="https://northwind.io">Northwind</a>
+		<a href="https://contoso.co.uk">Contoso</a>
+		<a href="https://g2.com/agency">Reviews</a>
+		<a href="https://agency.com/contact">Contact</a>
+	</main></body></html>`
+	hits := ExtractClients(base, "https://agency.com/customers", body)
+	if len(hits) != 3 {
+		t.Fatalf("want 3 clients, got %d: %+v", len(hits), hits)
+	}
+	got := map[string]bool{}
+	for _, h := range hits {
+		got[h.Domain] = true
+	}
+	for _, want := range []string{"acme.com", "northwind.io", "contoso.co.uk"} {
+		if !got[want] {
+			t.Errorf("missed %s", want)
 		}
-		if hit.Domain != "" {
-			t.Errorf("%q: got a domain %q from a title — must stay unresolved", title, hit.Domain)
-		}
-		if hit.Name != want {
-			t.Errorf("%q: name = %q, want %q", title, hit.Name, want)
-		}
+	}
+	if got["g2.com"] || got["agency.com"] {
+		t.Error("review site or the agency itself came back as a client")
+	}
+}
+
+// /customers, /customer-stories and /customers-love are real section names on agency sites.
+func TestCustomerSectionPathsAreRecognised(t *testing.T) {
+	base := mustURL(t, "https://agency.com")
+	home := `<html><body><nav>
+		<a href="/customers">Customers</a>
+		<a href="/customer-stories">Customer Stories</a>
+		<a href="/customers-love">Customers Love</a>
+		<a href="/testimonials">Testimonials</a>
+	</nav></body></html>`
+	got := FindCaseStudyIndexes(base, home, nil)
+	if len(got) < 3 {
+		t.Fatalf("expected the customer sections to be found, got %v", got)
+	}
+}
+
+// A framework shell with no links is not the same fact as "this agency names no clients".
+func TestDetectsJSRenderedShell(t *testing.T) {
+	shell := `<html><body><div id="__next"></div><script src="/app.js"></script></body></html>`
+	if !LooksJSRendered(shell, 0) {
+		t.Error("did not recognise a Next.js shell")
+	}
+	real := `<html><body><main><p>lots of content</p></main></body></html>`
+	if LooksJSRendered(real, 40) {
+		t.Error("a normal page was called JS-rendered")
 	}
 }
 
@@ -187,20 +235,6 @@ func TestReviewAndPressSitesAreNeverClients(t *testing.T) {
 	}
 }
 
-// No outbound link at all — the heading should still yield a name, which is what lifts the pages
-// that produced nothing at all in the first run.
-func TestHeadingNameFallback(t *testing.T) {
-	base := mustURL(t, "https://agency.com")
-	body := `<html><head><title>Agency | B2B lead generation experts</title></head><body>
-		<main><h1>Case Study: Northwind Traders</h1><p>No outbound links here.</p></main></body></html>`
-	hit := ExtractClient(base, "https://agency.com/case-studies/nw", body)
-	if hit == nil || hit.Name != "Northwind Traders" {
-		t.Fatalf("heading fallback failed: %+v", hit)
-	}
-	if hit.Domain != "" {
-		t.Errorf("a name must not become a domain, got %q", hit.Domain)
-	}
-}
 
 // The regression that took inboxkit.com from 6 clients to 0: the client link sits outside <main>, so
 // scoping to content found nothing and the extractor gave up instead of looking wider.

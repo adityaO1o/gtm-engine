@@ -3,6 +3,7 @@ package main
 import (
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -13,13 +14,13 @@ import (
 // case studies is a normal outcome, not an error, and treating it as one is what keeps the queue from
 // retrying thousands of sites that will never yield anything.
 
-var caseStudyPathRe = regexp.MustCompile(`(?i)/(case[-_]?stud|success[-_]?stor|customer[-_]?stor|client[-_]?stor|our[-_]?work|/work/|portfolio|clients?|projects?|results)`)
+var caseStudyPathRe = regexp.MustCompile(`(?i)/(case[-_]?stud|success[-_]?stor|customer[-_]?stor|customer[-_]?love|client[-_]?stor|customers?|testimonial|our[-_]?work|/work/|portfolio|clients?|projects?|results|stories)`)
 
 // Paths that look like case-study INDEXES rather than individual studies.
-var indexPathRe = regexp.MustCompile(`(?i)/(case[-_]?studies|success[-_]?stories|customer[-_]?stories|our[-_]?work|work|portfolio|clients|projects)/?$`)
+var indexPathRe = regexp.MustCompile(`(?i)/(case[-_]?studies|success[-_]?stories|customer[-_]?stories|customers?[-_]?love|customers?|testimonials?|our[-_]?work|work|portfolio|clients|our[-_]?clients|projects|stories)/?$`)
 
 // Anchor text that names a case-study section in a nav.
-var navTextRe = regexp.MustCompile(`(?i)^\s*(case stud(y|ies)|success stor(y|ies)|customer stor(y|ies)|our work|work|portfolio|clients|our clients|projects|results)\s*$`)
+var navTextRe = regexp.MustCompile(`(?i)^\s*(case stud(y|ies)|success stor(y|ies)|customer stor(y|ies)|customers?|customers? love|testimonials?|our work|work|portfolio|clients|our clients|projects|results|stories)\s*$`)
 
 // Hosts that are never a client: social, analytics, CDNs, the usual furniture of a marketing site.
 var notAClient = map[string]bool{
@@ -328,25 +329,27 @@ func FindCaseStudyPages(base *url.URL, indexBody string, sitemapURLs []string, l
 type ClientHit struct {
 	Domain     string
 	Name       string
-	Confidence string // "outbound-link" | "title"
+	Confidence string // "outbound-link" | "outbound-link-page"
+	Links      int    // how many times the page linked to it
 }
 
-// ExtractClient pulls the client identity out of one case-study page.
+// ExtractClients pulls EVERY company a page points at, not just the most-linked one.
 //
-// The OUTBOUND LINK is the signal worth having: a case study almost always links to the company it
-// is about, and that link is the client's actual domain — which skips name-to-domain resolution
-// entirely, along with everything that can go wrong in it. The page title is a fallback that yields
-// only a name, and a name still has to be resolved before it is worth anything.
-func ExtractClient(base *url.URL, pageURL, body string) *ClientHit {
+// One-per-page was leaving most of the value behind: an "Our Clients" or "Customers" page is a grid
+// of thirty logos, and a single case study often names two or three companies. More clients per
+// agency is the whole point — each one is another chance that agency has something to answer for.
+//
+// A name with no link is DROPPED, deliberately. Agencies name-drop companies they never worked with,
+// and a name we cannot resolve is both unusable and unverifiable. Only a real outbound link counts.
+func ExtractClients(base *url.URL, pageURL, body string) []ClientHit {
 	u, err := url.Parse(pageURL)
 	if err != nil {
 		return nil
 	}
 	agencyHost := registrableHost(base.Hostname())
 
-	tally := func(links []Link) (string, map[string]string) {
-		counts := map[string]int{}
-		names := map[string]string{}
+	tally := func(links []Link) map[string]*ClientHit {
+		out := map[string]*ClientHit{}
 		for _, l := range links {
 			lu, err := url.Parse(l.URL)
 			if err != nil {
@@ -359,42 +362,119 @@ func ExtractClient(base *url.URL, pageURL, body string) *ClientHit {
 			if strings.HasSuffix(h, ".gov") || strings.HasSuffix(h, ".edu") {
 				continue
 			}
-			counts[h]++
-			if names[h] == "" && l.Text != "" && len(l.Text) < 60 {
-				names[h] = l.Text
+			hit := out[h]
+			if hit == nil {
+				hit = &ClientHit{Domain: h, Confidence: "outbound-link"}
+				out[h] = hit
+			}
+			hit.Links++
+			if hit.Name == "" && l.Text != "" && len(l.Text) < 60 {
+				hit.Name = l.Text
 			}
 		}
-		best, bestN := "", 0
-		for h, n := range counts {
-			if n > bestN {
-				best, bestN = h, n
-			}
+		return out
+	}
+
+	// Content first — that is what stops a footer badge counting as a client. Falling back to the
+	// whole page matters just as much: plenty of sites put the client link outside <main>.
+	found := tally(parseContentLinks(u, body))
+	conf := "outbound-link"
+	if len(found) == 0 {
+		found = tally(parseLinks(u, body))
+		conf = "outbound-link-page"
+	}
+
+	var out []ClientHit
+	for _, h := range found {
+		h.Confidence = conf
+		out = append(out, *h)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Links > out[j].Links })
+	return out
+}
+
+// ExtractClient keeps the single-best-answer shape for callers that want one.
+func ExtractClient(base *url.URL, pageURL, body string) *ClientHit {
+	all := ExtractClients(base, pageURL, body)
+	if len(all) == 0 {
+		return nil
+	}
+	return &all[0]
+}
+
+// Links out of the markdown r.jina.ai returns — [text](url) and bare URLs. The HTML parser cannot
+// read it, and this is the only place markdown ever appears.
+var mdLinkRe = regexp.MustCompile(`\[([^\]]*)\]\((https?://[^)\s]+)\)`)
+var bareURLRe = regexp.MustCompile(`https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}[^\s)"'<>]*`)
+
+func ParseMarkdownLinks(md string) []Link {
+	seen := map[string]bool{}
+	var out []Link
+	for _, m := range mdLinkRe.FindAllStringSubmatch(md, -1) {
+		if !seen[m[2]] {
+			seen[m[2]] = true
+			out = append(out, Link{URL: m[2], Text: strings.TrimSpace(m[1])})
 		}
-		return best, names
 	}
+	for _, u := range bareURLRe.FindAllString(md, -1) {
+		if !seen[u] {
+			seen[u] = true
+			out = append(out, Link{URL: u})
+		}
+	}
+	return out
+}
 
-	// Content first: that is what stops a footer badge outranking the one link in the body. But
-	// preferring content must never mean IGNORING everything else — plenty of sites put the client
-	// link outside <main>, and treating chrome-exclusion as a hard filter took a working extractor
-	// (6 clients from inboxkit.com) to zero.
-	if best, names := tally(parseContentLinks(u, body)); best != "" {
-		return &ClientHit{Domain: best, Name: names[best], Confidence: "outbound-link"}
-	}
-	if best, names := tally(parseLinks(u, body)); best != "" {
-		return &ClientHit{Domain: best, Name: names[best], Confidence: "outbound-link-page"}
-	}
-
-	// Nothing linked out. Fall back to a NAME, which downstream must still resolve to a domain — the
-	// heading first, since <title> is usually padded with the agency's own branding.
-	for _, src := range []string{headingOf(body), titleOf(body)} {
-		if src == "" {
+// ExtractClientsFromLinks is ExtractClients over a link list that did not come from HTML.
+func ExtractClientsFromLinks(base *url.URL, links []Link) []ClientHit {
+	agencyHost := registrableHost(base.Hostname())
+	found := map[string]*ClientHit{}
+	for _, l := range links {
+		lu, err := url.Parse(l.URL)
+		if err != nil {
 			continue
 		}
-		if name := clientNameFromTitle(src); name != "" {
-			return &ClientHit{Name: name, Confidence: "title"}
+		h := registrableHost(lu.Hostname())
+		if h == "" || h == agencyHost || notAClient[h] {
+			continue
+		}
+		if strings.HasSuffix(h, ".gov") || strings.HasSuffix(h, ".edu") {
+			continue
+		}
+		hit := found[h]
+		if hit == nil {
+			hit = &ClientHit{Domain: h, Confidence: "rendered"}
+			found[h] = hit
+		}
+		hit.Links++
+		if hit.Name == "" && l.Text != "" && len(l.Text) < 60 {
+			hit.Name = l.Text
 		}
 	}
-	return nil
+	var out []ClientHit
+	for _, h := range found {
+		out = append(out, *h)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Links > out[j].Links })
+	return out
+}
+
+// LooksJSRendered reports a page whose content is assembled in the browser: an app shell with a
+// framework mount point and almost no links. Without this such a page is indistinguishable from an
+// agency that simply has no case studies, and the difference is worth knowing — one is a gap in our
+// crawler, the other is a fact about the prospect.
+func LooksJSRendered(body string, linkCount int) bool {
+	if linkCount > 5 {
+		return false
+	}
+	markers := []string{`id="root"`, `id="__next"`, `id="__nuxt"`, `__NEXT_DATA__`, `ng-version`,
+		`data-reactroot`, `id="app"`, `window.__NUXT__`, `<div id="svelte">`}
+	for _, m := range markers {
+		if strings.Contains(body, m) {
+			return true
+		}
+	}
+	return false
 }
 
 var titlePatterns = []*regexp.Regexp{
