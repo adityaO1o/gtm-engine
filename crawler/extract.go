@@ -14,13 +14,13 @@ import (
 // case studies is a normal outcome, not an error, and treating it as one is what keeps the queue from
 // retrying thousands of sites that will never yield anything.
 
-var caseStudyPathRe = regexp.MustCompile(`(?i)/(case[-_]?stud|success[-_]?stor|customer[-_]?stor|customer[-_]?love|client[-_]?stor|customers?|testimonial|our[-_]?work|/work/|portfolio|clients?|projects?|results|stories)`)
+var caseStudyPathRe = regexp.MustCompile(`(?i)/(case[-_]?stud|success[-_]?stor|customer[-_]?stor|customer[-_]?love|client[-_]?stor|customers?|testimonial|client[-_]?result|our[-_]?work|/work/|portfolio|clients?|projects?|results|wins|outcomes|proof|stories)`)
 
 // Paths that look like case-study INDEXES rather than individual studies.
-var indexPathRe = regexp.MustCompile(`(?i)/(case[-_]?studies|success[-_]?stories|customer[-_]?stories|customers?[-_]?love|customers?|testimonials?|our[-_]?work|work|portfolio|clients|our[-_]?clients|projects|stories)/?$`)
+var indexPathRe = regexp.MustCompile(`(?i)/(case[-_]?studies|success[-_]?stories|customer[-_]?stories|customers?[-_]?love|customers?|testimonials?|client[-_]?results?|case[-_]?results?|our[-_]?work|work|portfolio|clients|our[-_]?clients|projects|results|wins|outcomes|proof|stories)/?$`)
 
 // Anchor text that names a case-study section in a nav.
-var navTextRe = regexp.MustCompile(`(?i)^\s*(case stud(y|ies)|success stor(y|ies)|customer stor(y|ies)|customers?|customers? love|testimonials?|our work|work|portfolio|clients|our clients|projects|results|stories)\s*$`)
+var navTextRe = regexp.MustCompile(`(?i)^\s*(case stud(y|ies)|success stor(y|ies)|customer stor(y|ies)|customers?|customers? love|testimonials?|client results|our work|work|portfolio|clients|our clients|projects|results|wins|outcomes|proof|stories)\s*$`)
 
 // Hosts that are never a client: social, analytics, CDNs, the usual furniture of a marketing site.
 var notAClient = map[string]bool{

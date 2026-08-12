@@ -362,3 +362,38 @@ func TestSerpDomainsSkipsEnginesAndJunk(t *testing.T) {
 		t.Fatalf("want the two real sites only, got %v", got)
 	}
 }
+
+// /client-results matched the individual-case-study pattern but not the INDEX one, so it was never
+// opened as a listing page and everything linked from it stayed invisible.
+func TestClientResultsIsTreatedAsAnIndex(t *testing.T) {
+	base := mustURL(t, "https://agency.com")
+	home := `<html><body><nav>
+		<a href="/client-results">Client Results</a>
+		<a href="/results">Results</a>
+		<a href="/wins">Wins</a>
+	</nav></body></html>`
+	got := FindCaseStudyIndexes(base, home, []string{"https://agency.com/client-results"})
+	if len(got) == 0 {
+		t.Fatal("no index pages found")
+	}
+	found := map[string]bool{}
+	for _, g := range got {
+		found[g] = true
+	}
+	if !found["https://agency.com/client-results"] {
+		t.Errorf("missed /client-results, got %v", got)
+	}
+}
+
+func TestClientResultsChildrenAreCaseStudies(t *testing.T) {
+	base := mustURL(t, "https://agency.com")
+	index := `<html><body>
+		<a href="/client-results">All results</a>
+		<a href="/client-results/acme">Acme</a>
+		<a href="/client-results/northwind">Northwind</a>
+	</body></html>`
+	got := FindCaseStudyPages(base, index, nil, 40)
+	if len(got) != 2 {
+		t.Fatalf("want the 2 children, not the index, got %v", got)
+	}
+}
