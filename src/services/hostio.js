@@ -357,6 +357,29 @@ export async function apiRedirectPage(seed, page, { onApiCall } = {}) {
   return { domains: [], ok: false };
 }
 
+// Single un-paginated call — no `page`/`limit` params — which this token's tier answers with the
+// FULL current redirect list in one request (verified directly against the API: reachly.co's 39 and
+// outboundleads.com's 18 domains both came back whole, no pagination needed). Used to re-check a seed
+// RIGHT NOW against domains we already found earlier — one call, no caching, always live — so a
+// caller can tell which of an old result's domains host.io still lists today.
+export async function liveRedirectDomains(seed) {
+  if (!config.hostio.token) return { ok: false, error: "HOSTIO_TOKEN not set" };
+  try {
+    await hostioSlot();
+    const r = await axios.get(`https://host.io/api/domains/redirects/${encodeURIComponent(seed)}`, {
+      params: { token: config.hostio.token }, timeout: 20000, validateStatus: () => true,
+    });
+    if (r.status >= 300) {
+      const body = typeof r.data === "string" ? r.data.slice(0, 150) : JSON.stringify(r.data || {}).slice(0, 150);
+      return { ok: false, status: r.status, error: body };
+    }
+    const domains = (r.data?.domains || []).map((d) => String(d).toLowerCase());
+    return { ok: true, total: r.data?.total ?? domains.length, domains };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 // Config/connectivity self-test for the diag endpoint — is the token set and does a live call work,
 // without exposing the token.
 // Health of the FREE scrape path: pool size, how much of it is currently rested, whether the global

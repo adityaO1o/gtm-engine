@@ -22,7 +22,7 @@
 import { ObjectId } from "mongodb";
 import { generateCandidates, splitDomain } from "../lib/permute.js";
 import { runPool, createLimiter } from "../lib/pool.js";
-import { scrapeRedirectPage, apiRedirectPage, scrapeUsable } from "../services/hostio.js";
+import { scrapeRedirectPage, apiRedirectPage, scrapeUsable, liveRedirectDomains } from "../services/hostio.js";
 import { domainHasDns } from "../services/domainDns.js";
 import { redirectsToSeed } from "../services/redirectCheck.js";
 import { searchPeople, findEmail } from "../services/prospeo.js";
@@ -764,6 +764,28 @@ export async function revealCompanyEmails(campaignId, seed) {
   await campaignTargets().updateOne({ _id: target._id },
     { $set: { people, emailsRevealed: true, updatedAt: new Date() } });
   return people;
+}
+
+// On-demand: re-check ONE seed's already-found blacklisted domains against host.io RIGHT NOW (one
+// fresh, uncached API call — bypasses hostio_pages entirely on purpose, this is the live answer, not
+// the 7-day-cached one). Stamps each domain with whether host.io still lists it today, so the UI can
+// show which of an older result is still verifiable vs which has since dropped out of host.io's index
+// (renamed, retired, or otherwise no longer redirecting there) — without re-running discovery or
+// touching the domain's original `source` (how it was FOUND), which this leaves untouched.
+export async function verifySeedAgainstHostio(campaignId, seed) {
+  if (!ObjectId.isValid(campaignId)) return { ok: false, error: "bad campaign id" };
+  const target = await campaignTargets().findOne({ campaignId: new ObjectId(campaignId), seed });
+  if (!target) return { ok: false, error: "seed not found in this campaign" };
+  if (!target.blacklistedDomains?.length) return { ok: false, error: "nothing to verify for this seed" };
+
+  const live = await liveRedirectDomains(seed);
+  if (!live.ok) return { ok: false, error: `host.io check failed: ${live.error || "unknown error"}` };
+
+  const liveSet = new Set(live.domains);
+  const domains = target.blacklistedDomains.map((d) => ({ ...d, stillOnHostio: liveSet.has(d.domain.toLowerCase()) }));
+  const liveVerifiedAt = new Date();
+  await campaignTargets().updateOne({ _id: target._id }, { $set: { blacklistedDomains: domains, liveVerifiedAt } });
+  return { ok: true, domains, liveVerifiedAt, liveTotal: live.total };
 }
 
 // ── Push a campaign's qualified prospects into a SendKit campaign ──────────────────────────────

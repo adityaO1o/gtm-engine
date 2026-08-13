@@ -34,7 +34,7 @@ import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
 import { startBlacklistScan, estimateBlacklistScan, getBlacklistScan, blacklistScanResults } from "../pipeline/blacklistScan.js";
-import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, recoverDroppedSeeds, droppedSeedsCsv, listRecoveredSeeds, campaignResultsCsv, campaignContactCount, recoveredLeadsCsv, enrichAllRecovered, listWorkspaces, pushTarget, campaignCsv } from "../pipeline/campaign.js";
+import { startCampaign, getCampaign, getCampaignResults, listCampaigns as listOutreachCampaigns, revealCompanyEmails, hostioUsageReport, pushCampaignToSendkit, previewCampaignEmail, resumeCampaign, stopCampaign, deleteCampaign, backfillOwnLeadContacts, enrichQualifiedCompanies, recoverDroppedSeeds, droppedSeedsCsv, listRecoveredSeeds, campaignResultsCsv, campaignContactCount, recoveredLeadsCsv, enrichAllRecovered, listWorkspaces, pushTarget, campaignCsv, verifySeedAgainstHostio } from "../pipeline/campaign.js";
 import { backfillCompanyDomains, backfillDomainsStatus } from "../pipeline/backfillDomains.js";
 import { reclassifyIcp, reclassifyIcpStatus } from "../pipeline/reclassifyIcp.js";
 import { safeEqual } from "../lib/auth.js";
@@ -1205,4 +1205,13 @@ apiRouter.post("/campaign/:id/reveal", async (req, res) => {
   const people = await revealCompanyEmails(req.params.id, S(req.body?.seed));
   if (!people) return res.status(404).json({ error: "not found" });
   res.json({ people });
+});
+
+// On-demand: re-check one seed's blacklisted domains against host.io RIGHT NOW (1 fresh API call,
+// not cached) — tells the UI which are still live on host.io today vs no longer there.
+apiRouter.post("/campaign/:id/verify-live", async (req, res) => {
+  try {
+    const r = await verifySeedAgainstHostio(req.params.id, S(req.body?.seed));
+    res.status(r.ok ? 200 : 400).json(r);
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });

@@ -69,6 +69,7 @@ export default function Campaign() {
   const [openRow, setOpenRow] = useState(null);
   const [showAllDomains, setShowAllDomains] = useState(false);
   const [revealing, setRevealing] = useState(null);
+  const [verifying, setVerifying] = useState(null);
   const [pushing, setPushing] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
@@ -204,6 +205,20 @@ export default function Campaign() {
       }
     } catch { toast("Reveal failed", "bad"); }
     setRevealing(null);
+  }
+
+  async function verifyLive(seed) {
+    if (verifying) return;
+    setVerifying(seed);
+    try {
+      const r = await post(`/api/campaign/${campaign.id || campaign._id}/verify-live`, { seed });
+      if (r.ok) {
+        setResults((rows) => rows.map((x) => (x.seed === seed ? { ...x, blacklistedDomains: r.domains, liveVerifiedAt: r.liveVerifiedAt } : x)));
+        const stillLive = r.domains.filter((d) => d.stillOnHostio).length;
+        toast(`${stillLive} of ${r.domains.length} still on host.io right now`, "info");
+      } else toast(r.error || "Verify failed", "bad");
+    } catch { toast("Verify failed", "bad"); }
+    setVerifying(null);
   }
 
   const loadHistory = useCallback(() => {
@@ -527,22 +542,38 @@ export default function Campaign() {
 
                             {r.blacklistedDomains?.length ? (
                               <>
-                                <div className="resn" style={{ marginBottom: 8 }}><b>Blacklisted domains</b> ({num(r.blacklistedCount)})</div>
+                                <div className="resn" style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
+                                  <b>Blacklisted domains</b> ({num(r.blacklistedCount)})
+                                  <button className="btn btn-ghost btn-sm" disabled={verifying === r.seed}
+                                    onClick={(e) => { e.stopPropagation(); verifyLive(r.seed); }}
+                                    title="Makes one fresh host.io API call right now to check which of these domains it still lists — not from cache.">
+                                    <Icon name={verifying === r.seed ? "refresh" : "sync"} />{verifying === r.seed ? "Checking host.io…" : "Verify with host.io"}
+                                  </button>
+                                  {r.liveVerifiedAt ? <span className="resn muted">checked {ts(r.liveVerifiedAt)}</span> : null}
+                                </div>
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14, alignItems: "center" }}>
-                                  {(showAllDomains ? r.blacklistedDomains : r.blacklistedDomains.slice(0, 10)).map((d) => (
-                                    <span key={d.domain} className="pill p-competitor" title={(d.zones || []).join(", ")}>
-                                      {d.domain}{d.riskScore != null ? ` · ${d.riskScore}` : ""}
-                                      <span
-                                        className="tag-pers"
-                                        title={d.source === "guessed"
-                                          ? "Not in host.io's index — we guessed this domain (prefix/suffix + brand) and DNS + an HTTP redirect check confirmed it actually redirects here"
-                                          : "Came straight from host.io's real reverse-redirect index"}
-                                        style={d.source === "guessed" ? { background: "var(--warm-soft)", color: "var(--warm)" } : undefined}
-                                      >
-                                        {d.source === "guessed" ? "guessed" : "host.io"}
+                                  {(showAllDomains ? r.blacklistedDomains : r.blacklistedDomains.slice(0, 10)).map((d) => {
+                                    // stillOnHostio comes from an on-demand live re-check (this domain, right now).
+                                    // Falls back to the discovery-time source when it hasn't been verified yet.
+                                    const checked = d.stillOnHostio !== undefined;
+                                    const isGuessed = checked ? !d.stillOnHostio : d.source === "guessed";
+                                    return (
+                                      <span key={d.domain} className="pill p-competitor" title={(d.zones || []).join(", ")}>
+                                        {d.domain}{d.riskScore != null ? ` · ${d.riskScore}` : ""}
+                                        <span
+                                          className="tag-pers"
+                                          title={checked
+                                            ? (isGuessed ? "host.io does not list this domain right now (just checked)" : "host.io lists this domain right now (just checked)")
+                                            : (isGuessed
+                                              ? "Not in host.io's index — we guessed this domain (prefix/suffix + brand) and DNS + an HTTP redirect check confirmed it actually redirects here"
+                                              : "Came from host.io's reverse-redirect index")}
+                                          style={isGuessed ? { background: "var(--warm-soft)", color: "var(--warm)" } : undefined}
+                                        >
+                                          {isGuessed ? "guessed" : "host.io"}
+                                        </span>
                                       </span>
-                                    </span>
-                                  ))}
+                                    );
+                                  })}
                                   {r.blacklistedDomains.length > 10 ? (
                                     <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); setShowAllDomains((v) => !v); }}>
                                       {showAllDomains ? "Show less" : `+${r.blacklistedDomains.length - 10} more — show all`}
