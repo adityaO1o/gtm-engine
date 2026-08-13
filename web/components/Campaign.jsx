@@ -70,7 +70,6 @@ export default function Campaign() {
   const [openRow, setOpenRow] = useState(null);
   const [showAllDomains, setShowAllDomains] = useState(false);
   const [revealing, setRevealing] = useState(null);
-  const [verifying, setVerifying] = useState(null);
   const [pushing, setPushing] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
@@ -206,20 +205,6 @@ export default function Campaign() {
       }
     } catch { toast("Reveal failed", "bad"); }
     setRevealing(null);
-  }
-
-  async function verifyLive(seed) {
-    if (verifying) return;
-    setVerifying(seed);
-    try {
-      const r = await post(`/api/campaign/${campaign.id || campaign._id}/verify-live`, { seed });
-      if (r.ok) {
-        setResults((rows) => rows.map((x) => (x.seed === seed ? { ...x, blacklistedDomains: r.domains, liveVerifiedAt: r.liveVerifiedAt } : x)));
-        const stillLive = r.domains.filter((d) => d.stillOnHostio).length;
-        toast(`${stillLive} of ${r.domains.length} still on host.io right now`, "info");
-      } else toast(r.error || "Verify failed", "bad");
-    } catch { toast("Verify failed", "bad"); }
-    setVerifying(null);
   }
 
   const loadHistory = useCallback(() => {
@@ -545,23 +530,11 @@ export default function Campaign() {
                               {r.stage === "dropped_count" ? <> · <span style={{ color: "var(--warm)" }}>stopped: below the count gate</span></> : null}
                               {r.stage === "dropped_blacklist" ? <> · <span style={{ color: "var(--warm)" }}>stopped: fewer than the blacklist gate</span></> : null}
                             </div>
-                            {r.fromPriorScan ? (
-                              <div className="resn" style={{ marginBottom: 10, color: "var(--warm)" }}>
-                                <Icon name="refresh" style={{ width: 12, height: 12, marginRight: 4 }} />
-                                From a prior scan{r.priorScanAt ? <> · {ts(r.priorScanAt)}</> : null} — not re-checked this run. Use "Verify with host.io" below for the current state.
-                              </div>
-                            ) : null}
-
                             {r.blacklistedDomains?.length ? (
                               <>
                                 <div className="resn" style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
                                   <b>Blacklisted domains</b> ({num(r.blacklistedCount)})
-                                  <button className="btn btn-ghost btn-sm" disabled={verifying === r.seed}
-                                    onClick={(e) => { e.stopPropagation(); verifyLive(r.seed); }}
-                                    title="Makes one fresh host.io API call right now to check which of these domains it still lists — not from cache.">
-                                    <Icon name={verifying === r.seed ? "refresh" : "sync"} />{verifying === r.seed ? "Checking host.io…" : "Verify with host.io"}
-                                  </button>
-                                  {r.liveVerifiedAt ? <span className="resn muted">checked {ts(r.liveVerifiedAt)}</span> : null}
+                                  {r.liveVerifiedAt ? <span className="resn muted">checked against host.io {ts(r.liveVerifiedAt)}</span> : null}
                                 </div>
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14, alignItems: "center" }}>
                                   {(showAllDomains ? r.blacklistedDomains : r.blacklistedDomains.slice(0, 10)).map((d) => {
