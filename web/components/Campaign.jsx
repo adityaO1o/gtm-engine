@@ -67,6 +67,7 @@ export default function Campaign() {
   const [enrich, setEnrich] = useState(true); // pull contacts via Prospeo (paid); off = blacklist verdict only
   const [guess, setGuess] = useState(false); // also try permutation-guessed domains (DNS+redirect confirmed), tagged separately
   const [openRow, setOpenRow] = useState(null);
+  const [showAllDomains, setShowAllDomains] = useState(false);
   const [revealing, setRevealing] = useState(null);
   const [pushing, setPushing] = useState(false);
   const [resuming, setResuming] = useState(false);
@@ -502,7 +503,7 @@ export default function Campaign() {
                   const st = STAGE_META[r.stage] || { label: r.stage, cls: "p-review" };
                   return (
                   <Fragment key={r._id}>
-                    <tr className="click" onClick={() => setOpenRow(openRow === r._id ? null : r._id)}>
+                    <tr className="click" onClick={() => { setOpenRow(openRow === r._id ? null : r._id); setShowAllDomains(false); }}>
                       <td><Icon name="chev" style={{ width: 13, height: 13, opacity: .5, marginRight: 4 }} /><span className="nm mono">{r.seed}</span></td>
                       <td className="num-c">{r.redirectCount == null ? <span className="muted">—</span> : num(r.redirectCount)}</td>
                       <td className="num-c">{num(r.confirmedCount)}</td>
@@ -527,8 +528,8 @@ export default function Campaign() {
                             {r.blacklistedDomains?.length ? (
                               <>
                                 <div className="resn" style={{ marginBottom: 8 }}><b>Blacklisted domains</b> ({num(r.blacklistedCount)})</div>
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-                                  {r.blacklistedDomains.slice(0, 10).map((d) => (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14, alignItems: "center" }}>
+                                  {(showAllDomains ? r.blacklistedDomains : r.blacklistedDomains.slice(0, 10)).map((d) => (
                                     <span key={d.domain} className="pill p-competitor" title={(d.zones || []).join(", ")}>
                                       {d.domain}{d.riskScore != null ? ` · ${d.riskScore}` : ""}
                                       <span
@@ -542,7 +543,11 @@ export default function Campaign() {
                                       </span>
                                     </span>
                                   ))}
-                                  {r.blacklistedDomains.length > 10 ? <span className="resn muted">+{r.blacklistedDomains.length - 10} more</span> : null}
+                                  {r.blacklistedDomains.length > 10 ? (
+                                    <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); setShowAllDomains((v) => !v); }}>
+                                      {showAllDomains ? "Show less" : `+${r.blacklistedDomains.length - 10} more — show all`}
+                                    </button>
+                                  ) : null}
                                 </div>
                               </>
                             ) : null}
