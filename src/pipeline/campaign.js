@@ -166,11 +166,27 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
       const count = cached.redirectCount ?? null;
       const qualifiesCount = count != null && count >= gates.countGate;
       const qualifiesBlacklist = (cached.blacklistedCount || 0) >= gates.blacklistGate;
+
+      // One live host.io call, right now, so a reused result never shows a domain's DISCOVERY-time
+      // source ("host.io", because that's how it was found) when it's since dropped out of host.io's
+      // current index — that must read "guessed" instead, immediately, not only after someone clicks
+      // "Verify with host.io" by hand.
+      let domains = cached.blacklistedDomains || [];
+      let liveVerifiedAt = null;
+      if (domains.length) {
+        const live = await liveRedirectDomains(t.seed).catch(() => ({ ok: false }));
+        if (live.ok) {
+          const liveSet = new Set(live.domains);
+          domains = domains.map((d) => ({ ...d, stillOnHostio: liveSet.has(d.domain.toLowerCase()) }));
+          liveVerifiedAt = new Date();
+        }
+      }
+
       const common = {
         redirectCount: count, confirmedCount: cached.confirmedCount || 0,
-        blacklistedCount: cached.blacklistedCount || 0, blacklistedDomains: cached.blacklistedDomains || [],
+        blacklistedCount: cached.blacklistedCount || 0, blacklistedDomains: domains,
         unresolvedCount: 0, companyName: cached.companyName || null,
-        fromPriorScan: true, priorScanAt: cached.updatedAt,
+        fromPriorScan: true, priorScanAt: cached.updatedAt, ...(liveVerifiedAt ? { liveVerifiedAt } : {}),
       };
       if (!qualifiesCount) { await setTarget(t._id, { ...common, stage: "dropped_count", activity: null }); return; }
       if (!qualifiesBlacklist) { await setTarget(t._id, { ...common, stage: "dropped_blacklist", activity: null }); return; }
