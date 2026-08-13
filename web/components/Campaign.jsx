@@ -65,6 +65,7 @@ export default function Campaign() {
   const [histSize, setHistSize] = useState(25);
   const [starting, setStarting] = useState(false);
   const [enrich, setEnrich] = useState(true); // pull contacts via Prospeo (paid); off = blacklist verdict only
+  const [guess, setGuess] = useState(false); // also try permutation-guessed domains (DNS+redirect confirmed), tagged separately
   const [openRow, setOpenRow] = useState(null);
   const [revealing, setRevealing] = useState(null);
   const [pushing, setPushing] = useState(false);
@@ -261,7 +262,7 @@ export default function Campaign() {
     if (!seeds.trim() || starting) return;
     setStarting(true);
     try {
-      const r = await post("/api/campaign", { seeds, countGate: +countGate, blacklistGate: +blacklistGate, enrich });
+      const r = await post("/api/campaign", { seeds, countGate: +countGate, blacklistGate: +blacklistGate, enrich, guess });
       if (r.error) { toast(r.error, "bad"); setStarting(false); return; }
       toast(`Campaign started — ${num(r.seedCount)} seeds${r.excluded ? ` · ${num(r.excluded)} non-ICP excluded` : ""}`, "info");
       setSeeds("");
@@ -304,6 +305,11 @@ export default function Campaign() {
               title="ON: after a domain clears both gates, run Prospeo to pull its decision-makers + emails (spends Prospeo credits). OFF: just tell me which seed domains have blacklisted infra — no contacts, no Prospeo — for when you already have their emails.">
               <input type="checkbox" checked={enrich} onChange={(e) => setEnrich(e.target.checked)} />
               Find contacts (Prospeo)
+            </label>
+            <label className="resn" style={{ display: "flex", alignItems: "center", gap: 6 }}
+              title="ON: per seed, also guess extra domains (prefix/suffix + brand, e.g. tryacme.com) and only keep the ones DNS + an HTTP check confirm actually redirect to the seed. No credits, but slower per seed and coverage is low — most of a company's real footprint isn't brand-name-shaped and only host.io's index knows it. Every domain found this way is tagged 'guessed' so it's never confused with host.io's real list.">
+              <input type="checkbox" checked={guess} onChange={(e) => setGuess(e.target.checked)} />
+              Also guess extra domains
             </label>
             <button className="btn" disabled={starting || !seeds.trim()} onClick={start}>
               <Icon name={starting ? "refresh" : "spark"} />{starting ? "Starting…" : enrich ? "Run campaign" : "Run (blacklist only)"}
@@ -512,6 +518,7 @@ export default function Campaign() {
                             <div className="resn muted" style={{ marginBottom: 10 }}>
                               host.io knows <b className="mono">{r.redirectCount == null ? "—" : num(r.redirectCount)}</b> redirects
                               {" → "}we pulled + checked <b className="mono">{num(r.confirmedCount)}</b>
+                              {r.guessedChecked ? <span title="Extra domains we guessed (prefix/suffix + brand), DNS + redirect-confirmed before being checked"> ({num(r.guessedConfirmed)} of {num(r.guessedChecked)} guessed candidates confirmed)</span> : null}
                               {" → "}<b className="mono" style={{ color: r.blacklistedCount ? "var(--hot)" : "inherit" }}>{num(r.blacklistedCount)}</b> blacklisted
                               {r.stage === "dropped_count" ? <> · <span style={{ color: "var(--warm)" }}>stopped: below the count gate</span></> : null}
                               {r.stage === "dropped_blacklist" ? <> · <span style={{ color: "var(--warm)" }}>stopped: fewer than the blacklist gate</span></> : null}
@@ -524,6 +531,15 @@ export default function Campaign() {
                                   {r.blacklistedDomains.slice(0, 10).map((d) => (
                                     <span key={d.domain} className="pill p-competitor" title={(d.zones || []).join(", ")}>
                                       {d.domain}{d.riskScore != null ? ` · ${d.riskScore}` : ""}
+                                      <span
+                                        className="tag-pers"
+                                        title={d.source === "guessed"
+                                          ? "Not in host.io's index — we guessed this domain (prefix/suffix + brand) and DNS + an HTTP redirect check confirmed it actually redirects here"
+                                          : "Came straight from host.io's real reverse-redirect index"}
+                                        style={d.source === "guessed" ? { background: "var(--warm-soft)", color: "var(--warm)" } : undefined}
+                                      >
+                                        {d.source === "guessed" ? "guessed" : "host.io"}
+                                      </span>
                                     </span>
                                   ))}
                                   {r.blacklistedDomains.length > 10 ? <span className="resn muted">+{r.blacklistedDomains.length - 10} more</span> : null}

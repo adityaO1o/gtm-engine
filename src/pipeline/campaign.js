@@ -3,16 +3,28 @@
 // prospects.
 //
 //   Stage 1  host.io redirect COUNT      1 host.io call/seed        gate: count >= countGate (def 50)
-//   Stage 2  free discovery              permutation -> DNS -> HTTP  (no credits)
+//   Stage 2  free discovery              host.io scrape (+ paid API pagination if needed) — REAL domains
+//   Stage 2b guessed discovery (OPT-IN)  permutation -> DNS -> HTTP redirect-confirm  (no credits, gates.guess)
 //   Stage 3  blacklist check             our own API                gate: blacklisted >= blacklistGate (def 3)
 //   Stage 4  Prospeo search-person       1 credit/qualified company  -> people + roles (emails masked)
 //   Stage 5  email reveal + copy         DEFERRED (not built yet)
 //
+// Stage 2b used to be the ONLY discovery path, then got dropped for host.io scraping — permutation
+// guessing only finds brand-name-shaped domains, which turned out to be a tiny fraction of a company's
+// real footprint (coldoutbound.com: 703 real redirects, 3 contained the brand name). It's back here as
+// an OPT-IN supplementary source, off by default: every domain it finds is still DNS + HTTP-redirect
+// CONFIRMED (not a blind guess sent to the blacklist checker), but coverage is low and mostly noise, so
+// it only runs when a caller explicitly asks (gates.guess) and every domain it contributes is tagged
+// `source: "guessed"` so nobody mistakes it for host.io's index. host.io-sourced domains are tagged
+// `source: "hostio"` — the distinction the campaign UI shows per domain.
+//
 // Everything is written incrementally into campaign_targets so the dashboard can poll the live funnel.
 import { ObjectId } from "mongodb";
-import { splitDomain } from "../lib/permute.js";
-import { runPool } from "../lib/pool.js";
+import { generateCandidates, splitDomain } from "../lib/permute.js";
+import { runPool, createLimiter } from "../lib/pool.js";
 import { scrapeRedirectPage, apiRedirectPage, scrapeUsable } from "../services/hostio.js";
+import { domainHasDns } from "../services/domainDns.js";
+import { redirectsToSeed } from "../services/redirectCheck.js";
 import { searchPeople, findEmail } from "../services/prospeo.js";
 import { pushDomains, refreshVerdicts, syncAllVerdicts, verdictsFor } from "../services/blacklistProject.js";
 import { createCampaign as createSendkitCampaign, upsertLeads, addLeadsToCampaign, previewEmail, findLeadByEmail, listMailboxes, listCampaigns as listSendkitCampaigns } from "../services/sendkit.js";
@@ -97,7 +109,11 @@ async function setTarget(id, fields) {
 // UNRESOLVED IS NOT CLEAN. A domain the checker rate-limited us out of, or that was still being
 // checked when the bounded wait expired, has no verdict — and reporting it as "not listed" is how a
 // company with genuinely bad infra ends up in dropped_blacklist, which resume treats as final.
-async function blacklistOf(domains) {
+//
+// `source` ("hostio" | "guessed") is stamped onto every listed entry so the campaign UI can show,
+// per domain, whether host.io's index actually knows about it or we found it via permutation + DNS +
+// redirect-confirm. Purely a label — it plays no part in the verdict itself.
+async function blacklistOf(domains, source) {
   if (!domains.length) return { listed: [], unresolved: [] };
 
   // Anything we already have a verdict for locally needs no round-trip at all.
@@ -119,7 +135,7 @@ async function blacklistOf(domains) {
   const listed = [], unresolved = [];
   for (const d of domains) {
     const v = map.get(d);
-    if (v && v.status === "listed") listed.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [] });
+    if (v && v.status === "listed") listed.push({ domain: d, riskScore: v.riskScore ?? null, zones: v.zones || [], source });
     else if (isUnknown(d)) unresolved.push(d);
   }
   return { listed, unresolved };
@@ -149,17 +165,17 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
     const seen = new Set();
     const blacklisted = [];
     const unresolved = [];
-    const feed = async (domains) => {
+    const feed = async (domains, source) => {
       const fresh = domains.filter((d) => d && !seen.has(d));
       fresh.forEach((d) => seen.add(d));
       if (!fresh.length) return;
-      const res = await blacklistOf(fresh);
+      const res = await blacklistOf(fresh, source);
       blacklisted.push(...res.listed);
       unresolved.push(...res.unresolved);
     };
 
     await setTarget(t._id, { stage: "blacklisting", activity: "checking page 1 (free)" });
-    await feed(p1.domains);
+    await feed(p1.domains, "hostio");
 
     // lazy paid pagination — only if page 1 didn't already clear the gate
     let page = 2, apiPages = 0, pageFailed = false;
@@ -168,12 +184,39 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
       const res = await cachedApiPage(campaignId, t.seed, page);
       if (!res.ok) { pageFailed = true; break; }   // API error — we did NOT see the rest of this footprint
       if (!res.domains.length) break;              // genuinely the end of the list
-      await feed(res.domains);
+      await feed(res.domains, "hostio");
       apiPages++; page++;
     }
 
+    // OPT-IN Stage 2b: permutation-guess the rest of the label space, DNS-filter, then confirm each
+    // survivor actually redirects to this seed via HTTP before it ever reaches the blacklist checker —
+    // so nothing un-verified gets pushed. Skips anything host.io already gave us (`seen`). Off by
+    // default: coverage is real but low (see the header note), so it only runs when asked.
+    let guessedConfirmed = 0, guessedChecked = 0;
+    if (gates.guess) {
+      await setTarget(t._id, { activity: "guessing extra domains (dns + redirect check)" });
+      const candidates = generateCandidates(t.seed).filter((d) => !seen.has(d));
+      guessedChecked = candidates.length;
+      const confirmed = [];
+      const redirectLimit = createLimiter(config.scanRedirectConcurrency);
+      await runPool(candidates, async (candidate) => {
+        if (!(await domainHasDns(candidate))) return;
+        if (!(await redirectLimit(() => redirectsToSeed(candidate, t.seed)))) return;
+        confirmed.push(candidate);
+      }, { concurrency: config.scanDnsConcurrency });
+      guessedConfirmed = confirmed.length;
+      if (confirmed.length) {
+        await setTarget(t._id, { activity: `checking blacklist on ${confirmed.length} guessed domain(s)` });
+        await feed(confirmed, "guessed");
+      }
+    }
+
     blacklisted.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0));
-    const common = { confirmedCount: seen.size, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted, unresolvedCount: unresolved.length, apiPagesUsed: apiPages };
+    const common = {
+      confirmedCount: seen.size, blacklistedCount: blacklisted.length, blacklistedDomains: blacklisted,
+      unresolvedCount: unresolved.length, apiPagesUsed: apiPages,
+      ...(gates.guess ? { guessedChecked, guessedConfirmed } : {}),
+    };
     if (blacklisted.length < gates.blacklistGate) {
       // If a page fetch failed we never saw part of this company's footprint, so "not enough
       // blacklisted" isn't a real verdict — leave it retryable rather than dropping it for good.
@@ -565,6 +608,11 @@ export async function startCampaign(rawSeeds, opts = {}) {
     // (unchanged behaviour). Set false to only find WHICH seed domains have blacklisted infra — no
     // contacts, no Prospeo credits — for when you already have emails for these companies.
     enrich: opts.enrich !== false,
+    // Whether to ALSO run the permutation-guess + DNS + redirect-confirm pass per seed (see the file
+    // header). Default false — it's a real but low-coverage extra source and slows discovery down, so
+    // it only runs when explicitly asked. Every domain it finds is tagged source:"guessed" so it's
+    // never confused with host.io's index (source:"hostio").
+    guess: !!opts.guess,
   };
 
   const { insertedId } = await campaigns().insertOne({
@@ -665,7 +713,9 @@ export async function campaignResultsCsv(id) {
   for await (const r of cursor) {
     out.push([
       r.seed, r.stage, r.redirectCount ?? "", r.confirmedCount ?? 0, r.blacklistedCount ?? 0,
-      (r.blacklistedDomains || []).map((d) => d.domain).join("|"),
+      // Each domain tagged with its source so the export carries the same host.io-vs-guessed
+      // distinction the UI shows — old rows without a `source` predate this feature and are host.io.
+      (r.blacklistedDomains || []).map((d) => `${d.domain}(${d.source || "hostio"})`).join("|"),
       (r.people || []).filter((p) => p.email).length, r.companyName || "",
     ].map(esc).join(","));
   }
