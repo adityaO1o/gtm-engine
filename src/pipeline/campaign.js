@@ -141,13 +141,46 @@ async function blacklistOf(domains, source) {
   return { listed, unresolved };
 }
 
-// DISCOVERY for one seed: free page-1 (count gate) -> blacklist it -> if still under the gate,
-// lazily pull API pages one at a time, stopping the instant blacklistGate is reached (so a company
-// whose bad domains are on page 1 costs ZERO API calls). Qualified seeds are handed to onQualified()
-// rather than enriched here — enrichment runs in its own lane so it can't stall discovery.
+// The most recent settled scan of this exact seed, from ANY earlier campaign — same source the
+// shareable report's own fromCache() reads. Re-running a seed we've already scanned should show the
+// SAME numbers as its report link, not silently redo the work and drift from it. "Verify with host.io"
+// in the drawer is the deliberate, visible way to check whether it's still current — this is not that.
+async function priorResultFor(seed) {
+  return campaignTargets().findOne(
+    { seed, blacklistedDomains: { $exists: true, $ne: [] } },
+    { sort: { updatedAt: -1 } },
+  );
+}
+
+// DISCOVERY for one seed: reuse a prior scan if we have one -> else free page-1 (count gate) ->
+// blacklist it -> if still under the gate, lazily pull API pages one at a time, stopping the instant
+// blacklistGate is reached (so a company whose bad domains are on page 1 costs ZERO API calls).
+// Qualified seeds are handed to onQualified() rather than enriched here — enrichment runs in its own
+// lane so it can't stall discovery.
 async function discoverSeed(campaignId, t, gates, onQualified) {
   try {
-    await setTarget(t._id, { stage: "scraping", activity: "fetching redirects (free)" });
+    await setTarget(t._id, { stage: "scraping", activity: "checking for a cached result" });
+
+    const cached = gates.forceRescan ? null : await priorResultFor(t.seed);
+    if (cached) {
+      const count = cached.redirectCount ?? null;
+      const qualifiesCount = count != null && count >= gates.countGate;
+      const qualifiesBlacklist = (cached.blacklistedCount || 0) >= gates.blacklistGate;
+      const common = {
+        redirectCount: count, confirmedCount: cached.confirmedCount || 0,
+        blacklistedCount: cached.blacklistedCount || 0, blacklistedDomains: cached.blacklistedDomains || [],
+        unresolvedCount: 0, companyName: cached.companyName || null,
+        fromPriorScan: true, priorScanAt: cached.updatedAt,
+      };
+      if (!qualifiesCount) { await setTarget(t._id, { ...common, stage: "dropped_count", activity: null }); return; }
+      if (!qualifiesBlacklist) { await setTarget(t._id, { ...common, stage: "dropped_blacklist", activity: null }); return; }
+      if (gates.enrich === false) { await setTarget(t._id, { ...common, stage: "qualified", activity: "blacklisted infra — contacts not requested (from a prior scan)" }); return; }
+      await setTarget(t._id, { ...common, stage: "enrich_queued", activity: "waiting for contact lookup" });
+      onQualified(t);
+      return;
+    }
+
+    await setTarget(t._id, { activity: "fetching redirects (free)" });
     const p1 = await cachedPage1(t.seed, campaignId);
     // Couldn't READ the page (all proxies + direct failed). That's not a verdict — record it as an
     // error so a resume retries it, instead of burying the seed in dropped_count, which is final.
@@ -613,6 +646,10 @@ export async function startCampaign(rawSeeds, opts = {}) {
     // it only runs when explicitly asked. Every domain it finds is tagged source:"guessed" so it's
     // never confused with host.io's index (source:"hostio").
     guess: !!opts.guess,
+    // Default false: a seed already scanned before (any campaign) reuses that result instead of
+    // re-querying host.io/the blacklist checker, so it shows the same numbers as its report link.
+    // true skips that reuse and does a genuinely fresh scan for every seed.
+    forceRescan: !!opts.forceRescan,
   };
 
   const { insertedId } = await campaigns().insertOne({
