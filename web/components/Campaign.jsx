@@ -66,7 +66,6 @@ export default function Campaign() {
   const [starting, setStarting] = useState(false);
   const [enrich, setEnrich] = useState(true); // pull contacts via Prospeo (paid); off = blacklist verdict only
   const [guess, setGuess] = useState(false); // also try permutation-guessed domains (DNS+redirect confirmed), tagged separately
-  const [forceRescan, setForceRescan] = useState(false); // skip reusing a prior scan of the same seed
   const [openRow, setOpenRow] = useState(null);
   const [showAllDomains, setShowAllDomains] = useState(false);
   const [revealing, setRevealing] = useState(null);
@@ -264,7 +263,7 @@ export default function Campaign() {
     if (!seeds.trim() || starting) return;
     setStarting(true);
     try {
-      const r = await post("/api/campaign", { seeds, countGate: +countGate, blacklistGate: +blacklistGate, enrich, guess, forceRescan });
+      const r = await post("/api/campaign", { seeds, countGate: +countGate, blacklistGate: +blacklistGate, enrich, guess });
       if (r.error) { toast(r.error, "bad"); setStarting(false); return; }
       toast(`Campaign started — ${num(r.seedCount)} seeds${r.excluded ? ` · ${num(r.excluded)} non-ICP excluded` : ""}`, "info");
       setSeeds("");
@@ -312,11 +311,6 @@ export default function Campaign() {
               title="ON: per seed, also guess extra domains (prefix/suffix + brand, e.g. tryacme.com) and only keep the ones DNS + an HTTP check confirm actually redirect to the seed. No credits, but slower per seed and coverage is low — most of a company's real footprint isn't brand-name-shaped and only host.io's index knows it. Every domain found this way is tagged 'guessed' so it's never confused with host.io's real list.">
               <input type="checkbox" checked={guess} onChange={(e) => setGuess(e.target.checked)} />
               Also guess extra domains
-            </label>
-            <label className="resn" style={{ display: "flex", alignItems: "center", gap: 6 }}
-              title="OFF (default): a seed already scanned before (in any earlier campaign) reuses that result instead of re-querying host.io — same numbers you'd see in its report link. ON: ignore any prior scan and check every seed fresh right now.">
-              <input type="checkbox" checked={forceRescan} onChange={(e) => setForceRescan(e.target.checked)} />
-              Force fresh re-scan
             </label>
             <button className="btn" disabled={starting || !seeds.trim()} onClick={start}>
               <Icon name={starting ? "refresh" : "spark"} />{starting ? "Starting…" : enrich ? "Run campaign" : "Run (blacklist only)"}
