@@ -163,27 +163,28 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
 
     const cached = gates.forceRescan ? null : await priorResultFor(t.seed);
     if (cached) {
-      const count = cached.redirectCount ?? null;
-      const qualifiesCount = count != null && count >= gates.countGate;
-      const qualifiesBlacklist = (cached.blacklistedCount || 0) >= gates.blacklistGate;
-
-      // One live host.io call, right now, so a reused result never shows a domain's DISCOVERY-time
-      // source ("host.io", because that's how it was found) when it's since dropped out of host.io's
-      // current index — that must read "guessed" instead, immediately, not only after someone clicks
-      // "Verify with host.io" by hand.
+      // One live host.io call, right now, so a reused result shows CURRENT reality end to end — the
+      // top-line redirect count AND each domain's host.io/guessed label — instead of a stale cached
+      // count ("host.io knows 21 redirects") sitting next to freshly-verified domains that correctly
+      // say host.io only has 18 today. Both numbers have to come from the same live read.
       let domains = cached.blacklistedDomains || [];
       let liveVerifiedAt = null;
-      if (domains.length) {
-        const live = await liveRedirectDomains(t.seed).catch(() => ({ ok: false }));
-        if (live.ok) {
-          const liveSet = new Set(live.domains);
-          domains = domains.map((d) => ({ ...d, stillOnHostio: liveSet.has(d.domain.toLowerCase()) }));
-          liveVerifiedAt = new Date();
-        }
+      let liveTotal = null;
+      const live = await liveRedirectDomains(t.seed).catch(() => ({ ok: false }));
+      if (live.ok) {
+        const liveSet = new Set(live.domains);
+        domains = domains.map((d) => ({ ...d, stillOnHostio: liveSet.has(d.domain.toLowerCase()) }));
+        liveVerifiedAt = new Date();
+        liveTotal = live.total ?? live.domains.length;
       }
 
+      const count = liveTotal ?? (cached.redirectCount ?? null);
+      const qualifiesCount = count != null && count >= gates.countGate;
+      const qualifiesBlacklist = (cached.blacklistedCount || 0) >= gates.blacklistGate;
       const common = {
-        redirectCount: count, confirmedCount: cached.confirmedCount || 0,
+        // blacklistScan.js's older pipeline wrote this same data under `checkedCount`, not
+        // `confirmedCount` — read either so a seed scanned through that path doesn't show 0 checked.
+        redirectCount: count, confirmedCount: cached.confirmedCount ?? cached.checkedCount ?? domains.length,
         blacklistedCount: cached.blacklistedCount || 0, blacklistedDomains: domains,
         unresolvedCount: 0, companyName: cached.companyName || null,
         fromPriorScan: true, priorScanAt: cached.updatedAt, ...(liveVerifiedAt ? { liveVerifiedAt } : {}),
