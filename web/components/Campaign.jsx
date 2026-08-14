@@ -524,6 +524,13 @@ export default function Campaign() {
                               {r.stage === "dropped_count" ? <> · <span style={{ color: "var(--warm)" }}>stopped: below the count gate</span></> : null}
                               {r.stage === "dropped_blacklist" ? <> · <span style={{ color: "var(--warm)" }}>stopped: fewer than the blacklist gate</span></> : null}
                             </div>
+                            {r.liveRedirectTotal != null && r.redirectCount != null ? (
+                              <div className="resn muted" style={{ marginBottom: 10 }}
+                                title="host.io's live index changes over time. Of the redirects known at scan time, this many still confirm on host.io right now — the rest have since been renamed or retired by their owner and read as 'guessed' below.">
+                                Of those {num(r.redirectCount)}, <b className="mono" style={{ color: "var(--good)" }}>{num(r.liveRedirectTotal)}</b> still confirm on host.io right now
+                                {r.redirectCount > r.liveRedirectTotal ? <> · <b className="mono" style={{ color: "var(--warm)" }}>{num(r.redirectCount - r.liveRedirectTotal)}</b> no longer there</> : null}
+                              </div>
+                            ) : null}
                             {r.blacklistedDomains?.length ? (
                               <>
                                 <div className="resn" style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>

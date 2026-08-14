@@ -163,10 +163,11 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
 
     const cached = gates.forceRescan ? null : await priorResultFor(t.seed);
     if (cached) {
-      // One live host.io call, right now, so a reused result shows CURRENT reality end to end — the
-      // top-line redirect count AND each domain's host.io/guessed label — instead of a stale cached
-      // count ("host.io knows 21 redirects") sitting next to freshly-verified domains that correctly
-      // say host.io only has 18 today. Both numbers have to come from the same live read.
+      // One live host.io call, right now, to label each domain host.io/guessed and to know host.io's
+      // CURRENT total — kept separate from `redirectCount`, which stays the number from the original
+      // scan (what the seed's report link shows) so the two never drift apart just because host.io's
+      // live index moved on. `liveRedirectTotal` is the "as of right now" figure for the drawer's
+      // breakdown: of the original count, how many does host.io still confirm today.
       let domains = cached.blacklistedDomains || [];
       let liveVerifiedAt = null;
       let liveTotal = null;
@@ -178,7 +179,7 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
         liveTotal = live.total ?? live.domains.length;
       }
 
-      const count = liveTotal ?? (cached.redirectCount ?? null);
+      const count = cached.redirectCount ?? null;
       const qualifiesCount = count != null && count >= gates.countGate;
       const qualifiesBlacklist = (cached.blacklistedCount || 0) >= gates.blacklistGate;
       const common = {
@@ -187,7 +188,8 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
         redirectCount: count, confirmedCount: cached.confirmedCount ?? cached.checkedCount ?? domains.length,
         blacklistedCount: cached.blacklistedCount || 0, blacklistedDomains: domains,
         unresolvedCount: 0, companyName: cached.companyName || null,
-        fromPriorScan: true, priorScanAt: cached.updatedAt, ...(liveVerifiedAt ? { liveVerifiedAt } : {}),
+        fromPriorScan: true, priorScanAt: cached.updatedAt,
+        ...(liveVerifiedAt ? { liveVerifiedAt, liveRedirectTotal: liveTotal } : {}),
       };
       if (!qualifiesCount) { await setTarget(t._id, { ...common, stage: "dropped_count", activity: null }); return; }
       if (!qualifiesBlacklist) { await setTarget(t._id, { ...common, stage: "dropped_blacklist", activity: null }); return; }
