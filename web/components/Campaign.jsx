@@ -517,26 +517,20 @@ export default function Campaign() {
                           <div style={{ padding: "10px 14px" }}>
                             {/* funnel breakdown for this seed */}
                             <div className="resn muted" style={{ marginBottom: 10 }}>
-                              host.io knows <b className="mono">{r.redirectCount == null ? "—" : num(r.redirectCount)}</b> redirects
-                              {" → "}we pulled + checked <b className="mono">{num(r.confirmedCount)}</b>
-                              {r.guessedChecked ? <span title="Extra domains we guessed (prefix/suffix + brand), DNS + redirect-confirmed before being checked"> ({num(r.guessedConfirmed)} of {num(r.guessedChecked)} guessed candidates confirmed)</span> : null}
-                              {" → "}<b className="mono" style={{ color: r.blacklistedCount ? "var(--hot)" : "inherit" }}>{num(r.blacklistedCount)}</b> blacklisted
+                              {r.liveRedirectTotal != null ? (
+                                <>
+                                  host.io knows <b className="mono">{num(r.liveRedirectTotal)}</b> redirect domain{r.liveRedirectTotal === 1 ? "" : "s"}
+                                  {r.redirectCount > r.liveRedirectTotal ? <> and <b className="mono" style={{ color: "var(--warm)" }}>{num(r.redirectCount - r.liveRedirectTotal)}</b> we got from guessing</> : null}
+                                </>
+                              ) : (
+                                <>host.io knows <b className="mono">{r.redirectCount == null ? "—" : num(r.redirectCount)}</b> redirect domain{r.redirectCount === 1 ? "" : "s"}</>
+                              )}
                               {r.stage === "dropped_count" ? <> · <span style={{ color: "var(--warm)" }}>stopped: below the count gate</span></> : null}
                               {r.stage === "dropped_blacklist" ? <> · <span style={{ color: "var(--warm)" }}>stopped: fewer than the blacklist gate</span></> : null}
                             </div>
-                            {r.liveRedirectTotal != null && r.redirectCount != null ? (
-                              <div className="resn muted" style={{ marginBottom: 10 }}
-                                title="host.io's live index changes over time. Of the redirects known at scan time, this many still confirm on host.io right now — the rest have since been renamed or retired by their owner and read as 'guessed' below.">
-                                Of those {num(r.redirectCount)}, <b className="mono" style={{ color: "var(--good)" }}>{num(r.liveRedirectTotal)}</b> still confirm on host.io right now
-                                {r.redirectCount > r.liveRedirectTotal ? <> · <b className="mono" style={{ color: "var(--warm)" }}>{num(r.redirectCount - r.liveRedirectTotal)}</b> no longer there</> : null}
-                              </div>
-                            ) : null}
                             {r.blacklistedDomains?.length ? (
                               <>
-                                <div className="resn" style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
-                                  <b>Blacklisted domains</b> ({num(r.blacklistedCount)})
-                                  {r.liveVerifiedAt ? <span className="resn muted">checked against host.io {ts(r.liveVerifiedAt)}</span> : null}
-                                </div>
+                                <div className="resn" style={{ marginBottom: 8 }}><b>Blacklisted domains</b> ({num(r.blacklistedCount)})</div>
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14, alignItems: "center" }}>
                                   {(showAllDomains ? r.blacklistedDomains : r.blacklistedDomains.slice(0, 10)).map((d) => {
                                     // stillOnHostio comes from an on-demand live re-check (this domain, right now).
