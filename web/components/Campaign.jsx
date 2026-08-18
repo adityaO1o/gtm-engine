@@ -519,8 +519,9 @@ export default function Campaign() {
                             <div className="resn muted" style={{ marginBottom: 10 }}>
                               {r.liveRedirectTotal != null ? (
                                 <>
-                                  host.io knows <b className="mono">{num(r.liveRedirectTotal)}</b> redirect domain{r.liveRedirectTotal === 1 ? "" : "s"}
-                                  {r.redirectCount > r.liveRedirectTotal ? <> and <b className="mono" style={{ color: "var(--warm)" }}>{num(r.redirectCount - r.liveRedirectTotal)}</b> we got from guessing</> : null}
+                                  host.io knows <b className="mono">{num(r.liveRedirectTotal)}</b> redirect domain{r.liveRedirectTotal === 1 ? "" : "s"} right now
+                                  {r.redirectCount > r.liveRedirectTotal ? <> (<b className="mono">{num(r.redirectCount - r.liveRedirectTotal)}</b> from the original scan no longer show up live)</> : null}
+                                  {r.guessedConfirmed != null ? <> and <b className="mono" style={{ color: "var(--warm)" }}>{num(r.guessedConfirmed)}</b> we got from guessing (of {num(r.guessedChecked)} candidates checked)</> : null}
                                 </>
                               ) : (
                                 <>

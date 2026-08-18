@@ -190,6 +190,10 @@ async function discoverSeed(campaignId, t, gates, onQualified) {
         unresolvedCount: 0, companyName: cached.companyName || null,
         fromPriorScan: true, priorScanAt: cached.updatedAt,
         ...(liveVerifiedAt ? { liveVerifiedAt, liveRedirectTotal: liveTotal } : {}),
+        // Carry the ORIGINAL scan's guessing results forward — the prior document already has them,
+        // but nothing above copies them, so a re-run that hits this cache path used to silently drop
+        // the guessed count even though the seed's underlying record still has it.
+        ...(cached.guessedConfirmed != null ? { guessedConfirmed: cached.guessedConfirmed, guessedChecked: cached.guessedChecked } : {}),
       };
       if (!qualifiesCount) { await setTarget(t._id, { ...common, stage: "dropped_count", activity: null }); return; }
       if (!qualifiesBlacklist) { await setTarget(t._id, { ...common, stage: "dropped_blacklist", activity: null }); return; }
