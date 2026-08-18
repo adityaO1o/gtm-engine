@@ -537,23 +537,31 @@ export default function Campaign() {
                                 <div className="resn" style={{ marginBottom: 8 }}><b>Blacklisted domains</b> ({num(r.blacklistedCount)})</div>
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14, alignItems: "center" }}>
                                   {(showAllDomains ? r.blacklistedDomains : r.blacklistedDomains.slice(0, 10)).map((d) => {
-                                    // stillOnHostio comes from an on-demand live re-check (this domain, right now).
-                                    // Falls back to the discovery-time source when it hasn't been verified yet.
+                                    // stillOnHostio comes from an on-demand live re-check (this domain, right now) —
+                                    // that's DRIFT (was on host.io, may not be anymore), a separate question from
+                                    // `source`, which is how we ORIGINALLY found the domain (host.io vs. guessed).
+                                    // Conflating the two used to relabel a plain host.io domain "guessed" the moment
+                                    // it dropped off host.io's live index, even though we never guessed it.
                                     const checked = d.stillOnHostio !== undefined;
-                                    const isGuessed = checked ? !d.stillOnHostio : d.source === "guessed";
+                                    const isGuessedSource = d.source === "guessed";
+                                    const offHostioNow = checked && !d.stillOnHostio;
+                                    const label = isGuessedSource ? "guessed" : (offHostioNow ? "off host.io now" : "host.io");
+                                    const title = isGuessedSource
+                                      ? "Not in host.io's index — we guessed this domain (prefix/suffix + brand) and DNS + an HTTP redirect check confirmed it actually redirects here"
+                                      : offHostioNow
+                                        ? "Came from host.io's reverse-redirect index originally, but host.io does not list it right now (just checked)"
+                                        : checked
+                                          ? "host.io lists this domain right now (just checked)"
+                                          : "Came from host.io's reverse-redirect index";
                                     return (
                                       <span key={d.domain} className="pill p-competitor" title={(d.zones || []).join(", ")}>
                                         {d.domain}{d.riskScore != null ? ` · ${d.riskScore}` : ""}
                                         <span
                                           className="tag-pers"
-                                          title={checked
-                                            ? (isGuessed ? "host.io does not list this domain right now (just checked)" : "host.io lists this domain right now (just checked)")
-                                            : (isGuessed
-                                              ? "Not in host.io's index — we guessed this domain (prefix/suffix + brand) and DNS + an HTTP redirect check confirmed it actually redirects here"
-                                              : "Came from host.io's reverse-redirect index")}
-                                          style={isGuessed ? { background: "var(--warm-soft)", color: "var(--warm)" } : undefined}
+                                          title={title}
+                                          style={(isGuessedSource || offHostioNow) ? { background: "var(--warm-soft)", color: "var(--warm)" } : undefined}
                                         >
-                                          {isGuessed ? "guessed" : "host.io"}
+                                          {label}
                                         </span>
                                       </span>
                                     );
