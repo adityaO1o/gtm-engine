@@ -523,7 +523,10 @@ export default function Campaign() {
                                   {r.redirectCount > r.liveRedirectTotal ? <> and <b className="mono" style={{ color: "var(--warm)" }}>{num(r.redirectCount - r.liveRedirectTotal)}</b> we got from guessing</> : null}
                                 </>
                               ) : (
-                                <>host.io knows <b className="mono">{r.redirectCount == null ? "—" : num(r.redirectCount)}</b> redirect domain{r.redirectCount === 1 ? "" : "s"}</>
+                                <>
+                                  host.io knows <b className="mono">{r.redirectCount == null ? "—" : num(r.redirectCount)}</b> redirect domain{r.redirectCount === 1 ? "" : "s"}
+                                  {r.guessedConfirmed != null ? <> and <b className="mono" style={{ color: "var(--warm)" }}>{num(r.guessedConfirmed)}</b> we got from guessing (of {num(r.guessedChecked)} candidates checked)</> : null}
+                                </>
                               )}
                               {r.stage === "dropped_count" ? <> · <span style={{ color: "var(--warm)" }}>stopped: below the count gate</span></> : null}
                               {r.stage === "dropped_blacklist" ? <> · <span style={{ color: "var(--warm)" }}>stopped: fewer than the blacklist gate</span></> : null}
