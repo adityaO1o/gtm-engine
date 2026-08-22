@@ -33,7 +33,7 @@ import { sourceAgencies, listAgencySources, markSourcesUsed } from "../pipeline/
 import {
   importCreatorCompanies, importCreatorUsers, importCreatorSpend, startCreatorEnrich, creatorEnrichStatus,
   stopCreatorEnrich, rescoreCreators, matchOwnAudience, creatorStats, creatorList, creatorCsv,
-  SEGMENTS, DEFAULT_GATES,
+  SEGMENTS, DEFAULT_GATES, startCreatorAudience, creatorAudienceStatus, stopCreatorAudience,
 } from "../pipeline/creator.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
@@ -1283,6 +1283,18 @@ apiRouter.post("/creator/enrich", async (req, res) => {
   }));
 });
 apiRouter.get("/creator/enrich/status", (_req, res) => res.json(creatorEnrichStatus()));
+
+// Follower counts for profiles already resolved. Free — read off the public profile page through
+// the rotating proxy pool, because no API sells this number.
+apiRouter.post("/creator/audience", async (req, res) => {
+  const tiers = Array.isArray(req.body?.tiers) ? req.body.tiers.filter((t) => SEGMENTS.includes(t)) : [];
+  res.json(await startCreatorAudience({
+    tiers, limit: Math.max(0, parseInt(req.body?.limit || "0", 10)),
+    redo: !!req.body?.redo, gates: req.body?.gates || DEFAULT_GATES,
+  }));
+});
+apiRouter.get("/creator/audience/status", (_req, res) => res.json(creatorAudienceStatus()));
+apiRouter.post("/creator/audience/stop", (_req, res) => res.json(stopCreatorAudience()));
 apiRouter.post("/creator/enrich/stop", (_req, res) => res.json(stopCreatorEnrich()));
 
 // Re-apply the gates at new thresholds. Pure recompute over Mongo — tuning the filter is free.

@@ -20,6 +20,7 @@ import { creatorPeople, creatorCompanies, creatorRuns, leads } from "../db/mongo
 import { reverseEmailLookup, normaliseLinkedin } from "../services/enrich.js";
 import { resolveVanity } from "../services/resolve.js";
 import { pndExactDomain, pndFindPerson, pndCompanyOnLinkedin, setPndBudget, pndBudget, paidBlocked } from "../services/pnd.js";
+import { fetchPublicProfile } from "../services/linkedinPublic.js";
 import { runPool } from "../lib/pool.js";
 import { log } from "../lib/logger.js";
 
@@ -633,13 +634,68 @@ export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, 
   return { ok: true, started: true, total: state.total };
 }
 
+// ── Audience pass ───────────────────────────────────────────────────────────────────────────────
+// Follower counts for the profiles already resolved. FREE — it reads the number off the public
+// profile page through the existing rotating proxy pool, because no API sells it: PND has no
+// follower endpoint at all and its profile call returns skills and job history but no audience
+// numbers, while LinkedIn keeps the connection and follower LISTS private to the person themselves.
+//
+// This matters more than it sounds. Until now the gates only had a connection count, which LinkedIn
+// caps at "500+" — so a consultant with a full address book and a creator with 41,000 followers
+// looked identical. Measured on 15 real resolved customers: 8 came back on the first pass, ranging
+// from 843 to 41,000 followers. The 7 that did not were blocked exit IPs (HTTP 999), not missing
+// profiles, so re-running picks them up.
+let audState = { running: false, done: 0, total: 0, found: 0, blocked: 0, startedAt: null, finishedAt: null, stopping: false };
+export const creatorAudienceStatus = () => ({ ...audState });
+export function stopCreatorAudience() { if (audState.running) audState.stopping = true; return { ok: audState.running }; }
+
+export async function startCreatorAudience({ tiers = [], limit = 0, redo = false, gates = DEFAULT_GATES } = {}) {
+  if (audState.running) return { ok: false, error: "already running" };
+  const q = { li_url: { $ne: null } };
+  if (tiers.length) q.$or = tiers.map(segmentQuery);
+  // A profile we already have a follower count for is skipped, so a re-run only chases the ones
+  // that were blocked last time.
+  if (!redo) q.li_followers = null;
+  const total = await creatorPeople().countDocuments(q);
+  if (!total) return { ok: false, error: "no resolved profiles need a follower count" };
+
+  audState = { running: true, done: 0, total: limit ? Math.min(limit, total) : total, found: 0, blocked: 0, startedAt: new Date(), finishedAt: null, stopping: false };
+  (async () => {
+    try {
+      const cur = creatorPeople().find(q, { projection: { _id: 1, li_url: 1, li_connections: 1, li_connections_capped: 1, li_public: 1, enrich_status: 1, li_verified: 1, li_verify_note: 1, posts_90d: 1, topic_hits: 1 } })
+        .sort({ priority_rank: 1, lifetime_spend: -1 });
+      const people = [];
+      for await (const x of cur) { people.push(x); if (limit && people.length >= limit) break; }
+
+      await runPool(people, async (x) => {
+        if (audState.stopping) return;
+        const r = await fetchPublicProfile(x.li_url, { attempts: 6 });
+        if (r && r.followers != null) {
+          const set = {
+            li_followers: r.followers, li_followers_raw: r.followers_raw,
+            li_connections_raw: r.connections_raw, followers_at: r.at,
+          };
+          await creatorPeople().updateOne({ _id: x._id }, { $set: { ...set, ...scoreCreator({ ...x, ...set }, gates) } }).catch(() => {});
+          audState.found++;
+        } else audState.blocked++;
+        audState.done++;
+      }, { concurrency: 6 });
+    } catch (e) { log.warn("creator audience run threw", { err: e.message }); }
+    finally {
+      audState.running = false; audState.finishedAt = new Date();
+      log.info("creator audience finished", { done: audState.done, found: audState.found, blocked: audState.blocked });
+    }
+  })();
+  return { ok: true, started: true, total: audState.total };
+}
+
 // Re-run the gates over everyone without touching an API — this is how a threshold change in the UI
 // takes effect. Cheap on purpose: tuning the filter must never cost a credit.
 export async function rescoreCreators(gates = DEFAULT_GATES) {
   let n = 0;
   const cur = creatorPeople().find({}, { projection: {
     _id: 1, li_url: 1, li_connections: 1, li_connections_capped: 1, li_followers: 1, li_public: 1,
-    enrich_status: 1, posts_90d: 1, topic_hits: 1,
+    enrich_status: 1, li_verified: 1, li_verify_note: 1, posts_90d: 1, topic_hits: 1,
   } });
   let ops = [];
   for await (const p of cur) {

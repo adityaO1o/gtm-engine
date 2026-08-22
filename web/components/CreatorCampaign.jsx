@@ -105,6 +105,7 @@ export default function CreatorCampaign() {
   const [limit, setLimit] = useState(0);
   const [usePnd, setUsePnd] = useState(true);
   const [pndCap, setPndCap] = useState(500);
+  const [aud, setAud] = useState({});
   const [useSerp, setUseSerp] = useState(true);
   const [verifyPnd, setVerifyPnd] = useState(true);
   const [gates, setGates] = useState({ minAudience: 500, minFollowers: 1000, requirePublic: true });
@@ -139,6 +140,13 @@ export default function CreatorCampaign() {
 
   useEffect(() => { loadStats(); }, [loadStats]);
   useEffect(() => { loadRows(); }, [loadRows]);
+
+  useEffect(() => {
+    const t = setInterval(() => { j("/api/creator/audience/status").then(setAud).catch(() => {}); }, 3000);
+    j("/api/creator/audience/status").then(setAud).catch(() => {});
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => { if (aud.running === false && aud.done) { loadStats(); loadRows(); } }, [aud.running, aud.done, loadStats, loadRows]);
 
   useEffect(() => {
     clearTimeout(timer.current);
@@ -537,6 +545,38 @@ export default function CreatorCampaign() {
                   <div className="hint">A private profile cannot carry a public post.</div>
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* ── Audience ─────────────────────────────────────────────────────────────────── */}
+          <div className="blk">
+            <div className="blk-h"><Icon name="users" /><b>Follower counts</b><div className="grow" />
+              {aud.running
+                ? <button className="btn btn-no btn-sm" onClick={() => act("/api/creator/audience/stop", {}, () => "Stopping")}><Icon name="pause" />Stop</button>
+                : <button className="btn btn-ok btn-sm" disabled={!!busy}
+                    onClick={() => act("/api/creator/audience", { tiers: runTiers, gates }, (r) => r.ok ? `Reading ${num(r.total)} profiles` : (r.error || "Nothing to do"))}>
+                    <Icon name="users" />Read followers
+                  </button>}
+            </div>
+            <div className="blk-b">
+              <div className="lede">
+                <b>Free.</b> No API sells this number — PND has no follower endpoint at all, and LinkedIn keeps the
+                connection and follower <b>lists</b> private to the person themselves. But the <b>count</b> is printed
+                on the public profile page, so it is read from there through the same rotating proxy pool the rest of
+                the engine uses. This is what finally separates a consultant with a full address book from a real
+                creator — until now the gates only had a connection count, which LinkedIn caps at &ldquo;500+&rdquo;.
+                Runs only on profiles already resolved, skips anyone already counted, and a blocked exit IP is picked
+                up by simply running it again.
+              </div>
+              {aud.total ? (
+                <>
+                  <div className={`prog${aud.running ? " on" : ""}`}><i style={{ width: `${pctOf(aud.done, aud.total)}%` }} /></div>
+                  <div className="resn" style={{ marginTop: 8 }}>
+                    <b>{num(aud.done)}</b> / {num(aud.total)} · followers found <b>{num(aud.found)}</b> · blocked, retry later <b>{num(aud.blocked)}</b>
+                    {aud.running ? " · running" : ""}
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
 
