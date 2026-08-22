@@ -19,7 +19,7 @@
 import { creatorPeople, creatorCompanies, creatorRuns, leads } from "../db/mongo.js";
 import { reverseEmailLookup, normaliseLinkedin } from "../services/enrich.js";
 import { resolveVanity } from "../services/resolve.js";
-import { pndExactDomain, pndFindPerson, paidBlocked } from "../services/pnd.js";
+import { pndExactDomain, pndFindPerson, pndCompanyOnLinkedin, setPndBudget, pndBudget, paidBlocked } from "../services/pnd.js";
 import { runPool } from "../lib/pool.js";
 import { log } from "../lib/logger.js";
 
@@ -524,11 +524,11 @@ export async function verifySerpProfile({ url, name, serpCompany, company, domai
 //   1. enrich.so reverse email lookup — 10 credits, refunded on a miss. ~7% hit on this base.
 //   2. SERP resolver (self-hosted, free) — name + company -> profile, for everyone tier 1 missed.
 // Nobody is skipped: a miss on both is recorded as NO_PROFILE and keeps its place in outreach.
-let state = { running: false, phase: "idle", done: 0, total: 0, hits: 0, pndHits: 0, serpHits: 0, unverified: 0, rejected: 0, misses: 0, errors: 0, startedAt: null, finishedAt: null, tiers: [], stopping: false };
-export const creatorEnrichStatus = () => ({ ...state });
+let state = { running: false, phase: "idle", done: 0, total: 0, hits: 0, pndHits: 0, serpHits: 0, unverified: 0, rejected: 0, noCompanyPage: 0, misses: 0, errors: 0, pndCap: 0, startedAt: null, finishedAt: null, tiers: [], stopping: false };
+export const creatorEnrichStatus = () => ({ ...state, pndUsed: pndBudget().used, pndLeft: pndBudget().left });
 export function stopCreatorEnrich() { if (state.running) state.stopping = true; return { ok: state.running }; }
 
-export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, usePnd = true, useSerp = true, verifyWithPnd = true, gates = DEFAULT_GATES } = {}) {
+export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, usePnd = true, useSerp = true, verifyWithPnd = true, pndCap = 0, gates = DEFAULT_GATES } = {}) {
   if (state.running) return { ok: false, error: "already running" };
   const q = {};
   // Scope accepts segments, so "P2 growing" can be enriched ahead of the rest of the paying base.
@@ -537,7 +537,10 @@ export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, 
   const total = await creatorPeople().countDocuments(q);
   if (!total) return { ok: false, error: "nothing to enrich for that selection" };
 
-  state = { running: true, phase: "reverse-lookup", done: 0, total: limit ? Math.min(limit, total) : total, hits: 0, pndHits: 0, serpHits: 0, unverified: 0, rejected: 0, misses: 0, errors: 0, startedAt: new Date(), finishedAt: null, tiers, stopping: false };
+  // Declare the paid budget up front. Without this a run can quietly drain a wallet — which is
+  // exactly what the first one did.
+  setPndBudget(pndCap);
+  state = { running: true, phase: "reverse-lookup", done: 0, total: limit ? Math.min(limit, total) : total, hits: 0, pndHits: 0, serpHits: 0, unverified: 0, rejected: 0, noCompanyPage: 0, misses: 0, errors: 0, pndCap, startedAt: new Date(), finishedAt: null, tiers, stopping: false };
   const runAt = state.startedAt;
   creatorRuns().insertOne({ kind: "enrich", startedAt: runAt, tiers, limit, redo, useSerp, gates }).catch(() => {});
 
@@ -563,9 +566,14 @@ export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, 
         // hit is our customer by construction and needs no separate verification. Costs ~1 credit
         // per attempt, which is why it is pointed at the short high-value tiers rather than at
         // 6,000 rows.
-        if (!profile && usePnd && !state.stopping && !paidBlocked()) {
+        if (!profile && usePnd && !state.stopping && !paidBlocked() && pndBudget().left > 0) {
           try {
-            const hit = await pndFindPerson({ name: p.user_name || "", company: p.company_name || "" });
+            // One cached lookup per company, shared by everyone who works there. A company with no
+            // LinkedIn page rules out all of its people for free instead of each of them paying for
+            // a search that cannot succeed.
+            const onLi = await pndCompanyOnLinkedin(p.company_domain);
+            const hit = onLi ? await pndFindPerson({ name: p.user_name || "", company: onLi }) : null;
+            if (!onLi) state.noCompanyPage++;
             if (hit?.url) {
               profile = { li_url: normaliseLinkedin(hit.url) || hit.url, li_headline: hit.headline, li_name: hit.name, li_location: hit.location };
               source = "pnd-search";

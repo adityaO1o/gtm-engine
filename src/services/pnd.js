@@ -221,7 +221,47 @@ export async function pndProfilePosts(usernameOrUrl, { paginationToken = "" } = 
 // ~1 credit per attempt. Worth it on a short, high-value list; too expensive to point at 6,000 rows.
 const alphaKey = (v) => String(v || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]/g, "");
 
-export async function pndFindPerson({ name = "", company = "", attempts = 3 } = {}) {
+// A hard per-run ceiling on paid calls. The first version of this had none: pndFindPerson retried
+// 3 times across 2 query shapes, so a person who simply is not on LinkedIn cost SIX credits before
+// being given up on. ~360 such people burned roughly 2,160 credits — about 70% of a 3,360 wallet —
+// for answers that were always going to be "not found". Never again: a run declares its budget up
+// front and paid calls stop dead when it is spent.
+let budget = { cap: 0, used: 0 };
+export function setPndBudget(cap) { budget = { cap: Math.max(0, cap | 0), used: 0 }; }
+export function pndBudget() { return { ...budget, left: budget.cap ? Math.max(0, budget.cap - budget.used) : Infinity }; }
+const budgetSpent = () => budget.cap > 0 && budget.used >= budget.cap;
+const spend = (n = 1) => { budget.used += n; };
+
+// Is this company even ON LinkedIn? One cached lookup per DOMAIN, shared by everyone who works
+// there — so a company with no page costs one call and then rules out all of its people for free,
+// instead of each of them paying for a search that cannot succeed.
+export async function pndCompanyOnLinkedin(domain) {
+  if (!domain) return null;
+  const key = `dom:${String(domain).toLowerCase()}`;
+  const hit = await companyDomains().findOne({ _id: key }).catch(() => null);
+  if (hit) { stats.cacheHits++; meter.inc("pnd_cache_hits"); return hit.company || null; }
+  if (paidBlocked() || budgetSpent()) return null;
+  const d = await call("get-company-by-domain", { params: { domain } });
+  spend(); stats.companyCalls++; meter.inc("pnd_company_calls");
+  const rec = { _id: key, company: d?.data?.name || null, universalName: d?.data?.universalName || null, at: new Date() };
+  await companyDomains().updateOne({ _id: key }, { $set: rec }, { upsert: true }).catch(() => {});
+  return rec.company;
+}
+
+// Find a PERSON from a name + the company we already know they work at.
+//
+// This is the opposite shape to a web search, and that is the point. A SERP asks "who on LinkedIn
+// is called this", so the most famous holder of the name wins and a customer resolves to a
+// stranger. This asks LinkedIn's own people search for that name INSIDE that company, so the answer
+// is either our customer or nothing.
+//
+// The endpoint IS flaky — the identical query returns 1, then 0, then 1 within seconds — but
+// retrying every miss inline is what emptied the wallet. So one pass costs at most TWO calls (the
+// structured shape, then the free-text one) and a miss is left as a miss. Flakiness is recovered by
+// re-running the missed people later as a deliberate second pass, where the cost is a decision
+// rather than a surprise.
+
+export async function pndFindPerson({ name = "", company = "" } = {}) {
   const parts = String(name).trim().split(/\s+/).filter(Boolean);
   if (!parts.length || !company) return null;
   const first = parts[0], last = parts.length > 1 ? parts[parts.length - 1] : "";
@@ -229,34 +269,28 @@ export async function pndFindPerson({ name = "", company = "", attempts = 3 } = 
     { firstName: first, ...(last ? { lastName: last } : {}), company },
     { keywords: `${name} ${company}` },
   ];
-  // Every token of the name must appear in what came back — the company constraint makes a wrong
-  // person unlikely, but a shared surname inside a big company is still possible.
   const toks = parts.map(alphaKey).filter((t) => t.length >= 3);
   const looksRight = (p) => {
     const hay = alphaKey(`${p.fullName} ${p.username}`);
     return !toks.length || toks.every((t) => hay.includes(t));
   };
 
-  for (let a = 0; a < attempts; a++) {
-    for (const params of shapes) {
-      if (paidBlocked()) return null;
-      const d = await call("search-people", { params });
-      stats.profileCalls++; meter.inc("pnd_profile_calls");
-      const items = d?.data?.items || [];
-      const hit = items.find(looksRight);
-      if (hit && (hit.profileURL || hit.username)) {
-        return {
-          url: hit.profileURL || `https://www.linkedin.com/in/${hit.username}`,
-          name: hit.fullName || null,
-          headline: hit.headline || null,
-          location: hit.location || null,
-          photo: hit.profilePicture || null,
-          // How many candidates the company-constrained search returned. 1 is as clean as it gets.
-          candidates: items.length,
-        };
-      }
+  for (const params of shapes) {
+    if (paidBlocked() || budgetSpent()) return null;
+    const d = await call("search-people", { params });
+    spend(); stats.profileCalls++; meter.inc("pnd_profile_calls");
+    const items = d?.data?.items || [];
+    const hit = items.find(looksRight);
+    if (hit && (hit.profileURL || hit.username)) {
+      return {
+        url: hit.profileURL || `https://www.linkedin.com/in/${hit.username}`,
+        name: hit.fullName || null,
+        headline: hit.headline || null,
+        location: hit.location || null,
+        photo: hit.profilePicture || null,
+        candidates: items.length,
+      };
     }
-    await sleep(1500 * (a + 1));
   }
   return null;
 }
@@ -337,9 +371,10 @@ export async function pndProfile(urlOrUrn) {
   if (hit) { stats.cacheHits++; meter.inc("pnd_cache_hits"); return hit; }
   if (paidBlocked()) return null;
 
+  if (budgetSpent()) return null;
   const d = await call("get-profile-data-by-url", { params: { url: key } });
+  spend(); stats.profileCalls++; meter.inc("pnd_profile_calls");
   if (!d || d.message === "The url is not valid." || !d.username) return null;
-  stats.profileCalls++; meter.inc("pnd_profile_calls");
   const pos = (d.position || [])[0] || {};
   const rec = {
     _id: key,
@@ -396,6 +431,7 @@ export function companyUsernameFromUrl(url = "") {
 // The paid last-resort: person -> { company, domain, vanity }. Both hops cached, so calling this
 // twice for the same person (e.g. waterfall + a verify-fail retry) costs nothing extra.
 export async function pndExactDomain(urlOrUrn) {
+  if (budgetSpent()) return null;
   const p = await pndProfile(urlOrUrn);
   if (!p) return null;
   const domain = p.companyUsername ? await pndCompanyDomain(p.companyUsername) : null;
