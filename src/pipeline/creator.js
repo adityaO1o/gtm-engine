@@ -482,6 +482,23 @@ export async function creatorStats() {
     r.spend = spendByTier[r._id]?.spend ?? 0;
     r.companies = spendByTier[r._id]?.companies ?? 0;
   }
+  // Per-label growth counts, per tier and overall. The union alone is misleading: it is dominated by
+  // RISING (a climbing slope off any base, so broad and low-precision), while EXPANDING and GROWING
+  // are the sharp cut and UPGRADED is the one where the customer actually paid for more. Showing the
+  // split is the difference between "2,531 are growing" and knowing which 163 to talk to first.
+  const gb = await creatorPeople().aggregate([
+    { $match: { growth_reasons: { $exists: true, $ne: [] } } },
+    { $unwind: "$growth_reasons" },
+    { $group: { _id: { tier: "$contact_priority", reason: "$growth_reasons" }, n: { $sum: 1 } } },
+  ]).toArray();
+  const growthByTier = {}, growthTotals = {};
+  for (const g of gb) {
+    const { tier, reason } = g._id;
+    (growthByTier[tier] || (growthByTier[tier] = {}))[reason] = g.n;
+    growthTotals[reason] = (growthTotals[reason] || 0) + g.n;
+  }
+  for (const r of rows) r.growthBreakdown = growthByTier[r._id] || {};
+
   const companies = await creatorCompanies().estimatedDocumentCount();
   const totals = rows.reduce((a, r) => ({
     people: a.people + r.people, spend: a.spend + r.spend, resolved: a.resolved + r.resolved,
@@ -491,7 +508,7 @@ export async function creatorStats() {
     weak: a.weak + r.weak, noProfile: a.noProfile + r.noProfile,
   }), { people: 0, spend: 0, resolved: 0, pending: 0, inAudience: 0, growing: 0, qualified: 0, candidate: 0, weak: 0, noProfile: 0 });
   const lastImport = await creatorRuns().findOne({ kind: "import" }, { sort: { startedAt: -1 } });
-  return { tiers: rows.map((r) => ({ tier: r._id, ...r, _id: undefined })), totals, companies, lastImport };
+  return { tiers: rows.map((r) => ({ tier: r._id, ...r, _id: undefined })), totals, growthTotals, companies, lastImport };
 }
 
 export function creatorFilter({ tier = "", fit = "", audience = "", q = "", inAudience = false, role = "", growth = "" } = {}) {

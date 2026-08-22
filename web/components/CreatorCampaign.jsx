@@ -47,6 +47,30 @@ const TierBadge = ({ id }) => {
   return <span className={`tb tb-${id}`}><i />{t ? t.label : id || "—"}</span>;
 };
 
+// The union count on its own ("2,531 growing") hides that it is mostly RISING, which is broad.
+// Showing the split — and letting a click set the filter — is what turns it into a target list.
+function GrowthStrip({ counts, value, onPick }) {
+  if (!counts) return null;
+  const any = Object.entries(counts).filter(([k]) => k !== "SCALING").reduce((a, [, v]) => a + v, 0);
+  return (
+    <div className="gstrip">
+      <div className={`gi${value === "any" ? " on" : ""}`} onClick={() => onPick(value === "any" ? "" : "any")}>
+        <div className="gk"><Icon name="trend" />Growing</div>
+        <div className="gv" style={{ color: "var(--good)" }}>{num(any)}</div>
+        <div className="gh">any real signal</div>
+      </div>
+      {Object.entries(GROWTH).map(([k, v]) => (
+        <div key={k} className={`gi${value === k ? " on" : ""}${k === "SCALING" ? " soft" : ""}`}
+          onClick={() => onPick(value === k ? "" : k)} title={v.hint}>
+          <div className="gk"><span className={`gw gw-${k}`} style={{ padding: "1px 6px" }}>{v.label}</span></div>
+          <div className="gv">{num(counts[k] || 0)}</div>
+          <div className="gh">{v.hint}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function CreatorCampaign() {
   const toast = useToast();
   const [stats, setStats] = useState(null);
@@ -116,7 +140,10 @@ export default function CreatorCampaign() {
   }, [run, loadStats, loadRows, toast]);
 
   const openTier = (id) => { setDrill(id); setPage(0); setFit(""); setAudience(""); setRole(""); setGrowth(""); setOnlyAudience(false); setQ(""); setDq(""); };
-  const back = () => { setDrill(null); setRows([]); setCount(0); };
+  const back = () => { setDrill(null); setRows([]); setCount(0); setGrowth(""); };
+  // Clicking a growth count on the funnel should land you IN that list, not just tick a filter on a
+  // summary — so it opens the drill-down with the pick intact.
+  const openTierKeepGrowth = (id, g) => { setDrill(id); setPage(0); setFit(""); setAudience(""); setRole(""); setOnlyAudience(false); setQ(""); setDq(""); setGrowth(g); };
 
   async function upload(kind, file) {
     if (!file) return;
@@ -232,6 +259,9 @@ export default function CreatorCampaign() {
           <div className="card"><div className="kh"><Icon name="check" />Creator pool</div><div className="v">{num((scoped.qualified || 0) + (scoped.candidate || 0))}</div><div className="sub">{num(scoped.qualified)} qualified · {num(scoped.candidate)} candidate</div></div>
         </div>
 
+        <GrowthStrip counts={drill ? r.growthBreakdown : stats.growthTotals} value={growth}
+          onPick={(g) => { setGrowth(g); setPage(0); }} />
+
         <div className="toolbar">
           <input className="search" placeholder="name, email, company…" value={q} onChange={(e) => setQ(e.target.value)} />
           <div className="field"><select value={fit} onChange={(e) => { setFit(e.target.value); setPage(0); }}>
@@ -321,6 +351,9 @@ export default function CreatorCampaign() {
         <div className="card rec"><div className="kh"><Icon name="radio" />In our audience</div><div className="v">{num(t.inAudience)}</div><div className="sub">already engage with our posts</div></div>
         <div className="card"><div className="kh"><Icon name="check" />Creator pool</div><div className="v">{num(t.qualified + t.candidate)}</div><div className="sub">{num(t.qualified)} qualified · {num(t.candidate)} candidate</div></div>
       </div>
+
+      <GrowthStrip counts={stats.growthTotals} value={growth}
+        onPick={(g) => { setGrowth(g); openTierKeepGrowth("", g); }} />
 
       <div className="blk">
         <div className="blk-h"><Icon name="mega" /><b>Outreach order</b><div className="grow" />
