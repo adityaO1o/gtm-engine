@@ -336,3 +336,70 @@ kbd{font-family:'SuisseMono',monospace;font-size:10.5px;background:var(--neutral
 .charttip .tt-d{font-weight:600;margin-bottom:3px;font-size:11px;color:var(--dim)}
 .charttip i{display:inline-block;width:8px;height:8px;margin-right:5px;vertical-align:middle}
 .charttip b{font-variant-numeric:tabular-nums}
+
+/* ---------- Creator Campaign ---------- */
+/* Tier badges. The outreach order is the whole point of the tab, so each tier carries a fixed
+   colour everywhere it appears — funnel row, drill-down header, people table — and the ramp runs
+   red -> orange -> green -> blue -> grey, i.e. leaving -> slipping -> healthy -> free -> cold. */
+.tb{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;padding:4px 9px;line-height:1.25;white-space:nowrap}
+.tb i{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
+.tb-P1_CHURN{background:var(--hot-soft);color:var(--hot)}
+.tb-P1b_AT_RISK{background:var(--warm-soft);color:var(--warm)}
+.tb-P2_PAYING{background:var(--good-soft);color:var(--good)}
+.tb-P3a_FREE_ACTIVATED{background:var(--cold-soft);color:var(--cold)}
+.tb-P3b_FREE_TRIED{background:var(--primary-soft);color:var(--primary-2)}
+.tb-P3c_FREE_DORMANT{background:var(--neutral-soft);color:var(--faint)}
+
+/* Funnel rows carry the tier colour as a left rail, so the running order reads at a glance. */
+.trow{cursor:pointer}
+.trow td:first-child{border-left:3px solid transparent}
+.trow.c-P1_CHURN td:first-child{border-left-color:var(--hot)}
+.trow.c-P1b_AT_RISK td:first-child{border-left-color:var(--warm)}
+.trow.c-P2_PAYING td:first-child{border-left-color:var(--good)}
+.trow.c-P3a_FREE_ACTIVATED td:first-child{border-left-color:var(--cold)}
+.trow.c-P3b_FREE_TRIED td:first-child{border-left-color:var(--primary)}
+.trow.c-P3c_FREE_DORMANT td:first-child{border-left-color:var(--faint)}
+.trow .go{opacity:0;transition:opacity .12s}
+.trow:hover .go{opacity:1}
+
+/* Churn bands, coloured the way the extract defines them. */
+.cb{font-size:11px;font-weight:600;padding:2px 7px;white-space:nowrap}
+.cb-CHURNED{background:var(--ink);color:var(--panel)}
+.cb-RED{background:var(--hot-soft);color:var(--hot)}
+.cb-ORANGE{background:var(--warm-soft);color:var(--warm)}
+.cb-STABLE{background:var(--neutral-soft);color:var(--dim)}
+.cb-GROWING,.cb-EXPANDING{background:var(--good-soft);color:var(--good)}
+.cb-NEVER_PAID,.cb-FREE_SIGNUP,.cb-INSUFFICIENT_HISTORY,.cb-ONE_TIME_BUYER,.cb-NO_WINDOW_SPEND{background:var(--neutral-soft);color:var(--faint)}
+/* Trend is read together with the band — a STABLE + FALLING account is the one the band hides. */
+.trend{font-size:11px;font-weight:600;margin-left:5px}
+.trend.FALLING{color:var(--hot)} .trend.RISING{color:var(--good)} .trend.FLAT{color:var(--faint)}
+
+/* Drill-down header + back link */
+.crumb{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--dim);cursor:pointer;user-select:none;margin-bottom:var(--s3)}
+.crumb:hover{color:var(--ink)}
+.crumb .ico{width:15px;height:15px}
+.thead-d{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:var(--s4)}
+.thead-d h2{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em}
+.thead-d .sub{margin:0}
+
+/* Labelled control grid — used by the creator gates and the enrichment scope, so inputs stop
+   sitting in an unlabelled row where nobody can tell what a number means. */
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--s3);align-items:end}
+.fg label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);font-weight:600;margin-bottom:5px}
+.fg input[type=number],.fg select{width:100%}
+.fg .hint{font-size:11px;color:var(--faint);margin-top:5px;line-height:1.45}
+.fg-chk{display:flex;align-items:center;gap:8px;height:36px;font-size:12.5px;color:var(--dim)}
+
+/* Section shell — one bordered block per step, with a title bar, instead of loose cards. */
+.blk{background:var(--panel);border:1px solid var(--line);box-shadow:var(--sh-sm);margin-bottom:var(--s4)}
+.blk-h{display:flex;align-items:center;gap:8px;padding:12px var(--s4);border-bottom:1px solid var(--line);background:var(--panel-2)}
+.blk-h .ico{width:15px;height:15px;stroke:var(--faint)}
+.blk-h b{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:600}
+.blk-h .grow{flex:1}
+.blk-b{padding:var(--s4)}
+.blk-b .lede{font-size:12.5px;color:var(--dim);line-height:1.6;margin-bottom:var(--s4)}
+
+/* LinkedIn cell — the handle reads better than a repeated "profile" link. */
+.li{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500}
+.li .ico{width:13px;height:13px}
+.via{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--faint);font-weight:600}
