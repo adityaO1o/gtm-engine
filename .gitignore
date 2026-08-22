@@ -22,3 +22,8 @@ retry-seeds.csv
 # Go build output
 crawler/gtm-crawler
 crawler/*.exe
+
+# Creator Programme extract — customer PII. Uploaded into the engine via the
+# Creator Campaign tab, never committed.
+report/
+agency-domains.txt

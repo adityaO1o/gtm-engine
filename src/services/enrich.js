@@ -79,6 +79,66 @@ export async function validateEmail(email) {
   }
 }
 
+// ── Reverse email lookup: email -> the person's LinkedIn profile ────────────────────────────────
+// The opposite direction to everything above, and the only route from the Creator Programme extract
+// (which ships emails and nothing social) into a LinkedIn identity we can score a creator on.
+//
+// 10 credits per hit; a miss is refunded, so a sweep only ever costs what it actually found.
+//
+// ⚠️ The API answers a MISS with HTTP 500 "Internal Server Error", not the 404 its own spec
+// documents. Measured on a random stratified sample of 125 customers: 9 × 200, 116 × 500, and the
+// same address that 500s here resolves fine through the SERP fallback — so a 500 is a not-found,
+// not an outage. We therefore report it as `miss` rather than `error`, because retrying it would
+// burn the whole base against a wall. If enrich.so ever fixes the status code this still works:
+// a real 404 lands in the same branch.
+const REVERSE_ENDPOINT = "https://dev.enrich.so/api/v3/reverse-lookup/lookup";
+
+export async function reverseEmailLookup(email) {
+  if (!email) return { ok: false, status: "miss" };
+  try {
+    const r = await axios.post(
+      REVERSE_ENDPOINT,
+      { email },
+      { headers: { "x-api-key": config.enrichKey, "Content-Type": "application/json" }, timeout: 30000, validateStatus: () => true }
+    );
+    if (r.status === 404 || r.status === 500) return { ok: false, status: "miss" };
+    if (r.status === 429) return { ok: false, status: "throttled" };
+    if (r.status !== 200) return { ok: false, status: "error", detail: r.data?.title || String(r.status) };
+    const d = r.data?.data;
+    if (!d || !d.profileUrl) return { ok: false, status: "miss" };
+    return {
+      ok: true,
+      status: "hit",
+      profile: {
+        li_url: normaliseLinkedin(d.profileUrl),
+        li_name: d.displayName || [d.firstName, d.lastName].filter(Boolean).join(" ") || null,
+        li_headline: d.headline || null,
+        li_summary: d.summary || null,
+        li_company: d.companyName || null,
+        li_location: d.location || null,
+        li_photo: d.photoUrl || null,
+        // LinkedIn caps this at 500 and flags the cap in isConnectionCountObfuscated — so 500 means
+        // "500 or more", NOT "exactly 500". Kept as a weak network-size hint only; real audience
+        // size comes from the follower/post pass, which is a different (paid) call.
+        li_connections: typeof d.connectionCount === "number" ? d.connectionCount : null,
+        li_connections_capped: !!d.isConnectionCountObfuscated,
+        li_public: d.isPublic !== false,
+        li_skills: Array.isArray(d.skills) ? d.skills.slice(0, 25) : [],
+      },
+    };
+  } catch (e) {
+    log.warn("enrich reverse-lookup threw", { err: e.message });
+    return { ok: false, status: "error", detail: e.message };
+  }
+}
+
+// linkedin.com/in/<vanity> in one shape, so a profile resolved by enrich.so and the same profile
+// resolved by the SERP fallback dedupe against each other instead of landing as two people.
+export function normaliseLinkedin(url = "") {
+  const m = String(url).match(/linkedin\.com\/in\/([^/?#]+)/i);
+  return m ? `https://www.linkedin.com/in/${m[1].toLowerCase()}` : null;
+}
+
 // Role-based inboxes never reply — reject locally (Enrich.so doesn't flag these).
 const ROLE = new Set([
   "info", "sales", "support", "admin", "hello", "contact", "team", "hi",

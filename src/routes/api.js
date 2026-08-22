@@ -1,6 +1,6 @@
 // Read-only API for the dashboard frontend.
 
-import { Router } from "express";
+import { Router, text as textBody } from "express";
 import { ObjectId } from "mongodb";
 import { leads, engagements, usage, sources, reprocessRuns, scrapedPosts, scrapeEngagers, bouncebanRuns, campaignState, pndDaily, engineState } from "../db/mongo.js";
 import { sourcesStatus, scrapeOnePost, scrapePostStatus, pauseScrapePost } from "../pipeline/sources.js";
@@ -30,6 +30,11 @@ import { startDomainScan, getDomainScan, listDomainScans } from "../pipeline/dom
 import { createReport, listReports, deleteReport, bulkCreateReports, listRequests, setRequestStatus } from "../pipeline/report.js";
 import { startAgencyRun, getAgencyRun, listAgencyRuns, agencyResults, agencyClients, enrichAgencies, agencyLeadsCsv, retryAgencyRun, stopAgencyRun } from "../pipeline/agency.js";
 import { sourceAgencies, listAgencySources, markSourcesUsed } from "../pipeline/agencySource.js";
+import {
+  importCreatorCompanies, importCreatorUsers, startCreatorEnrich, creatorEnrichStatus,
+  stopCreatorEnrich, rescoreCreators, matchOwnAudience, creatorStats, creatorList, creatorCsv,
+  PRIORITY_ORDER, DEFAULT_GATES,
+} from "../pipeline/creator.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
 import { diagnose as diagnoseHostio, scrapeDiagnose } from "../services/hostio.js";
@@ -1215,3 +1220,63 @@ apiRouter.post("/campaign/:id/verify-live", async (req, res) => {
     res.status(r.ok ? 200 : 400).json(r);
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
+
+// ── Creator Programme ─────────────────────────────────────────────────────────────────────────
+// The customer base as an outreach list. Commercial priority (P1_CHURN -> … -> P3c) is fixed and
+// set by the extract; creator fit is a filter applied INSIDE each tier and never reorders it.
+//
+// The extract's CSVs carry customer PII, so they are uploaded here rather than committed anywhere —
+// they land in Mongo and nowhere else. Each file goes up as a raw body because companies.csv alone
+// (2.3MB) is past the app-wide 1mb JSON limit.
+const csvBody = textBody({ limit: "64mb", type: () => true });
+
+apiRouter.post("/creator/import/companies", csvBody, async (req, res) => {
+  try { res.json(await importCreatorCompanies(String(req.body || ""))); }
+  catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+apiRouter.post("/creator/import/users", csvBody, async (req, res) => {
+  try { res.json(await importCreatorUsers(String(req.body || ""))); }
+  catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+
+apiRouter.get("/creator/stats", ttlCache(5), async (_req, res) => res.json({
+  ...(await creatorStats()), tiers_order: PRIORITY_ORDER, gates: DEFAULT_GATES, run: creatorEnrichStatus(),
+}));
+
+apiRouter.get("/creator/people", async (req, res) => res.json(await creatorList({
+  tier: S(req.query.tier), fit: S(req.query.fit), audience: S(req.query.audience), role: S(req.query.role),
+  q: S(req.query.q), inAudience: req.query.inAudience === "1", sort: S(req.query.sort),
+  page: req.query.page, size: req.query.size,
+})));
+
+apiRouter.get("/creator/people.csv", async (req, res) => {
+  const csv = await creatorCsv({
+    tier: S(req.query.tier), fit: S(req.query.fit), audience: S(req.query.audience),
+    role: S(req.query.role), q: S(req.query.q), inAudience: req.query.inAudience === "1",
+  });
+  res.type("text/csv").set("Content-Disposition", 'attachment; filename="creator-programme.csv"').send(csv);
+});
+
+// Resolve people -> LinkedIn. enrich.so reverse lookup first (10 credits, refunded on a miss), then
+// the free self-hosted SERP resolver for everyone it missed. Walks the base in priority order, so
+// budget and time always land on P1 before P3c.
+apiRouter.post("/creator/enrich", async (req, res) => {
+  const tiers = Array.isArray(req.body?.tiers) ? req.body.tiers.filter((t) => PRIORITY_ORDER.includes(t)) : [];
+  res.json(await startCreatorEnrich({
+    tiers,
+    limit: Math.max(0, parseInt(req.body?.limit || "0", 10)),
+    redo: !!req.body?.redo,
+    useSerp: req.body?.useSerp !== false,
+    gates: req.body?.gates || DEFAULT_GATES,
+  }));
+});
+apiRouter.get("/creator/enrich/status", (_req, res) => res.json(creatorEnrichStatus()));
+apiRouter.post("/creator/enrich/stop", (_req, res) => res.json(stopCreatorEnrich()));
+
+// Re-apply the gates at new thresholds. Pure recompute over Mongo — tuning the filter is free.
+apiRouter.post("/creator/rescore", async (req, res) => res.json(await rescoreCreators(req.body?.gates || DEFAULT_GATES)));
+
+// Cross-match the base against our own engagement DB (83k leads built from LinkedIn activity in our
+// categories). A match means this customer is already active on LinkedIn, on our topics, inside our
+// network — and hands us their profile for free, with no lookup and no credit.
+apiRouter.post("/creator/match-audience", async (_req, res) => res.json({ ok: true, matched: await matchOwnAudience() }));

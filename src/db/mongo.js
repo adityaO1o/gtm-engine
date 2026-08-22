@@ -213,6 +213,27 @@ export async function connect() {
   // Agency domains harvested from search, so a later sweep never pays to rediscover them.
   await db.collection("agency_sources").createIndex({ sourcedAt: -1 });
   await db.collection("agency_sources").createIndex({ used: 1 });
+
+  // ── Creator Programme ───────────────────────────────────────────────────────────────────────
+  // The customer base imported from the Creator Programme extract (companies.csv +
+  // company_users.csv). One `creator_people` doc per PERSON, _id = lowercased email — the CSV ships
+  // 8,225 rows but only 6,664 distinct humans, because one person can sit on several teams.
+  //
+  // `priority_rank` (1..6) mirrors contact_priority and exists purely so every query can sort in the
+  // agreed outreach order without re-deriving it. That order is FIXED: creator scoring filters
+  // WITHIN a tier, it never reorders the tiers themselves.
+  await db.collection("creator_people").createIndex({ priority_rank: 1, lifetime_spend: -1 });
+  await db.collection("creator_people").createIndex({ contact_priority: 1 });
+  await db.collection("creator_people").createIndex({ enrich_status: 1 });
+  await db.collection("creator_people").createIndex({ creator_fit: 1 });
+  await db.collection("creator_people").createIndex({ company_id: 1 });
+  await db.collection("creator_people").createIndex({ company_domain: 1 });
+  // The enrichment pass leases the next unresolved people in priority order — without this compound
+  // that pick is a collection scan over the whole base on every batch.
+  await db.collection("creator_people").createIndex({ enrich_status: 1, priority_rank: 1 });
+  await db.collection("creator_companies").createIndex({ priority_rank: 1, lifetime_spend: -1 });
+  await db.collection("creator_companies").createIndex({ company_domain: 1 });
+  await db.collection("creator_runs").createIndex({ startedAt: -1 });
   // Fetch cache — a re-run must never re-fetch. TTL keeps it from growing without bound.
   await db.collection("agency_pages").createIndex({ fetchedAt: 1 }, { expireAfterSeconds: 30 * 86400 });
 
@@ -270,3 +291,6 @@ export const agencies = () => db.collection("agencies");                    // p
 export const clients = () => db.collection("clients");                      // agency -> client discoveries
 export const agencyPages = () => db.collection("agency_pages");             // fetch cache
 export const agencySources = () => db.collection("agency_sources");         // agency domains from search
+export const creatorPeople = () => db.collection("creator_people");         // one per person (_id = email)
+export const creatorCompanies = () => db.collection("creator_companies");   // one per company/team
+export const creatorRuns = () => db.collection("creator_runs");             // import + enrichment runs
