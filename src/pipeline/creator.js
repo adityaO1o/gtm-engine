@@ -419,12 +419,20 @@ export async function rescoreCreators(gates = DEFAULT_GATES) {
 
 // ── Reads ───────────────────────────────────────────────────────────────────────────────────────
 export async function creatorStats() {
+  // Revenue is a COMPANY fact. The extract denormalises it onto every person, so summing it over
+  // people multiplies a company's spend by its headcount — it reported $25.4M against a true $6.11M.
+  // Money therefore comes from creator_companies (one row per company); headcount and creator
+  // coverage come from creator_people.
+  const money = await creatorCompanies().aggregate([
+    { $group: { _id: "$contact_priority", spend: { $sum: "$lifetime_spend" }, companies: { $sum: 1 } } },
+  ]).toArray();
+  const spendByTier = Object.fromEntries(money.map((m) => [m._id, { spend: m.spend, companies: m.companies }]));
+
   const rows = await creatorPeople().aggregate([
     { $group: {
       _id: "$contact_priority",
       rank: { $min: "$priority_rank" },
       people: { $sum: 1 },
-      spend: { $sum: "$lifetime_spend" },
       resolved: { $sum: { $cond: [{ $ifNull: ["$li_url", false] }, 1, 0] } },
       pending: { $sum: { $cond: [{ $eq: ["$enrich_status", "pending"] }, 1, 0] } },
       inAudience: { $sum: { $cond: ["$in_audience", 1, 0] } },
@@ -435,6 +443,10 @@ export async function creatorStats() {
     } },
     { $sort: { rank: 1 } },
   ]).toArray();
+  for (const r of rows) {
+    r.spend = spendByTier[r._id]?.spend ?? 0;
+    r.companies = spendByTier[r._id]?.companies ?? 0;
+  }
   const companies = await creatorCompanies().estimatedDocumentCount();
   const totals = rows.reduce((a, r) => ({
     people: a.people + r.people, spend: a.spend + r.spend, resolved: a.resolved + r.resolved,

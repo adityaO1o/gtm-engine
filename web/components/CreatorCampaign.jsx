@@ -190,7 +190,7 @@ export default function CreatorCampaign() {
           <div className="tablewrap" style={{ marginBottom: "var(--s4)" }}>
             <table>
               <thead><tr>
-                <th>#</th><th>Tier</th><th>People</th><th>Lifetime spend</th><th>LinkedIn</th>
+                <th>#</th><th>Tier</th><th>Companies</th><th>People</th><th>Lifetime spend</th><th>LinkedIn</th>
                 <th>In audience</th><th>Qualified</th><th>Candidate</th><th>Weak</th><th>No profile</th><th>Pending</th>
               </tr></thead>
               <tbody>
@@ -200,6 +200,7 @@ export default function CreatorCampaign() {
                     <tr key={tr.id} style={{ cursor: "pointer" }} onClick={() => { setTier(tier === tr.id ? "" : tr.id); setPage(0); }}>
                       <td className="muted">{i + 1}</td>
                       <td><b>{tr.label}</b><div className="sub" style={{ whiteSpace: "normal", maxWidth: 240 }}>{tr.note}</div></td>
+                      <td className="muted">{num(r.companies)}</td>
                       <td>{num(r.people)}</td>
                       <td>{usd(r.spend)}</td>
                       <td>{num(r.resolved)} <span className="muted">({pctOf(r.resolved, r.people)}%)</span></td>
@@ -214,6 +215,12 @@ export default function CreatorCampaign() {
                 })}
               </tbody>
             </table>
+          </div>
+          <div className="sub" style={{ margin: "-10px 0 var(--s4)" }}>
+            Spend is counted per <b>company</b> — it is a company fact the extract copies onto every person, so
+            adding it up across people would multiply it by headcount. People are counted per <b>human</b>: the
+            file's 8,225 rows are 6,664 distinct people, and anyone sitting on several teams is filed under
+            their most urgent one, which is why a tier can hold fewer people here than in the extract.
           </div>
 
           {/* ── Enrichment ──────────────────────────────────────────────────────────────── */}
@@ -337,6 +344,7 @@ export default function CreatorCampaign() {
                   );
                 })}
                 {!rows.length ? <tr><td colSpan={9} className="empty">Nothing matches these filters.</td></tr> : null}
+
               </tbody>
             </table>
           </div>
