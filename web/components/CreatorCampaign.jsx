@@ -58,9 +58,9 @@ function GrowthStrip({ counts, value, onPick }) {
   return (
     <div className="gstrip">
       <div className={`gi${value === "any" ? " on" : ""}`} onClick={() => onPick(value === "any" ? "" : "any")}>
-        <div className="gk"><Icon name="trend" />Growing</div>
+        <div className="gk"><Icon name="trend" />All growing</div>
         <div className="gv" style={{ color: "var(--good)" }}>{num(any)}</div>
-        <div className="gh">paying, and old enough to measure</div>
+        <div className="gh">the three below, added up</div>
       </div>
       {Object.entries(GROWTH).map(([k, v]) => (
         <div key={k} className={`gi${value === k ? " on" : ""}`}
