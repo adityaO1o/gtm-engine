@@ -50,30 +50,6 @@ const TierBadge = ({ id }) => {
   return <span className={`tb tb-${id}`}><i />{t ? t.label : id || "—"}</span>;
 };
 
-// The union count on its own ("2,531 growing") hides that it is mostly RISING, which is broad.
-// Showing the split — and letting a click set the filter — is what turns it into a target list.
-function GrowthStrip({ counts, value, onPick }) {
-  if (!counts) return null;
-  const any = Object.keys(GROWTH).reduce((a, k) => a + (counts[k] || 0), 0);
-  return (
-    <div className="gstrip">
-      <div className={`gi${value === "any" ? " on" : ""}`} onClick={() => onPick(value === "any" ? "" : "any")}>
-        <div className="gk"><Icon name="trend" />All growing</div>
-        <div className="gv" style={{ color: "var(--good)" }}>{num(any)}</div>
-        <div className="gh">the three below, added up</div>
-      </div>
-      {Object.entries(GROWTH).map(([k, v]) => (
-        <div key={k} className={`gi${value === k ? " on" : ""}`}
-          onClick={() => onPick(value === k ? "" : k)} title={v.hint}>
-          <div className="gk"><span className={`gw gw-${k}`} style={{ padding: "1px 6px" }}>{v.label}</span></div>
-          <div className="gv">{num(counts[k] || 0)}</div>
-          <div className="gh">{v.hint}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export default function CreatorCampaign() {
   const toast = useToast();
   const [stats, setStats] = useState(null);
@@ -262,9 +238,6 @@ export default function CreatorCampaign() {
           <div className="card"><div className="kh"><Icon name="check" />Creator pool</div><div className="v">{num((scoped.qualified || 0) + (scoped.candidate || 0))}</div><div className="sub">{num(scoped.qualified)} qualified · {num(scoped.candidate)} candidate</div></div>
         </div>
 
-        <GrowthStrip counts={drill ? r.growthBreakdown : stats.growthTotals} value={growth}
-          onPick={(g) => { setGrowth(g); setPage(0); }} />
-
         <div className="toolbar">
           <input className="search" placeholder="name, email, company…" value={q} onChange={(e) => setQ(e.target.value)} />
           <div className="field"><select value={fit} onChange={(e) => { setFit(e.target.value); setPage(0); }}>
@@ -355,9 +328,6 @@ export default function CreatorCampaign() {
         <div className="card"><div className="kh"><Icon name="check" />Creator pool</div><div className="v">{num(t.qualified + t.candidate)}</div><div className="sub">{num(t.qualified)} qualified · {num(t.candidate)} candidate</div></div>
       </div>
 
-      <GrowthStrip counts={stats.growthTotals} value={growth}
-        onPick={(g) => { setGrowth(g); openTierKeepGrowth("", g); }} />
-
       <div className="blk">
         <div className="blk-h"><Icon name="mega" /><b>Outreach order</b><div className="grow" />
           <span className="via" onClick={() => openTier("")} style={{ cursor: "pointer" }}>open everyone →</span>
@@ -365,7 +335,7 @@ export default function CreatorCampaign() {
         <div className="tablewrap" style={{ border: "none", boxShadow: "none" }}>
           <table>
             <thead><tr>
-              <th>#</th><th>Tier</th><th>Companies</th><th>People</th><th>Lifetime spend</th><th>Growing</th><th>LinkedIn</th>
+              <th>#</th><th>Tier</th><th>Companies</th><th>People</th><th>Lifetime spend</th><th title="spend more than doubled against their own normal">Expanding</th><th title="spend up 30%+ against their own normal">Growing</th><th title="band reads stable, but the trend line is climbing">Rising</th><th>LinkedIn</th>
               <th>In audience</th><th>Qualified</th><th>Candidate</th><th>Weak</th><th>No profile</th><th>Pending</th><th />
             </tr></thead>
             <tbody>
@@ -378,7 +348,15 @@ export default function CreatorCampaign() {
                     <td className="muted">{num(r.companies)}</td>
                     <td><b>{num(r.people)}</b></td>
                     <td className="score">{usd(r.spend)}</td>
-                    <td>{r.growing ? <b style={{ color: "var(--good)" }}>{num(r.growing)}</b> : <span className="muted">0</span>}</td>
+                    {["EXPANDING", "GROWING", "RISING"].map((g) => {
+                      const v = (r.growthBreakdown || {})[g] || 0;
+                      return (
+                        <td key={g} onClick={(e) => { if (v) { e.stopPropagation(); openTierKeepGrowth(tr.id, g); } }}
+                          style={v ? { cursor: "pointer" } : undefined}>
+                          {v ? <b style={{ color: "var(--good)" }}>{num(v)}</b> : <span className="muted">0</span>}
+                        </td>
+                      );
+                    })}
                     <td>{num(r.resolved)} <span className="muted">({pctOf(r.resolved, r.people)}%)</span></td>
                     <td>{r.inAudience ? <b style={{ color: "var(--good)" }}>{num(r.inAudience)}</b> : <span className="muted">0</span>}</td>
                     <td>{r.qualified ? <b>{num(r.qualified)}</b> : <span className="muted">0</span>}</td>
@@ -395,6 +373,10 @@ export default function CreatorCampaign() {
         </div>
         <div className="blk-b" style={{ borderTop: "1px solid var(--line)", paddingTop: 12, paddingBottom: 12 }}>
           <div className="sub" style={{ margin: 0 }}>
+            <b>Expanding</b> = their spend more than doubled against their own normal. <b>Growing</b> = up 30%+.
+            <b> Rising</b> = the band reads stable but the trend line is climbing — the mirror of P1b, and no band
+            shows it. All three need the customer to actually pay us and to be old enough to measure, which is why
+            the churn and free tiers read zero.<br /><br />
             Spend is counted per <b>company</b> — it is a company fact the extract copies onto every person, so
             adding it across people would multiply it by headcount. People are counted per <b>human</b>: 8,225
             rows are 6,664 distinct people, and anyone on several teams is filed under their most urgent tier,
