@@ -20,7 +20,7 @@ import { creatorPeople, creatorCompanies, creatorRuns, leads } from "../db/mongo
 import { reverseEmailLookup, normaliseLinkedin } from "../services/enrich.js";
 import { resolveVanity } from "../services/resolve.js";
 import { pndExactDomain, pndFindPerson, pndCompanyOnLinkedin, setPndBudget, pndBudget, paidBlocked } from "../services/pnd.js";
-import { fetchPublicProfile } from "../services/linkedinPublic.js";
+import { fetchPublicProfile, linkedinPublicStats } from "../services/linkedinPublic.js";
 import { runPool } from "../lib/pool.js";
 import { log } from "../lib/logger.js";
 
@@ -646,7 +646,7 @@ export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, 
 // from 843 to 41,000 followers. The 7 that did not were blocked exit IPs (HTTP 999), not missing
 // profiles, so re-running picks them up.
 let audState = { running: false, done: 0, total: 0, found: 0, blocked: 0, startedAt: null, finishedAt: null, stopping: false };
-export const creatorAudienceStatus = () => ({ ...audState });
+export const creatorAudienceStatus = () => ({ ...audState, scrape: linkedinPublicStats() });
 export function stopCreatorAudience() { if (audState.running) audState.stopping = true; return { ok: audState.running }; }
 
 export async function startCreatorAudience({ tiers = [], limit = 0, redo = false, gates = DEFAULT_GATES } = {}) {

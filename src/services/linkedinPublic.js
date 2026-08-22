@@ -23,7 +23,7 @@ import { nextWorkingAgent, poolSize } from "../lib/proxies.js";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
 const stats = { ok: 0, blocked: 0, proxyErr: 0, miss: 0 };
-export const linkedinPublicStats = () => ({ ...stats });
+export const linkedinPublicStats = () => ({ ...stats, poolSize: poolSize() });
 
 // "3K" -> 3000, "12M" -> 12000000, "1,234" -> 1234. LinkedIn rounds anything above a thousand, so
 // this is a band, not a measurement.
