@@ -19,6 +19,7 @@
 import { creatorPeople, creatorCompanies, creatorRuns, leads } from "../db/mongo.js";
 import { reverseEmailLookup, normaliseLinkedin } from "../services/enrich.js";
 import { resolveVanity } from "../services/resolve.js";
+import { pndExactDomain, paidBlocked } from "../services/pnd.js";
 import { runPool } from "../lib/pool.js";
 import { log } from "../lib/logger.js";
 
@@ -425,6 +426,11 @@ export function scoreCreator(p, gates = DEFAULT_GATES) {
       ? { creator_fit: "UNRESOLVED", creator_reason: "not enriched yet", audience: null, audience_source: null }
       : { creator_fit: "NO_PROFILE", creator_reason: "no LinkedIn profile found", audience: null, audience_source: null };
   }
+  // A profile nobody could tie back to this customer is not evidence about this customer. It stays
+  // on the row to be looked at, but it never earns a creator label.
+  if (p.li_verified === false) {
+    return { creator_fit: "UNVERIFIED", creator_reason: p.li_verify_note || "profile could not be confirmed as this person", audience: null, audience_source: null };
+  }
   // Real followers beat a connection count, which LinkedIn caps at 500 and so cannot separate a
   // 500-connection consultant from a 200,000-follower creator.
   const followers = typeof p.li_followers === "number" ? p.li_followers : null;
@@ -453,16 +459,76 @@ export function scoreCreator(p, gates = DEFAULT_GATES) {
   };
 }
 
+// ── Is this actually our customer? ──────────────────────────────────────────────────────────────
+// The SERP resolver answers "who on LinkedIn looks like this name", not "which human is this
+// email". Its matcher accepts a hit when ANY single name token appears anywhere in the snippet, it
+// falls back to a name-only query when name+company finds nothing, and when nothing matches at all
+// it still returns the first result. So a customer called Sukhvir Sharma resolves to whichever
+// Sharma is most famous, and the company it scrapes out of the snippet is never compared to ours.
+//
+// For a creator programme a wrong profile is worse than no profile: we would score a stranger's
+// audience and then pitch the wrong human. So a SERP result is a CANDIDATE until something ties it
+// back to this customer. Checks run cheapest first and the profile is dropped if none of them hold.
+//
+// Results reached any other way need no check: a reverse-email-lookup hit came FROM the email, and
+// an own-audience match came from our engagement DB keyed on the same address.
+const alphaOnly = (v) => String(v || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]/g, "");
+const domainRoot = (d) => String(d || "").toLowerCase().replace(/^www\./, "").split(".")[0];
+
+function nameLooksRight(name, ...hay) {
+  const toks = String(name || "").split(/\s+/).map(alphaOnly).filter((t) => t.length >= 3);
+  if (!toks.length) return true;
+  const h = alphaOnly(hay.join(" "));
+  // EVERY token, not any — "any" is what lets a shared surname through.
+  return toks.every((t) => h.includes(t));
+}
+
+function companyLooksRight(theirs, ours, ourDomain) {
+  const a = alphaOnly(theirs);
+  if (!a) return false;
+  for (const b of [alphaOnly(ours), alphaOnly(domainRoot(ourDomain))]) {
+    if (b.length >= 4 && (a.includes(b) || b.includes(a))) return true;
+  }
+  return false;
+}
+
+export async function verifySerpProfile({ url, name, serpCompany, company, domain, usePnd = true }) {
+  const vanity = (url || "").split("/in/")[1] || "";
+  if (!nameLooksRight(name, vanity, serpCompany)) {
+    // The vanity slug rarely carries a full name, so this only rejects an outright different person.
+    if (!nameLooksRight(name, vanity)) return { ok: false, why: "name does not match the profile" };
+  }
+  // Free: the company the SERP snippet exposed, against the company we already know.
+  if (companyLooksRight(serpCompany, company, domain)) return { ok: true, how: "serp-company" };
+
+  // Paid, and the only definitive check available: read the profile's CURRENT employer straight
+  // from LinkedIn and compare its exact website to the customer's domain, which the extract has on
+  // 100% of companies. Cached per profile, so a retry is free. Skipped when PND is out of credit —
+  // in that case the profile is kept but flagged unverified rather than silently trusted.
+  if (usePnd && !paidBlocked()) {
+    try {
+      const p = await pndExactDomain(url);
+      if (p) {
+        if (p.domain && domain && domainRoot(p.domain) === domainRoot(domain)) return { ok: true, how: "pnd-domain", company: p.company };
+        if (companyLooksRight(p.company, company, domain)) return { ok: true, how: "pnd-company", company: p.company };
+        // A profile that resolves to a DIFFERENT employer is the exact failure we are hunting.
+        if (p.domain || p.company) return { ok: false, why: `profile works at ${p.company || p.domain}, not ${company || domain}` };
+      }
+    } catch { /* fall through to unverified */ }
+  }
+  return { ok: null, why: "could not confirm this is the same person" };
+}
+
 // ── Enrichment run ──────────────────────────────────────────────────────────────────────────────
 // Two tiers, cheapest first, in the fixed priority order so budget always lands on P1 before P3c:
 //   1. enrich.so reverse email lookup — 10 credits, refunded on a miss. ~7% hit on this base.
 //   2. SERP resolver (self-hosted, free) — name + company -> profile, for everyone tier 1 missed.
 // Nobody is skipped: a miss on both is recorded as NO_PROFILE and keeps its place in outreach.
-let state = { running: false, phase: "idle", done: 0, total: 0, hits: 0, serpHits: 0, misses: 0, errors: 0, startedAt: null, finishedAt: null, tiers: [], stopping: false };
+let state = { running: false, phase: "idle", done: 0, total: 0, hits: 0, serpHits: 0, unverified: 0, rejected: 0, misses: 0, errors: 0, startedAt: null, finishedAt: null, tiers: [], stopping: false };
 export const creatorEnrichStatus = () => ({ ...state });
 export function stopCreatorEnrich() { if (state.running) state.stopping = true; return { ok: state.running }; }
 
-export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, useSerp = true, gates = DEFAULT_GATES } = {}) {
+export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, useSerp = true, verifyWithPnd = true, gates = DEFAULT_GATES } = {}) {
   if (state.running) return { ok: false, error: "already running" };
   const q = {};
   // Scope accepts segments, so "P2 growing" can be enriched ahead of the rest of the paying base.
@@ -471,7 +537,7 @@ export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, 
   const total = await creatorPeople().countDocuments(q);
   if (!total) return { ok: false, error: "nothing to enrich for that selection" };
 
-  state = { running: true, phase: "reverse-lookup", done: 0, total: limit ? Math.min(limit, total) : total, hits: 0, serpHits: 0, misses: 0, errors: 0, startedAt: new Date(), finishedAt: null, tiers, stopping: false };
+  state = { running: true, phase: "reverse-lookup", done: 0, total: limit ? Math.min(limit, total) : total, hits: 0, serpHits: 0, unverified: 0, rejected: 0, misses: 0, errors: 0, startedAt: new Date(), finishedAt: null, tiers, stopping: false };
   const runAt = state.startedAt;
   creatorRuns().insertOne({ kind: "enrich", startedAt: runAt, tiers, limit, redo, useSerp, gates }).catch(() => {});
 
@@ -486,9 +552,10 @@ export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, 
 
       await runPool(people, async (p) => {
         if (state.stopping) return;
-        let profile = null, source = null;
+        let profile = null, source = null, verify = null;
         const r = await reverseEmailLookup(p._id);
-        if (r.ok) { profile = r.profile; source = "enrich"; state.hits++; }
+        // Verified by construction: we handed it this email and it returned this person.
+        if (r.ok) { profile = r.profile; source = "enrich"; verify = { ok: true, how: "email" }; state.hits++; }
         else if (r.status === "error") state.errors++;
 
         // Fallback: the SERP resolver finds people enrich.so has never heard of — small agency
@@ -497,12 +564,30 @@ export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, 
           try {
             const hit = await resolveVanity({ name: p.user_name || "", company: p.company_name || p.company_domain || "" });
             const url = hit?.url ? normaliseLinkedin(hit.url) : null;
-            if (url) { profile = { li_url: url, li_company: hit.company || null }; source = "serp"; state.serpHits++; }
+            if (url) {
+              const v = await verifySerpProfile({
+                url, name: p.user_name || "", serpCompany: hit.company || null,
+                company: p.company_name || null, domain: p.company_domain || null, usePnd: verifyWithPnd,
+              });
+              if (v.ok === false) { state.rejected++; }        // a different human — discard it
+              else {
+                profile = { li_url: url, li_company: v.company || hit.company || null };
+                source = "serp"; verify = v;
+                if (v.ok) state.serpHits++; else state.unverified++;
+              }
+            }
           } catch { /* resolver already logs; a miss is a miss */ }
         }
 
         const set = profile
-          ? { ...profile, li_source: source, enrich_status: "hit", enriched_at: new Date() }
+          ? {
+            ...profile, li_source: source, enrich_status: "hit", enriched_at: new Date(),
+            // An unverified profile is kept and labelled, never silently trusted: creator scoring
+            // ignores it, so a wrong match cannot become a creator pitch to the wrong human.
+            li_verified: verify?.ok === true,
+            li_verify: verify?.ok === true ? verify.how : "unverified",
+            li_verify_note: verify?.ok === true ? null : (verify?.why || null),
+          }
           : { enrich_status: "miss", enriched_at: new Date() };
         if (!profile) state.misses++;
         const scored = scoreCreator({ ...p, ...set }, gates);
@@ -641,6 +726,7 @@ const CSV_COLS = [
   "trend_direction", "avg_monthly_baseline", "recent_monthly_runrate", "drop_vs_normal_pct",
   "peak_month_spend", "active_months", "growth", "growth_reasons", "lifetime_spend", "company_name", "company_domain", "segment", "industry",
   "li_url", "li_headline", "li_company", "audience", "audience_source", "li_source",
+  "li_verified", "li_verify", "li_verify_note",
   "creator_fit", "creator_reason", "in_audience", "audience_status", "audience_score",
   "subscription_status", "mailbox_count_active", "top_deletion_reason", "months_since_last_invoice",
 ];

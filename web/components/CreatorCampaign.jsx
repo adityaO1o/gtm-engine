@@ -25,6 +25,7 @@ const FIT = {
   QUALIFIED: { label: "Qualified", cls: "p-verified", hint: "profile + audience + posting + on-topic" },
   CANDIDATE: { label: "Candidate", cls: "p-review", hint: "profile + audience clear the floor; posting not checked yet" },
   WEAK: { label: "Weak", cls: "p-unverified", hint: "profile found, but below the creator bar — still worth a testimonial" },
+  UNVERIFIED: { label: "Unverified", cls: "p-unverified", hint: "a profile was found but nothing ties it to this customer — not scored as a creator" },
   NO_PROFILE: { label: "No profile", cls: "p-role-based", hint: "no LinkedIn found. Still gets normal outreach" },
   UNRESOLVED: { label: "Unresolved", cls: "p-no-email", hint: "not enriched yet" },
 };
@@ -103,6 +104,7 @@ export default function CreatorCampaign() {
   const [runTiers, setRunTiers] = useState([]);
   const [limit, setLimit] = useState(0);
   const [useSerp, setUseSerp] = useState(true);
+  const [verifyPnd, setVerifyPnd] = useState(true);
   const [gates, setGates] = useState({ minAudience: 500, minFollowers: 1000, requirePublic: true });
   const timer = useRef(null);
 
@@ -176,7 +178,7 @@ export default function CreatorCampaign() {
     if (!confirm(`Resolve LinkedIn profiles for ${scope}.\n\nenrich.so reverse lookup runs first (10 credits, refunded on a miss)${useSerp ? ", then the free SERP resolver picks up everyone it missed" : ""}.\n\nNobody is dropped — a miss is recorded as "no profile" and keeps its place in outreach.`)) return;
     setBusy("enrich");
     try {
-      const r = await post("/api/creator/enrich", { tiers: runTiers, limit: Number(limit) || 0, useSerp, gates });
+      const r = await post("/api/creator/enrich", { tiers: runTiers, limit: Number(limit) || 0, useSerp, verifyWithPnd: verifyPnd, gates });
       if (r.ok) { toast(`Enriching ${num(r.total)} people`, "info"); setRun({ running: true, done: 0, total: r.total, hits: 0, serpHits: 0, misses: 0 }); }
       else toast(r.error || "Could not start", "bad");
     } catch { toast("Could not start", "bad"); }
@@ -326,7 +328,9 @@ export default function CreatorCampaign() {
                     <td className="score">{p.lifetime_spend ? usd(p.lifetime_spend) : <span className="muted">$0</span>}</td>
                     <td>{p.li_url
                       ? <><a className="li" href={p.li_url} target="_blank" rel="noreferrer"><Icon name="external" />{handle(p.li_url) || "profile"}</a>
-                          {p.li_source ? <div className="via">via {p.li_source}</div> : null}</>
+                          <div className="via" title={p.li_verify_note || ""} style={p.li_verified === false ? { color: "var(--hot)" } : undefined}>
+                            {p.li_verified === false ? "unverified" : `verified · ${p.li_verify || p.li_source}`}
+                          </div></>
                       : <span className="muted">—</span>}</td>
                     <td className="score">{p.audience != null
                       ? <>{num(p.audience)}{p.li_connections_capped && p.audience_source === "connections" ? "+" : ""}<div className="via">{p.audience_source}</div></>
@@ -467,6 +471,10 @@ export default function CreatorCampaign() {
                   <div className="fg-chk"><input type="checkbox" checked={useSerp} onChange={(e) => setUseSerp(e.target.checked)} /> on (free, self-hosted)</div>
                   <div className="hint">One search per person enrich.so missed.</div>
                 </div>
+                <div className="fg"><label>Verify SERP matches</label>
+                  <div className="fg-chk"><input type="checkbox" checked={verifyPnd} onChange={(e) => setVerifyPnd(e.target.checked)} /> check the employer via PND</div>
+                  <div className="hint">A search finds whoever shares the name. This reads the profile&apos;s real employer and drops it if it is not this customer. Costs PND credits; without it a SERP match is kept but marked unverified.</div>
+                </div>
                 <div className="fg"><label>Our own audience</label>
                   <button className="btn btn-ghost btn-sm" style={{ width: "100%" }} disabled={!!busy}
                     onClick={() => act("/api/creator/match-audience", {}, (r) => `${num(r.matched)} people matched to our own audience`)}>
@@ -479,7 +487,7 @@ export default function CreatorCampaign() {
                 <>
                   <div className={`prog${run.running ? " on" : ""}`} style={{ marginTop: "var(--s4)" }}><i style={{ width: `${pctOf(run.done, run.total)}%` }} /></div>
                   <div className="resn" style={{ marginTop: 8 }}>
-                    <b>{num(run.done)}</b> / {num(run.total)} · enrich.so <b>{num(run.hits)}</b> · SERP <b>{num(run.serpHits)}</b> · no profile <b>{num(run.misses)}</b>
+                    <b>{num(run.done)}</b> / {num(run.total)} · enrich.so <b>{num(run.hits)}</b> · SERP verified <b>{num(run.serpHits)}</b> · unverified <b>{num(run.unverified)}</b> · wrong person dropped <b>{num(run.rejected)}</b> · no profile <b>{num(run.misses)}</b>
                     {run.errors ? <> · errors <b>{num(run.errors)}</b></> : null}
                     {run.running ? " · running" : run.phase === "stopped" ? " · stopped" : ""}
                   </div>
