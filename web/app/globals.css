@@ -423,3 +423,14 @@ kbd{font-family:'SuisseMono',monospace;font-size:10.5px;background:var(--neutral
 .gstrip .gi .gv{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:3px}
 .gstrip .gi .gh{font-size:10.5px;color:var(--faint);margin-top:2px;line-height:1.4}
 .gstrip .gi.soft .gv{color:var(--faint)}
+
+/* Spend evidence — the maths behind a churn or growth verdict, shown where the verdict is made.
+   Six 30-day buckets oldest -> newest, then their own normal vs what they spend now. */
+.spark{display:flex;align-items:flex-end;gap:2px;height:20px;margin-bottom:3px}
+.spark i{width:5px;min-height:2px;background:var(--faint);border-radius:1px}
+.spark.down i{background:var(--hot)} .spark.up i{background:var(--good)} .spark.flat i{background:var(--cold)}
+.wasnow{font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+.wasnow b{color:var(--ink);font-weight:600}
+.wasnow .ar{color:var(--faint);margin:0 3px}
+.delta{font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+.delta.down{color:var(--hot)} .delta.up{color:var(--good)} .delta.flat{color:var(--faint)}

@@ -133,6 +133,9 @@ export async function importCreatorCompanies(companiesCsv = "") {
         trend_direction: c.trend_direction || null,
         trend_slope: numOf(c.trend_slope),
         months_since_last_invoice: intOf(c.months_since_last_invoice),
+        peak_month_spend: numOf(c.peak_month_spend),
+        active_months: intOf(c.active_months),
+        invoice_count: intOf(c.invoice_count),
         guard_flags: c.guard_flags || null,
         subscription_status: c.subscription_status || null,
         credits_balance: numOf(c.credits_balance),
@@ -165,6 +168,44 @@ export async function importCreatorCompanies(companiesCsv = "") {
     log.info("creator companies imported", { companies: ops.length });
     return { ok: true, companies: ops.length };
   }
+}
+
+// spend_monthly.csv — the month-by-month revenue behind every churn and growth number. Only
+// non-zero buckets are written by the extract, so a missing month is a real zero and is filled in
+// as one; without that a customer who stopped paying would look like they have no data rather than
+// no revenue, which is the whole point of the chart.
+export async function importCreatorSpend(spendCsv = "") {
+  const started = new Date();
+  const rows = parseCsv(spendCsv);
+  if (!rows.length) return { ok: false, error: "no rows parsed — is this spend_monthly.csv?" };
+  if (!("bucket" in rows[0])) return { ok: false, error: "spend_monthly.csv must have a bucket column" };
+
+  const byCompany = new Map();
+  for (const r of rows) {
+    const id = r.company_id;
+    if (!id) continue;
+    const m = /^M(\d+)$/i.exec((r.bucket || "").trim());
+    if (!m) continue;
+    const idx = parseInt(m[1], 10);            // M1 = most recent 30 days
+    const b = byCompany.get(id) || byCompany.set(id, new Map()).get(id);
+    b.set(idx, { spend: numOf(r.spend_usd) ?? 0, start: r.bucket_start || null, end: r.bucket_end || null });
+  }
+
+  const ops = [];
+  for (const [id, b] of byCompany) {
+    const width = Math.max(...b.keys());
+    // Oldest first, so the array reads left-to-right the way the chart is drawn.
+    const buckets = [];
+    for (let i = width; i >= 1; i--) {
+      const v = b.get(i);
+      buckets.push({ m: `M${i}`, spend: v?.spend ?? 0, start: v?.start ?? null, end: v?.end ?? null });
+    }
+    ops.push({ updateOne: { filter: { _id: id }, update: { $set: { buckets } } } });
+  }
+  for (let i = 0; i < ops.length; i += 1000) await creatorCompanies().bulkWrite(ops.slice(i, i + 1000), { ordered: false });
+  await creatorRuns().insertOne({ kind: "import-spend", startedAt: started, finishedAt: new Date(), companies: ops.length, rows: rows.length });
+  log.info("creator spend imported", { companies: ops.length, rows: rows.length });
+  return { ok: true, companies: ops.length, rows: rows.length };
 }
 
 export async function importCreatorUsers(usersCsv = "") {
@@ -208,6 +249,20 @@ export async function importCreatorUsers(usersCsv = "") {
       company_domain: (u.company_domain || co.company_domain || "").toLowerCase() || null,
       churn_band: u.churn_band || co.churn_band || null,
       trend_direction: co.trend_direction || null,
+      // The maths behind the verdict, carried onto the row so a churn call can be justified where
+      // it is made instead of "RED, trust me". baseline = this customer's own normal over the
+      // 6-month window; runrate = what they spend now (last 60 days); drop = the change between
+      // them, which is the number the band is cut from.
+      avg_monthly_baseline: co.avg_monthly_baseline ?? null,
+      recent_monthly_runrate: co.recent_monthly_runrate ?? null,
+      drop_vs_normal_pct: co.drop_vs_normal_pct ?? null,
+      peak_month_spend: co.peak_month_spend ?? null,
+      window_spend: co.window_spend ?? null,
+      active_months: co.active_months ?? null,
+      invoice_count: co.invoice_count ?? null,
+      // M6 (oldest) -> M1 (most recent), one number per 30-day bucket. This is the raw evidence:
+      // every churn and growth figure can be re-derived from it by hand.
+      buckets: co.buckets || null,
       lifetime_spend: numOf(u.lifetime_spend) ?? co.lifetime_spend ?? 0,
       // Carried onto the person so outreach can be written straight off this row, no join needed.
       segment: co.segment || null,
@@ -583,7 +638,8 @@ export async function creatorList(query = {}) {
 
 const CSV_COLS = [
   "email", "user_name", "job_title", "role", "contact_priority", "priority_reason", "churn_band",
-  "trend_direction", "growth", "growth_reasons", "lifetime_spend", "company_name", "company_domain", "segment", "industry",
+  "trend_direction", "avg_monthly_baseline", "recent_monthly_runrate", "drop_vs_normal_pct",
+  "peak_month_spend", "active_months", "growth", "growth_reasons", "lifetime_spend", "company_name", "company_domain", "segment", "industry",
   "li_url", "li_headline", "li_company", "audience", "audience_source", "li_source",
   "creator_fit", "creator_reason", "in_audience", "audience_status", "audience_score",
   "subscription_status", "mailbox_count_active", "top_deletion_reason", "months_since_last_invoice",

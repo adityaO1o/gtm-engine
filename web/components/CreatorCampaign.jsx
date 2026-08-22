@@ -46,6 +46,35 @@ const GROWTH = {
 const usd = (n) => "$" + Math.round(n ?? 0).toLocaleString();
 const handle = (url) => (url || "").replace(/^https?:\/\/(www\.)?linkedin\.com\/in\//i, "").replace(/\/$/, "");
 
+const mo = (n) => (n == null ? null : "$" + Math.round(n).toLocaleString());
+
+// The evidence behind a band. A row that says "RED" without showing the money is asking to be
+// trusted; this shows the six 30-day buckets, the customer's own normal, and what they spend now —
+// which is exactly the comparison the band is cut from, so anyone can check it on the spot.
+function SpendCell({ p }) {
+  const b = Array.isArray(p.buckets) ? p.buckets : null;
+  const base = p.avg_monthly_baseline, now = p.recent_monthly_runrate, d = p.drop_vs_normal_pct;
+  if (!b && base == null && !p.lifetime_spend) return <span className="muted">never paid</span>;
+  const dir = d == null ? "flat" : d <= -5 ? "down" : d >= 5 ? "up" : "flat";
+  const max = b ? Math.max(...b.map((x) => x.spend), 1) : 1;
+  return (
+    <>
+      {b ? (
+        <div className={`spark ${dir}`} title={b.map((x) => `${x.m} ${x.start || ""}: ${mo(x.spend)}`).join(String.fromCharCode(10))}>
+          {b.map((x, i) => <i key={i} style={{ height: `${Math.max(2, Math.round((x.spend / max) * 20))}px`, opacity: x.spend ? 1 : 0.25 }} />)}
+        </div>
+      ) : null}
+      {base != null || now != null ? (
+        <div className="wasnow">
+          <b>{mo(base) ?? "—"}</b><span className="ar">→</span><b>{mo(now) ?? "$0"}</b> /mo
+        </div>
+      ) : null}
+      {d != null ? <div className={`delta ${dir}`}>{d > 0 ? "+" : ""}{Math.round(d)}% vs their normal</div>
+        : p.guard_flags ? <div className="via">{String(p.guard_flags).replace(/_/g, " ").toLowerCase()}</div> : null}
+    </>
+  );
+}
+
 const TierBadge = ({ id }) => {
   const t = tierOf(id);
   return <span className={`tb tb-${id}`}><i />{t ? t.label : id || "—"}</span>;
@@ -133,8 +162,8 @@ export default function CreatorCampaign() {
       const r = await fetch(`/api/creator/import/${kind}`, { method: "POST", headers: { "Content-Type": "text/csv" }, body });
       const d = await r.json();
       if (d.ok) {
-        toast(kind === "companies"
-          ? `Imported ${num(d.companies)} companies`
+        toast(kind === "companies" ? `Imported ${num(d.companies)} companies`
+          : kind === "spend" ? `Monthly revenue for ${num(d.companies)} companies (${num(d.rows)} buckets)`
           : `${num(d.people)} people from ${num(d.rows)} rows · ${num(d.duplicatesMerged)} duplicates merged · ${num(d.audienceMatched)} already in our audience`, "good");
         loadStats(); loadRows();
       } else toast(d.error || "Import failed", "bad");
@@ -177,14 +206,20 @@ export default function CreatorCampaign() {
       <div className="blk-b">
         <div className="lede">
           These CSVs hold customer PII, so they are never committed anywhere — they upload straight into the
-          engine. Re-uploading a fresh extract refreshes the churn numbers and <b>keeps</b> every LinkedIn
-          profile already resolved, so a refresh never costs the enrichment work again.
+          engine. Upload in this order — <b>companies</b>, then <b>spend</b>, then <b>people</b> — because each
+          one copies context onto the next. Re-uploading a fresh extract refreshes the churn numbers and
+          <b> keeps</b> every LinkedIn profile already resolved, so a refresh never costs the enrichment work again.
         </div>
         <div className="toolbar" style={{ marginBottom: 0 }}>
           <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer" }}>
             {busy === "companies" ? "Reading…" : "companies.csv"}
             <input type="file" accept=".csv,text/csv" style={{ display: "none" }}
               onChange={(e) => { upload("companies", e.target.files?.[0]); e.target.value = ""; }} />
+          </label>
+          <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer" }}>
+            {busy === "spend" ? "Reading…" : "spend_monthly.csv"}
+            <input type="file" accept=".csv,text/csv" style={{ display: "none" }}
+              onChange={(e) => { upload("spend", e.target.files?.[0]); e.target.value = ""; }} />
           </label>
           <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer" }}>
             {busy === "users" ? "Reading…" : "company_users.csv"}
@@ -264,7 +299,7 @@ export default function CreatorCampaign() {
         <div className="tablewrap">
           <table>
             <thead><tr>
-              <th>Person</th><th>Company</th>{drill ? null : <th>Tier</th>}<th>Churn</th><th>Growth</th><th>Spend</th>
+              <th>Person</th><th>Company</th>{drill ? null : <th>Tier</th>}<th>Churn</th><th>Growth</th><th>Spend · was → now</th><th>Lifetime</th>
               <th>LinkedIn</th><th>Audience</th><th>Creator fit</th><th>Why</th>
             </tr></thead>
             <tbody>
@@ -287,6 +322,7 @@ export default function CreatorCampaign() {
                       ? <span className={`gw gw-${p.growth}`} title={(GROWTH[p.growth] || {}).hint}>{(GROWTH[p.growth] || {}).label || p.growth}</span>
                       : <span className="muted">—</span>}
                       {(p.growth_reasons || []).length > 1 ? <div className="via">+{p.growth_reasons.length - 1} more</div> : null}</td>
+                    <td><SpendCell p={p} /></td>
                     <td className="score">{p.lifetime_spend ? usd(p.lifetime_spend) : <span className="muted">$0</span>}</td>
                     <td>{p.li_url
                       ? <><a className="li" href={p.li_url} target="_blank" rel="noreferrer"><Icon name="external" />{handle(p.li_url) || "profile"}</a>
@@ -300,7 +336,7 @@ export default function CreatorCampaign() {
                   </tr>
                 );
               })}
-              {!rows.length ? <tr><td colSpan={10} className="empty">Nothing matches these filters.</td></tr> : null}
+              {!rows.length ? <tr><td colSpan={11} className="empty">Nothing matches these filters.</td></tr> : null}
             </tbody>
           </table>
         </div>

@@ -31,7 +31,7 @@ import { createReport, listReports, deleteReport, bulkCreateReports, listRequest
 import { startAgencyRun, getAgencyRun, listAgencyRuns, agencyResults, agencyClients, enrichAgencies, agencyLeadsCsv, retryAgencyRun, stopAgencyRun } from "../pipeline/agency.js";
 import { sourceAgencies, listAgencySources, markSourcesUsed } from "../pipeline/agencySource.js";
 import {
-  importCreatorCompanies, importCreatorUsers, startCreatorEnrich, creatorEnrichStatus,
+  importCreatorCompanies, importCreatorUsers, importCreatorSpend, startCreatorEnrich, creatorEnrichStatus,
   stopCreatorEnrich, rescoreCreators, matchOwnAudience, creatorStats, creatorList, creatorCsv,
   SEGMENTS, DEFAULT_GATES,
 } from "../pipeline/creator.js";
@@ -1236,6 +1236,12 @@ apiRouter.post("/creator/import/companies", csvBody, async (req, res) => {
 });
 apiRouter.post("/creator/import/users", csvBody, async (req, res) => {
   try { res.json(await importCreatorUsers(String(req.body || ""))); }
+  catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+});
+// spend_monthly.csv — the month-by-month revenue every churn and growth figure is derived from.
+// Upload it before the people file so the buckets land on each person's row.
+apiRouter.post("/creator/import/spend", csvBody, async (req, res) => {
+  try { res.json(await importCreatorSpend(String(req.body || ""))); }
   catch (e) { res.status(400).json({ ok: false, error: e.message }); }
 });
 
