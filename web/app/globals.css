@@ -403,3 +403,12 @@ kbd{font-family:'SuisseMono',monospace;font-size:10.5px;background:var(--neutral
 .li{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500}
 .li .ico{width:13px;height:13px}
 .via{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--faint);font-weight:600}
+
+/* Growth — the mirror of the churn signal. Green ramp so it reads as the opposite of the churn
+   bands above it; SCALING is grey because it is corroboration, not a signal on its own. */
+.gw{font-size:11px;font-weight:600;padding:2px 7px;white-space:nowrap}
+.gw-EXPANDING{background:var(--good);color:var(--panel)}
+.gw-GROWING{background:var(--good-soft);color:var(--good)}
+.gw-RISING{background:var(--cold-soft);color:var(--cold)}
+.gw-UPGRADED{background:var(--primary-soft);color:var(--primary-2)}
+.gw-SCALING{background:var(--neutral-soft);color:var(--faint)}

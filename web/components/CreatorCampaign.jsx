@@ -28,6 +28,17 @@ const FIT = {
   UNRESOLVED: { label: "Unresolved", cls: "p-no-email", hint: "not enriched yet" },
 };
 
+// Growth: the opposite of the churn signal, and the reason the Programme has a core at all.
+// Ordered strongest first. SCALING is listed but is NOT counted as "growing" on its own — adding a
+// domain in six months is true of 2,218 companies, so by itself it separates nobody.
+const GROWTH = {
+  EXPANDING: { label: "Expanding", hint: "spend more than doubled against their own normal" },
+  GROWING: { label: "Growing", hint: "spend up 30%+ against their own normal" },
+  RISING: { label: "Rising", hint: "trend line climbing — the mirror of P1b, and no band shows it" },
+  UPGRADED: { label: "Upgraded", hint: "bought more mailbox slots — straight from the account record" },
+  SCALING: { label: "Scaling", hint: "added domains or mailboxes in the last 180 days (corroboration only)" },
+};
+
 const usd = (n) => "$" + Math.round(n ?? 0).toLocaleString();
 const handle = (url) => (url || "").replace(/^https?:\/\/(www\.)?linkedin\.com\/in\//i, "").replace(/\/$/, "");
 
@@ -50,6 +61,7 @@ export default function CreatorCampaign() {
   const [fit, setFit] = useState("");
   const [audience, setAudience] = useState("");
   const [role, setRole] = useState("");
+  const [growth, setGrowth] = useState("");
   const [onlyAudience, setOnlyAudience] = useState(false);
   const [sort, setSort] = useState("priority");
   const [q, setQ] = useState("");
@@ -73,10 +85,11 @@ export default function CreatorCampaign() {
     if (fit) p.set("fit", fit);
     if (audience) p.set("audience", audience);
     if (role) p.set("role", role);
+    if (growth) p.set("growth", growth);
     if (onlyAudience) p.set("inAudience", "1");
     if (dq) p.set("q", dq);
     return p;
-  }, [drill, fit, audience, role, onlyAudience, dq]);
+  }, [drill, fit, audience, role, growth, onlyAudience, dq]);
 
   // People are fetched ONLY inside a drill-down. The funnel is a summary — it never dumps the base
   // underneath itself, which is what made clicking a tier look like it had done nothing.
@@ -102,7 +115,7 @@ export default function CreatorCampaign() {
     return () => clearTimeout(timer.current);
   }, [run, loadStats, loadRows, toast]);
 
-  const openTier = (id) => { setDrill(id); setPage(0); setFit(""); setAudience(""); setRole(""); setOnlyAudience(false); setQ(""); setDq(""); };
+  const openTier = (id) => { setDrill(id); setPage(0); setFit(""); setAudience(""); setRole(""); setGrowth(""); setOnlyAudience(false); setQ(""); setDq(""); };
   const back = () => { setDrill(null); setRows([]); setCount(0); };
 
   async function upload(kind, file) {
@@ -214,6 +227,7 @@ export default function CreatorCampaign() {
           <div className="card"><div className="kh"><Icon name="users" />People</div><div className="v">{num(scoped.people)}</div></div>
           <div className="card"><div className="kh"><Icon name="trend" />Lifetime spend</div><div className="v">{usd(scoped.spend)}</div></div>
           <div className="card pri"><div className="kh"><Icon name="external" />LinkedIn</div><div className="v">{num(scoped.resolved)}</div><div className="sub">{pctOf(scoped.resolved, scoped.people)}% resolved</div></div>
+          <div className="card"><div className="kh"><Icon name="trend" />Growing</div><div className="v" style={{ color: "var(--good)" }}>{num(scoped.growing)}</div><div className="sub">expanding, growing, rising or upgraded</div></div>
           <div className="card rec"><div className="kh"><Icon name="radio" />In our audience</div><div className="v">{num(scoped.inAudience)}</div></div>
           <div className="card"><div className="kh"><Icon name="check" />Creator pool</div><div className="v">{num((scoped.qualified || 0) + (scoped.candidate || 0))}</div><div className="sub">{num(scoped.qualified)} qualified · {num(scoped.candidate)} candidate</div></div>
         </div>
@@ -229,6 +243,11 @@ export default function CreatorCampaign() {
           <div className="field"><select value={role} onChange={(e) => { setRole(e.target.value); setPage(0); }}>
             <option value="">Any role</option><option value="admin">admin</option><option value="member">member</option>
           </select></div>
+          <div className="field"><select value={growth} onChange={(e) => { setGrowth(e.target.value); setPage(0); }}>
+            <option value="">Any growth</option>
+            <option value="any">Growing (any signal)</option>
+            {Object.entries(GROWTH).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select></div>
           <span className={`chip${onlyAudience ? " on" : ""}`} onClick={() => { setOnlyAudience((v) => !v); setPage(0); }}>In our audience</span>
           <div className="field"><select value={sort} onChange={(e) => setSort(e.target.value)}>
             <option value="priority">Sort: spend</option><option value="audience">Sort: audience</option>
@@ -238,7 +257,7 @@ export default function CreatorCampaign() {
         <div className="tablewrap">
           <table>
             <thead><tr>
-              <th>Person</th><th>Company</th>{drill ? null : <th>Tier</th>}<th>Churn</th><th>Spend</th>
+              <th>Person</th><th>Company</th>{drill ? null : <th>Tier</th>}<th>Churn</th><th>Growth</th><th>Spend</th>
               <th>LinkedIn</th><th>Audience</th><th>Creator fit</th><th>Why</th>
             </tr></thead>
             <tbody>
@@ -257,6 +276,10 @@ export default function CreatorCampaign() {
                     <td>{p.churn_band
                       ? <><span className={`cb cb-${p.churn_band}`}>{p.churn_band.replace(/_/g, " ")}</span>{p.trend_direction ? <span className={`trend ${p.trend_direction}`}>{p.trend_direction}</span> : null}</>
                       : <span className="muted">—</span>}</td>
+                    <td>{p.growth && p.growth !== "NONE"
+                      ? <span className={`gw gw-${p.growth}`} title={(GROWTH[p.growth] || {}).hint}>{(GROWTH[p.growth] || {}).label || p.growth}</span>
+                      : <span className="muted">—</span>}
+                      {(p.growth_reasons || []).length > 1 ? <div className="via">+{p.growth_reasons.length - 1} more</div> : null}</td>
                     <td className="score">{p.lifetime_spend ? usd(p.lifetime_spend) : <span className="muted">$0</span>}</td>
                     <td>{p.li_url
                       ? <><a className="li" href={p.li_url} target="_blank" rel="noreferrer"><Icon name="external" />{handle(p.li_url) || "profile"}</a>
@@ -270,7 +293,7 @@ export default function CreatorCampaign() {
                   </tr>
                 );
               })}
-              {!rows.length ? <tr><td colSpan={9} className="empty">Nothing matches these filters.</td></tr> : null}
+              {!rows.length ? <tr><td colSpan={10} className="empty">Nothing matches these filters.</td></tr> : null}
             </tbody>
           </table>
         </div>
@@ -294,6 +317,7 @@ export default function CreatorCampaign() {
         <div className="card"><div className="kh"><Icon name="users" />People</div><div className="v">{num(t.people)}</div><div className="sub">deduplicated humans</div></div>
         <div className="card"><div className="kh"><Icon name="trend" />Lifetime spend</div><div className="v">{usd(t.spend)}</div><div className="sub">{num(stats.companies)} companies</div></div>
         <div className="card pri"><div className="kh"><Icon name="external" />LinkedIn resolved</div><div className="v">{num(t.resolved)}</div><div className="sub">{pctOf(t.resolved, t.people)}% of people</div></div>
+        <div className="card"><div className="kh"><Icon name="trend" />Growing</div><div className="v" style={{ color: "var(--good)" }}>{num(t.growing)}</div><div className="sub">the opposite of the churn signal</div></div>
         <div className="card rec"><div className="kh"><Icon name="radio" />In our audience</div><div className="v">{num(t.inAudience)}</div><div className="sub">already engage with our posts</div></div>
         <div className="card"><div className="kh"><Icon name="check" />Creator pool</div><div className="v">{num(t.qualified + t.candidate)}</div><div className="sub">{num(t.qualified)} qualified · {num(t.candidate)} candidate</div></div>
       </div>
@@ -305,7 +329,7 @@ export default function CreatorCampaign() {
         <div className="tablewrap" style={{ border: "none", boxShadow: "none" }}>
           <table>
             <thead><tr>
-              <th>#</th><th>Tier</th><th>Companies</th><th>People</th><th>Lifetime spend</th><th>LinkedIn</th>
+              <th>#</th><th>Tier</th><th>Companies</th><th>People</th><th>Lifetime spend</th><th>Growing</th><th>LinkedIn</th>
               <th>In audience</th><th>Qualified</th><th>Candidate</th><th>Weak</th><th>No profile</th><th>Pending</th><th />
             </tr></thead>
             <tbody>
@@ -318,6 +342,7 @@ export default function CreatorCampaign() {
                     <td className="muted">{num(r.companies)}</td>
                     <td><b>{num(r.people)}</b></td>
                     <td className="score">{usd(r.spend)}</td>
+                    <td>{r.growing ? <b style={{ color: "var(--good)" }}>{num(r.growing)}</b> : <span className="muted">0</span>}</td>
                     <td>{num(r.resolved)} <span className="muted">({pctOf(r.resolved, r.people)}%)</span></td>
                     <td>{r.inAudience ? <b style={{ color: "var(--good)" }}>{num(r.inAudience)}</b> : <span className="muted">0</span>}</td>
                     <td>{r.qualified ? <b>{num(r.qualified)}</b> : <span className="muted">0</span>}</td>

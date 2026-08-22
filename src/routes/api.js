@@ -1245,14 +1245,15 @@ apiRouter.get("/creator/stats", ttlCache(5), async (_req, res) => res.json({
 
 apiRouter.get("/creator/people", async (req, res) => res.json(await creatorList({
   tier: S(req.query.tier), fit: S(req.query.fit), audience: S(req.query.audience), role: S(req.query.role),
-  q: S(req.query.q), inAudience: req.query.inAudience === "1", sort: S(req.query.sort),
-  page: req.query.page, size: req.query.size,
+  growth: S(req.query.growth), q: S(req.query.q), inAudience: req.query.inAudience === "1",
+  sort: S(req.query.sort), page: req.query.page, size: req.query.size,
 })));
 
 apiRouter.get("/creator/people.csv", async (req, res) => {
   const csv = await creatorCsv({
     tier: S(req.query.tier), fit: S(req.query.fit), audience: S(req.query.audience),
-    role: S(req.query.role), q: S(req.query.q), inAudience: req.query.inAudience === "1",
+    role: S(req.query.role), growth: S(req.query.growth), q: S(req.query.q),
+    inAudience: req.query.inAudience === "1",
   });
   res.type("text/csv").set("Content-Disposition", 'attachment; filename="creator-programme.csv"').send(csv);
 });

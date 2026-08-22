@@ -226,6 +226,9 @@ export async function connect() {
   await db.collection("creator_people").createIndex({ contact_priority: 1 });
   await db.collection("creator_people").createIndex({ enrich_status: 1 });
   await db.collection("creator_people").createIndex({ creator_fit: 1 });
+  // Growth is the mirror of the churn signal and gets filtered as often as creator fit.
+  await db.collection("creator_people").createIndex({ is_growing: 1, priority_rank: 1 });
+  await db.collection("creator_people").createIndex({ growth_reasons: 1 });
   await db.collection("creator_people").createIndex({ company_id: 1 });
   await db.collection("creator_people").createIndex({ company_domain: 1 });
   // The enrichment pass leases the next unresolved people in priority order — without this compound

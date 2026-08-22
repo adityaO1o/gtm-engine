@@ -201,8 +201,11 @@ export async function importCreatorUsers(usersCsv = "") {
       top_deletion_reason: co.top_deletion_reason || null,
       months_since_last_invoice: co.months_since_last_invoice ?? null,
       slot_change_direction: co.slot_change_direction || null,
+      domains_added_180d: co.domains_added_180d ?? null,
+      mailboxes_added_180d: co.mailboxes_added_180d ?? null,
       teams: [u.company_id].filter(Boolean),
     };
+    Object.assign(row, growthOf(row));
     if (!prev) { merged.set(email, row); continue; }
     // Keep the more urgent tier; keep the larger spend; union the teams.
     const teams = [...new Set([...(prev.teams || []), ...(row.teams || [])])];
@@ -287,6 +290,37 @@ export async function matchOwnAudience() {
   await flush();
   log.info("creator own-audience match", { matched });
   return matched;
+}
+
+// ── Growth ──────────────────────────────────────────────────────────────────────────────────────
+// The opposite of the churn signal, and the reason the Creator Programme has a core at all: an
+// account that is actively winning with the product is the one that will say so publicly.
+//
+// The obvious cut — churn_band GROWING/EXPANDING — finds only 77 companies, and that badly
+// understates it: 1,678 paying companies are INSUFFICIENT_HISTORY, i.e. younger than the 6-month
+// window, so they CANNOT earn a growing band however fast they are scaling. Growth therefore has to
+// be read from the signals that do not need six months of history.
+//
+// Ranked strongest first. `growth` holds the strongest one that applies; `growth_reasons` holds all
+// of them, so a row can show "upgraded AND adding mailboxes" rather than just its headline.
+//
+// SCALING is deliberately NOT counted as growing on its own: adding a domain in six months is true
+// of 2,218 companies — nearly every paying account — so on its own it separates nobody. It is kept
+// as a visible reason because it is real corroboration next to a stronger signal.
+const GROWTH_RANK = ["EXPANDING", "GROWING", "RISING", "UPGRADED", "SCALING"];
+const GROWING_SET = new Set(["EXPANDING", "GROWING", "RISING", "UPGRADED"]);
+
+export function growthOf(p) {
+  const reasons = [];
+  if (p.churn_band === "EXPANDING") reasons.push("EXPANDING");
+  if (p.churn_band === "GROWING") reasons.push("GROWING");
+  // RISING is the mirror of the P1b state: the band says nothing is happening, the slope says the
+  // account is quietly climbing. 57 companies read STABLE + RISING, which no band alone surfaces.
+  if (p.trend_direction === "RISING" && !["RED", "ORANGE", "CHURNED"].includes(p.churn_band)) reasons.push("RISING");
+  if (p.slot_change_direction === "UP") reasons.push("UPGRADED");
+  if ((p.domains_added_180d || 0) > 0 || (p.mailboxes_added_180d || 0) > 0) reasons.push("SCALING");
+  const growth = GROWTH_RANK.find((g) => reasons.includes(g)) || "NONE";
+  return { growth, growth_reasons: reasons, is_growing: GROWING_SET.has(growth) };
 }
 
 // ── Creator gates ───────────────────────────────────────────────────────────────────────────────
@@ -436,6 +470,7 @@ export async function creatorStats() {
       resolved: { $sum: { $cond: [{ $ifNull: ["$li_url", false] }, 1, 0] } },
       pending: { $sum: { $cond: [{ $eq: ["$enrich_status", "pending"] }, 1, 0] } },
       inAudience: { $sum: { $cond: ["$in_audience", 1, 0] } },
+      growing: { $sum: { $cond: ["$is_growing", 1, 0] } },
       qualified: { $sum: { $cond: [{ $eq: ["$creator_fit", "QUALIFIED"] }, 1, 0] } },
       candidate: { $sum: { $cond: [{ $eq: ["$creator_fit", "CANDIDATE"] }, 1, 0] } },
       weak: { $sum: { $cond: [{ $eq: ["$creator_fit", "WEAK"] }, 1, 0] } },
@@ -451,19 +486,24 @@ export async function creatorStats() {
   const totals = rows.reduce((a, r) => ({
     people: a.people + r.people, spend: a.spend + r.spend, resolved: a.resolved + r.resolved,
     pending: a.pending + r.pending, inAudience: a.inAudience + r.inAudience,
+    growing: a.growing + r.growing,
     qualified: a.qualified + r.qualified, candidate: a.candidate + r.candidate,
     weak: a.weak + r.weak, noProfile: a.noProfile + r.noProfile,
-  }), { people: 0, spend: 0, resolved: 0, pending: 0, inAudience: 0, qualified: 0, candidate: 0, weak: 0, noProfile: 0 });
+  }), { people: 0, spend: 0, resolved: 0, pending: 0, inAudience: 0, growing: 0, qualified: 0, candidate: 0, weak: 0, noProfile: 0 });
   const lastImport = await creatorRuns().findOne({ kind: "import" }, { sort: { startedAt: -1 } });
   return { tiers: rows.map((r) => ({ tier: r._id, ...r, _id: undefined })), totals, companies, lastImport };
 }
 
-export function creatorFilter({ tier = "", fit = "", audience = "", q = "", inAudience = false, role = "" } = {}) {
+export function creatorFilter({ tier = "", fit = "", audience = "", q = "", inAudience = false, role = "", growth = "" } = {}) {
   const f = {};
   if (tier) f.contact_priority = tier;
   if (fit) f.creator_fit = fit;
   if (role) f.role = role;
   if (inAudience) f.in_audience = true;
+  // "any" is the union of the signals that actually separate accounts — SCALING alone is true of
+  // nearly every paying customer, so it is reachable only by asking for it by name.
+  if (growth === "any") f.is_growing = true;
+  else if (growth) f.growth_reasons = growth;
   if (audience === "resolved") f.li_url = { $ne: null };
   else if (audience === "unresolved") f.li_url = null;
   if (q) {
@@ -489,7 +529,7 @@ export async function creatorList(query = {}) {
 
 const CSV_COLS = [
   "email", "user_name", "job_title", "role", "contact_priority", "priority_reason", "churn_band",
-  "trend_direction", "lifetime_spend", "company_name", "company_domain", "segment", "industry",
+  "trend_direction", "growth", "growth_reasons", "lifetime_spend", "company_name", "company_domain", "segment", "industry",
   "li_url", "li_headline", "li_company", "audience", "audience_source", "li_source",
   "creator_fit", "creator_reason", "in_audience", "audience_status", "audience_score",
   "subscription_status", "mailbox_count_active", "top_deletion_reason", "months_since_last_invoice",
