@@ -33,7 +33,7 @@ import { sourceAgencies, listAgencySources, markSourcesUsed } from "../pipeline/
 import {
   importCreatorCompanies, importCreatorUsers, startCreatorEnrich, creatorEnrichStatus,
   stopCreatorEnrich, rescoreCreators, matchOwnAudience, creatorStats, creatorList, creatorCsv,
-  PRIORITY_ORDER, DEFAULT_GATES,
+  SEGMENTS, DEFAULT_GATES,
 } from "../pipeline/creator.js";
 import { diagnose as diagnoseBlacklistProject, domainDetail } from "../services/blacklistProject.js";
 import { dnsSelfTest } from "../services/domainDns.js";
@@ -1240,7 +1240,7 @@ apiRouter.post("/creator/import/users", csvBody, async (req, res) => {
 });
 
 apiRouter.get("/creator/stats", ttlCache(5), async (_req, res) => res.json({
-  ...(await creatorStats()), tiers_order: PRIORITY_ORDER, gates: DEFAULT_GATES, run: creatorEnrichStatus(),
+  ...(await creatorStats()), tiers_order: SEGMENTS, gates: DEFAULT_GATES, run: creatorEnrichStatus(),
 }));
 
 apiRouter.get("/creator/people", async (req, res) => res.json(await creatorList({
@@ -1262,7 +1262,7 @@ apiRouter.get("/creator/people.csv", async (req, res) => {
 // the free self-hosted SERP resolver for everyone it missed. Walks the base in priority order, so
 // budget and time always land on P1 before P3c.
 apiRouter.post("/creator/enrich", async (req, res) => {
-  const tiers = Array.isArray(req.body?.tiers) ? req.body.tiers.filter((t) => PRIORITY_ORDER.includes(t)) : [];
+  const tiers = Array.isArray(req.body?.tiers) ? req.body.tiers.filter((t) => SEGMENTS.includes(t)) : [];
   res.json(await startCreatorEnrich({
     tiers,
     limit: Math.max(0, parseInt(req.body?.limit || "0", 10)),

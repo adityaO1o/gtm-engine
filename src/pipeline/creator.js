@@ -28,6 +28,24 @@ export const PRIORITY_ORDER = [
 ];
 const RANK = Object.fromEntries(PRIORITY_ORDER.map((p, i) => [p, i + 1]));
 
+// The running order as it is actually worked. P2_PAYING is split in two: the customers whose spend
+// is going UP are their own step, taken before the rest of the paying base, because they are the
+// Creator Programme's core and finding 350 of them inside a 3,255-person tier by eye is not a job.
+// This splits a tier, it does not reorder the tiers — P2 growing and P2 rest both still sit after
+// P1b and before P3.
+export const SEGMENTS = [
+  "P1_CHURN", "P1b_AT_RISK", "P2_GROWING", "P2_PAYING", "P3a_FREE_ACTIVATED", "P3b_FREE_TRIED", "P3c_FREE_DORMANT",
+];
+const SEG_RANK = Object.fromEntries(SEGMENTS.map((s, i) => [s, i + 1]));
+// Mongo expression: which segment a document belongs to.
+const SEG_EXPR = { $cond: [{ $and: [{ $eq: ["$contact_priority", "P2_PAYING"] }, { $eq: ["$is_growing", true] }] }, "P2_GROWING", "$contact_priority"] };
+// Query form of the same split, for filtering.
+export function segmentQuery(seg) {
+  if (seg === "P2_GROWING") return { contact_priority: "P2_PAYING", is_growing: true };
+  if (seg === "P2_PAYING") return { contact_priority: "P2_PAYING", is_growing: { $ne: true } };
+  return { contact_priority: seg };
+}
+
 // Defaults for the creator gates. Every one is overridable per-run from the UI — the whole point of
 // this tab is that the thresholds are tunable, not baked in.
 export const DEFAULT_GATES = {
@@ -139,6 +157,7 @@ export async function importCreatorCompanies(companiesCsv = "") {
         enrichment_status: c.enrichment_status || null,
         importedAt: started,
       };
+      Object.assign(doc, growthOf(doc));
       ops.push({ updateOne: { filter: { _id: id }, update: { $set: doc }, upsert: true } });
     }
     for (let i = 0; i < ops.length; i += 1000) await creatorCompanies().bulkWrite(ops.slice(i, i + 1000), { ordered: false });
@@ -391,7 +410,8 @@ export function stopCreatorEnrich() { if (state.running) state.stopping = true; 
 export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, useSerp = true, gates = DEFAULT_GATES } = {}) {
   if (state.running) return { ok: false, error: "already running" };
   const q = {};
-  if (tiers.length) q.contact_priority = { $in: tiers };
+  // Scope accepts segments, so "P2 growing" can be enriched ahead of the rest of the paying base.
+  if (tiers.length) q.$or = tiers.map(segmentQuery);
   if (!redo) q.enrich_status = "pending";
   const total = await creatorPeople().countDocuments(q);
   if (!total) return { ok: false, error: "nothing to enrich for that selection" };
@@ -472,13 +492,15 @@ export async function creatorStats() {
   // Money therefore comes from creator_companies (one row per company); headcount and creator
   // coverage come from creator_people.
   const money = await creatorCompanies().aggregate([
-    { $group: { _id: "$contact_priority", spend: { $sum: "$lifetime_spend" }, companies: { $sum: 1 } } },
+    { $addFields: { seg: SEG_EXPR } },
+    { $group: { _id: "$seg", spend: { $sum: "$lifetime_spend" }, companies: { $sum: 1 } } },
   ]).toArray();
   const spendByTier = Object.fromEntries(money.map((m) => [m._id, { spend: m.spend, companies: m.companies }]));
 
   const rows = await creatorPeople().aggregate([
+    { $addFields: { seg: SEG_EXPR } },
     { $group: {
-      _id: "$contact_priority",
+      _id: "$seg",
       rank: { $min: "$priority_rank" },
       people: { $sum: 1 },
       resolved: { $sum: { $cond: [{ $ifNull: ["$li_url", false] }, 1, 0] } },
@@ -490,8 +512,8 @@ export async function creatorStats() {
       weak: { $sum: { $cond: [{ $eq: ["$creator_fit", "WEAK"] }, 1, 0] } },
       noProfile: { $sum: { $cond: [{ $eq: ["$creator_fit", "NO_PROFILE"] }, 1, 0] } },
     } },
-    { $sort: { rank: 1 } },
   ]).toArray();
+  rows.sort((a, b) => (SEG_RANK[a._id] ?? 99) - (SEG_RANK[b._id] ?? 99));
   for (const r of rows) {
     r.spend = spendByTier[r._id]?.spend ?? 0;
     r.companies = spendByTier[r._id]?.companies ?? 0;
@@ -502,8 +524,9 @@ export async function creatorStats() {
   // split is the difference between "2,531 are growing" and knowing which 163 to talk to first.
   const gb = await creatorPeople().aggregate([
     { $match: { growth_reasons: { $exists: true, $ne: [] } } },
+    { $addFields: { seg: SEG_EXPR } },
     { $unwind: "$growth_reasons" },
-    { $group: { _id: { tier: "$contact_priority", reason: "$growth_reasons" }, n: { $sum: 1 } } },
+    { $group: { _id: { tier: "$seg", reason: "$growth_reasons" }, n: { $sum: 1 } } },
   ]).toArray();
   const growthByTier = {}, growthTotals = {};
   for (const g of gb) {
@@ -527,7 +550,7 @@ export async function creatorStats() {
 
 export function creatorFilter({ tier = "", fit = "", audience = "", q = "", inAudience = false, role = "", growth = "" } = {}) {
   const f = {};
-  if (tier) f.contact_priority = tier;
+  if (tier) Object.assign(f, segmentQuery(tier));
   if (fit) f.creator_fit = fit;
   if (role) f.role = role;
   if (inAudience) f.in_audience = true;

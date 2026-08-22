@@ -13,7 +13,8 @@ import { useToast } from "@/lib/toast";
 const TIERS = [
   { id: "P1_CHURN", label: "P1 · Churn", short: "P1", note: "paid before, spend collapsed ≥30%", play: "Win-back. Most urgent. Check why they deleted mailboxes — they often said." },
   { id: "P1b_AT_RISK", label: "P1b · At risk", short: "P1b", note: "looks stable, trend is falling", play: "Reach them before they become P1. Highest revenue at stake of any tier." },
-  { id: "P2_PAYING", label: "P2 · Paying", short: "P2", note: "healthy paying customers", play: "Creator Programme core. Start with the ones already growing." },
+  { id: "P2_GROWING", label: "P2 · Growing", short: "P2g", note: "paying, and their spend is going UP", play: "The Creator Programme's core. They are already winning with the product, so they have something real to say." },
+  { id: "P2_PAYING", label: "P2 · Paying", short: "P2", note: "healthy paying customers, spend flat", play: "The rest of the paying base. Steady, but no growth story to lead with." },
   { id: "P3a_FREE_ACTIVATED", label: "P3a · Free, activated", short: "P3a", note: "never paid, live mailbox running", play: "Warmest free lead in the business — already getting value." },
   { id: "P3b_FREE_TRIED", label: "P3b · Free, tried", short: "P3b", note: "set something up, then stopped", play: "Activation problem. Something blocked them — ask what." },
   { id: "P3c_FREE_DORMANT", label: "P3c · Free, dormant", short: "P3c", note: "signed up, never used anything", play: "Cold. Bulk nurture only, low expectations." },
@@ -335,7 +336,7 @@ export default function CreatorCampaign() {
         <div className="tablewrap" style={{ border: "none", boxShadow: "none" }}>
           <table>
             <thead><tr>
-              <th>#</th><th>Tier</th><th>Companies</th><th>People</th><th>Lifetime spend</th><th title="spend more than doubled against their own normal">Expanding</th><th title="spend up 30%+ against their own normal">Growing</th><th title="band reads stable, but the trend line is climbing">Rising</th><th>LinkedIn</th>
+              <th>#</th><th>Tier</th><th>Companies</th><th>People</th><th>Lifetime spend</th><th title="Expanding: spend more than doubled · Growing: up 30%+ · Rising: band stable but the trend climbing">Growth split</th><th>LinkedIn</th>
               <th>In audience</th><th>Qualified</th><th>Candidate</th><th>Weak</th><th>No profile</th><th>Pending</th><th />
             </tr></thead>
             <tbody>
@@ -348,15 +349,16 @@ export default function CreatorCampaign() {
                     <td className="muted">{num(r.companies)}</td>
                     <td><b>{num(r.people)}</b></td>
                     <td className="score">{usd(r.spend)}</td>
-                    {["EXPANDING", "GROWING", "RISING"].map((g) => {
-                      const v = (r.growthBreakdown || {})[g] || 0;
-                      return (
-                        <td key={g} onClick={(e) => { if (v) { e.stopPropagation(); openTierKeepGrowth(tr.id, g); } }}
-                          style={v ? { cursor: "pointer" } : undefined}>
-                          {v ? <b style={{ color: "var(--good)" }}>{num(v)}</b> : <span className="muted">0</span>}
-                        </td>
-                      );
-                    })}
+                    <td>{["EXPANDING", "GROWING", "RISING"].some((g) => (r.growthBreakdown || {})[g])
+                      ? <span style={{ display: "inline-flex", gap: 4 }}>
+                          {["EXPANDING", "GROWING", "RISING"].map((g) => (r.growthBreakdown || {})[g]
+                            ? <span key={g} className={`gw gw-${g}`} title={GROWTH[g].hint}
+                                onClick={(e) => { e.stopPropagation(); openTierKeepGrowth(tr.id, g); }} style={{ cursor: "pointer" }}>
+                                {GROWTH[g].label} {num(r.growthBreakdown[g])}
+                              </span>
+                            : null)}
+                        </span>
+                      : <span className="muted">—</span>}</td>
                     <td>{num(r.resolved)} <span className="muted">({pctOf(r.resolved, r.people)}%)</span></td>
                     <td>{r.inAudience ? <b style={{ color: "var(--good)" }}>{num(r.inAudience)}</b> : <span className="muted">0</span>}</td>
                     <td>{r.qualified ? <b>{num(r.qualified)}</b> : <span className="muted">0</span>}</td>
@@ -373,10 +375,11 @@ export default function CreatorCampaign() {
         </div>
         <div className="blk-b" style={{ borderTop: "1px solid var(--line)", paddingTop: 12, paddingBottom: 12 }}>
           <div className="sub" style={{ margin: 0 }}>
-            <b>Expanding</b> = their spend more than doubled against their own normal. <b>Growing</b> = up 30%+.
-            <b> Rising</b> = the band reads stable but the trend line is climbing — the mirror of P1b, and no band
-            shows it. All three need the customer to actually pay us and to be old enough to measure, which is why
-            the churn and free tiers read zero.<br /><br />
+            <b>P2 Growing is split out of P2 Paying</b> so it can be worked as its own step rather than hunted for
+            inside a 3,000-person tier. Its split: <b>Expanding</b> = spend more than doubled against their own
+            normal · <b>Growing</b> = up 30%+ · <b>Rising</b> = the band reads stable but the trend line is climbing,
+            the mirror of P1b, and no band shows it. All three need the customer to actually pay us and to be old
+            enough to measure, which is why the churn and free tiers read zero.<br /><br />
             Spend is counted per <b>company</b> — it is a company fact the extract copies onto every person, so
             adding it across people would multiply it by headcount. People are counted per <b>human</b>: 8,225
             rows are 6,664 distinct people, and anyone on several teams is filed under their most urgent tier,
