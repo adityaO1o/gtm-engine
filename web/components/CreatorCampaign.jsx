@@ -103,6 +103,7 @@ export default function CreatorCampaign() {
   const [busy, setBusy] = useState("");
   const [runTiers, setRunTiers] = useState([]);
   const [limit, setLimit] = useState(0);
+  const [usePnd, setUsePnd] = useState(true);
   const [useSerp, setUseSerp] = useState(true);
   const [verifyPnd, setVerifyPnd] = useState(true);
   const [gates, setGates] = useState({ minAudience: 500, minFollowers: 1000, requirePublic: true });
@@ -178,7 +179,7 @@ export default function CreatorCampaign() {
     if (!confirm(`Resolve LinkedIn profiles for ${scope}.\n\nenrich.so reverse lookup runs first (10 credits, refunded on a miss)${useSerp ? ", then the free SERP resolver picks up everyone it missed" : ""}.\n\nNobody is dropped — a miss is recorded as "no profile" and keeps its place in outreach.`)) return;
     setBusy("enrich");
     try {
-      const r = await post("/api/creator/enrich", { tiers: runTiers, limit: Number(limit) || 0, useSerp, verifyWithPnd: verifyPnd, gates });
+      const r = await post("/api/creator/enrich", { tiers: runTiers, limit: Number(limit) || 0, usePnd, useSerp, verifyWithPnd: verifyPnd, gates });
       if (r.ok) { toast(`Enriching ${num(r.total)} people`, "info"); setRun({ running: true, done: 0, total: r.total, hits: 0, serpHits: 0, misses: 0 }); }
       else toast(r.error || "Could not start", "bad");
     } catch { toast("Could not start", "bad"); }
@@ -445,10 +446,13 @@ export default function CreatorCampaign() {
             <div className="blk-b">
               <div className="lede">
                 The extract carries no person-level LinkedIn at all, so every creator signal starts here.
-                enrich.so reverse lookup runs first — 10 credits, refunded on a miss — and lands around <b>7%</b> on
-                this base, because most of these customers are small agencies on their own domain rather than staff
-                at companies its data covers. The free self-hosted SERP resolver then picks up the rest. Work always
-                walks the base in priority order, so P1 is resolved before P3c.
+                Three tiers, in order. <b>enrich.so reverse lookup</b> — 10 credits, refunded on a miss, and verified by
+                construction since we hand it the email; it lands around 7% here, because these customers are mostly
+                small agencies on their own domain. <b>LinkedIn people search</b> — asks for the name inside the
+                company we already know, so a hit is the right human; ~1 credit, best pointed at the short high-value
+                tiers. <b>Web search</b> — free and finds people the others miss, but it answers "who is called this",
+                so everything it returns is verified against the customer&apos;s real employer before it is trusted.
+                Work always walks the base in priority order, so P1 is resolved before P3c.
               </div>
               <div className="fg" style={{ marginBottom: "var(--s3)" }}>
                 <label>Scope — no tier picked runs the whole base</label>
@@ -466,6 +470,10 @@ export default function CreatorCampaign() {
                 <div className="fg"><label>Cap this run</label>
                   <input type="number" min="0" value={limit} onChange={(e) => setLimit(e.target.value)} placeholder="0" />
                   <div className="hint">0 = everyone in scope.</div>
+                </div>
+                <div className="fg"><label>LinkedIn people search</label>
+                  <div className="fg-chk"><input type="checkbox" checked={usePnd} onChange={(e) => setUsePnd(e.target.checked)} /> on (PND, ~1 credit)</div>
+                  <div className="hint">Asks LinkedIn for that name <b>inside that company</b>, so a hit is our customer by construction. The endpoint is flaky — the same query returns a result, then nothing, then a result — so an empty answer is retried before it is believed.</div>
                 </div>
                 <div className="fg"><label>SERP fallback</label>
                   <div className="fg-chk"><input type="checkbox" checked={useSerp} onChange={(e) => setUseSerp(e.target.checked)} /> on (free, self-hosted)</div>
@@ -487,7 +495,7 @@ export default function CreatorCampaign() {
                 <>
                   <div className={`prog${run.running ? " on" : ""}`} style={{ marginTop: "var(--s4)" }}><i style={{ width: `${pctOf(run.done, run.total)}%` }} /></div>
                   <div className="resn" style={{ marginTop: 8 }}>
-                    <b>{num(run.done)}</b> / {num(run.total)} · enrich.so <b>{num(run.hits)}</b> · SERP verified <b>{num(run.serpHits)}</b> · unverified <b>{num(run.unverified)}</b> · wrong person dropped <b>{num(run.rejected)}</b> · no profile <b>{num(run.misses)}</b>
+                    <b>{num(run.done)}</b> / {num(run.total)} · enrich.so <b>{num(run.hits)}</b> · LinkedIn search <b>{num(run.pndHits)}</b> · SERP verified <b>{num(run.serpHits)}</b> · unverified <b>{num(run.unverified)}</b> · wrong person dropped <b>{num(run.rejected)}</b> · no profile <b>{num(run.misses)}</b>
                     {run.errors ? <> · errors <b>{num(run.errors)}</b></> : null}
                     {run.running ? " · running" : run.phase === "stopped" ? " · stopped" : ""}
                   </div>

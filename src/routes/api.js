@@ -1273,6 +1273,7 @@ apiRouter.post("/creator/enrich", async (req, res) => {
     tiers,
     limit: Math.max(0, parseInt(req.body?.limit || "0", 10)),
     redo: !!req.body?.redo,
+    usePnd: req.body?.usePnd !== false,
     useSerp: req.body?.useSerp !== false,
     verifyWithPnd: req.body?.verifyWithPnd !== false,
     gates: req.body?.gates || DEFAULT_GATES,

@@ -19,7 +19,7 @@
 import { creatorPeople, creatorCompanies, creatorRuns, leads } from "../db/mongo.js";
 import { reverseEmailLookup, normaliseLinkedin } from "../services/enrich.js";
 import { resolveVanity } from "../services/resolve.js";
-import { pndExactDomain, paidBlocked } from "../services/pnd.js";
+import { pndExactDomain, pndFindPerson, paidBlocked } from "../services/pnd.js";
 import { runPool } from "../lib/pool.js";
 import { log } from "../lib/logger.js";
 
@@ -524,11 +524,11 @@ export async function verifySerpProfile({ url, name, serpCompany, company, domai
 //   1. enrich.so reverse email lookup — 10 credits, refunded on a miss. ~7% hit on this base.
 //   2. SERP resolver (self-hosted, free) — name + company -> profile, for everyone tier 1 missed.
 // Nobody is skipped: a miss on both is recorded as NO_PROFILE and keeps its place in outreach.
-let state = { running: false, phase: "idle", done: 0, total: 0, hits: 0, serpHits: 0, unverified: 0, rejected: 0, misses: 0, errors: 0, startedAt: null, finishedAt: null, tiers: [], stopping: false };
+let state = { running: false, phase: "idle", done: 0, total: 0, hits: 0, pndHits: 0, serpHits: 0, unverified: 0, rejected: 0, misses: 0, errors: 0, startedAt: null, finishedAt: null, tiers: [], stopping: false };
 export const creatorEnrichStatus = () => ({ ...state });
 export function stopCreatorEnrich() { if (state.running) state.stopping = true; return { ok: state.running }; }
 
-export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, useSerp = true, verifyWithPnd = true, gates = DEFAULT_GATES } = {}) {
+export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, usePnd = true, useSerp = true, verifyWithPnd = true, gates = DEFAULT_GATES } = {}) {
   if (state.running) return { ok: false, error: "already running" };
   const q = {};
   // Scope accepts segments, so "P2 growing" can be enriched ahead of the rest of the paying base.
@@ -537,7 +537,7 @@ export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, 
   const total = await creatorPeople().countDocuments(q);
   if (!total) return { ok: false, error: "nothing to enrich for that selection" };
 
-  state = { running: true, phase: "reverse-lookup", done: 0, total: limit ? Math.min(limit, total) : total, hits: 0, serpHits: 0, unverified: 0, rejected: 0, misses: 0, errors: 0, startedAt: new Date(), finishedAt: null, tiers, stopping: false };
+  state = { running: true, phase: "reverse-lookup", done: 0, total: limit ? Math.min(limit, total) : total, hits: 0, pndHits: 0, serpHits: 0, unverified: 0, rejected: 0, misses: 0, errors: 0, startedAt: new Date(), finishedAt: null, tiers, stopping: false };
   const runAt = state.startedAt;
   creatorRuns().insertOne({ kind: "enrich", startedAt: runAt, tiers, limit, redo, useSerp, gates }).catch(() => {});
 
@@ -558,8 +558,25 @@ export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, 
         if (r.ok) { profile = r.profile; source = "enrich"; verify = { ok: true, how: "email" }; state.hits++; }
         else if (r.status === "error") state.errors++;
 
-        // Fallback: the SERP resolver finds people enrich.so has never heard of — small agency
-        // owners on their own domain, which is most of this base.
+        // Tier 2: LinkedIn's own people search, constrained to the company we already know. It
+        // asks "is there a Peter O'Hanlon AT Mad Social", not "who is called Peter O'Hanlon", so a
+        // hit is our customer by construction and needs no separate verification. Costs ~1 credit
+        // per attempt, which is why it is pointed at the short high-value tiers rather than at
+        // 6,000 rows.
+        if (!profile && usePnd && !state.stopping && !paidBlocked()) {
+          try {
+            const hit = await pndFindPerson({ name: p.user_name || "", company: p.company_name || "" });
+            if (hit?.url) {
+              profile = { li_url: normaliseLinkedin(hit.url) || hit.url, li_headline: hit.headline, li_name: hit.name, li_location: hit.location };
+              source = "pnd-search";
+              verify = { ok: true, how: hit.candidates === 1 ? "pnd-company-exact" : "pnd-company" };
+              state.pndHits++;
+            }
+          } catch { /* fall through to the SERP */ }
+        }
+
+        // Tier 3, last resort: a generic web search. It finds people the others have never heard
+        // of, but it answers the wrong question, so anything it returns must be verified.
         if (!profile && useSerp && !state.stopping) {
           try {
             const hit = await resolveVanity({ name: p.user_name || "", company: p.company_name || p.company_domain || "" });
@@ -599,7 +616,7 @@ export async function startCreatorEnrich({ tiers = [], limit = 0, redo = false, 
     } finally {
       state.running = false; state.phase = state.stopping ? "stopped" : "done"; state.finishedAt = new Date();
       creatorRuns().updateOne({ kind: "enrich", startedAt: runAt }, { $set: {
-        finishedAt: state.finishedAt, done: state.done, hits: state.hits, serpHits: state.serpHits, misses: state.misses, errors: state.errors,
+        finishedAt: state.finishedAt, done: state.done, hits: state.hits, pndHits: state.pndHits, serpHits: state.serpHits, misses: state.misses, errors: state.errors,
       } }).catch(() => {});
       log.info("creator enrich finished", { done: state.done, hits: state.hits, serpHits: state.serpHits, misses: state.misses });
     }

@@ -206,6 +206,61 @@ export async function pndProfilePosts(usernameOrUrl, { paginationToken = "" } = 
   return { posts, paginationToken: d.paginationToken || "" };
 }
 
+// Find a PERSON from a name + the company we already know they work at.
+//
+// This is the opposite shape to a web search, and that is the point. A SERP asks "who on LinkedIn
+// is called this", so the most famous holder of the name wins and a customer resolves to a
+// stranger. This asks LinkedIn's own people search for that name INSIDE that company, so the answer
+// is either our customer or nothing.
+//
+// The endpoint is FLAKY, not sparse: the identical query returns 1, then 0, then 1 within seconds.
+// A single empty response therefore means nothing, so an empty result is retried before it is
+// believed — without that, real people are recorded as "no profile". Two query shapes are tried,
+// since the structured one and the free-text one do not always agree.
+//
+// ~1 credit per attempt. Worth it on a short, high-value list; too expensive to point at 6,000 rows.
+const alphaKey = (v) => String(v || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]/g, "");
+
+export async function pndFindPerson({ name = "", company = "", attempts = 3 } = {}) {
+  const parts = String(name).trim().split(/\s+/).filter(Boolean);
+  if (!parts.length || !company) return null;
+  const first = parts[0], last = parts.length > 1 ? parts[parts.length - 1] : "";
+  const shapes = [
+    { firstName: first, ...(last ? { lastName: last } : {}), company },
+    { keywords: `${name} ${company}` },
+  ];
+  // Every token of the name must appear in what came back — the company constraint makes a wrong
+  // person unlikely, but a shared surname inside a big company is still possible.
+  const toks = parts.map(alphaKey).filter((t) => t.length >= 3);
+  const looksRight = (p) => {
+    const hay = alphaKey(`${p.fullName} ${p.username}`);
+    return !toks.length || toks.every((t) => hay.includes(t));
+  };
+
+  for (let a = 0; a < attempts; a++) {
+    for (const params of shapes) {
+      if (paidBlocked()) return null;
+      const d = await call("search-people", { params });
+      stats.profileCalls++; meter.inc("pnd_profile_calls");
+      const items = d?.data?.items || [];
+      const hit = items.find(looksRight);
+      if (hit && (hit.profileURL || hit.username)) {
+        return {
+          url: hit.profileURL || `https://www.linkedin.com/in/${hit.username}`,
+          name: hit.fullName || null,
+          headline: hit.headline || null,
+          location: hit.location || null,
+          photo: hit.profilePicture || null,
+          // How many candidates the company-constrained search returned. 1 is as clean as it gets.
+          candidates: items.length,
+        };
+      }
+    }
+    await sleep(1500 * (a + 1));
+  }
+  return null;
+}
+
 // Commenters, with their REAL vanity URL (no resolve needed).
 //
 // This parser was three guesses deep and every one was wrong, which is why not a single commenter
