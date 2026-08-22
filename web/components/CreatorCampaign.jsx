@@ -28,15 +28,18 @@ const FIT = {
   UNRESOLVED: { label: "Unresolved", cls: "p-no-email", hint: "not enriched yet" },
 };
 
-// Growth: the opposite of the churn signal, and the reason the Programme has a core at all.
-// Ordered strongest first. SCALING is listed but is NOT counted as "growing" on its own — adding a
-// domain in six months is true of 2,218 companies, so by itself it separates nobody.
+// Growth: the opposite of the churn signal — but ONLY where the money supports it. A growing
+// account must actually pay us (a free signup has no revenue to grow) and must be old enough to
+// score (a customer younger than the 6-month window has empty early buckets, so its trend line
+// slopes up automatically — that is being new, not growing).
+//
+// Slot upgrades and "added a domain" were tried as signals and dropped: slots_prev is zero on
+// almost every account, so "UP" meant "has slots" and put 25 CHURNED customers in the growing
+// column, and adding a domain is something a shrinking account does too.
 const GROWTH = {
   EXPANDING: { label: "Expanding", hint: "spend more than doubled against their own normal" },
   GROWING: { label: "Growing", hint: "spend up 30%+ against their own normal" },
-  RISING: { label: "Rising", hint: "trend line climbing — the mirror of P1b, and no band shows it" },
-  UPGRADED: { label: "Upgraded", hint: "bought more mailbox slots — straight from the account record" },
-  SCALING: { label: "Scaling", hint: "added domains or mailboxes in the last 180 days (corroboration only)" },
+  RISING: { label: "Rising", hint: "band reads stable, trend line is climbing — the mirror of P1b, and no band shows it" },
 };
 
 const usd = (n) => "$" + Math.round(n ?? 0).toLocaleString();
@@ -51,16 +54,16 @@ const TierBadge = ({ id }) => {
 // Showing the split — and letting a click set the filter — is what turns it into a target list.
 function GrowthStrip({ counts, value, onPick }) {
   if (!counts) return null;
-  const any = Object.entries(counts).filter(([k]) => k !== "SCALING").reduce((a, [, v]) => a + v, 0);
+  const any = Object.keys(GROWTH).reduce((a, k) => a + (counts[k] || 0), 0);
   return (
     <div className="gstrip">
       <div className={`gi${value === "any" ? " on" : ""}`} onClick={() => onPick(value === "any" ? "" : "any")}>
         <div className="gk"><Icon name="trend" />Growing</div>
         <div className="gv" style={{ color: "var(--good)" }}>{num(any)}</div>
-        <div className="gh">any real signal</div>
+        <div className="gh">paying, and old enough to measure</div>
       </div>
       {Object.entries(GROWTH).map(([k, v]) => (
-        <div key={k} className={`gi${value === k ? " on" : ""}${k === "SCALING" ? " soft" : ""}`}
+        <div key={k} className={`gi${value === k ? " on" : ""}`}
           onClick={() => onPick(value === k ? "" : k)} title={v.hint}>
           <div className="gk"><span className={`gw gw-${k}`} style={{ padding: "1px 6px" }}>{v.label}</span></div>
           <div className="gv">{num(counts[k] || 0)}</div>
@@ -254,7 +257,7 @@ export default function CreatorCampaign() {
           <div className="card"><div className="kh"><Icon name="users" />People</div><div className="v">{num(scoped.people)}</div></div>
           <div className="card"><div className="kh"><Icon name="trend" />Lifetime spend</div><div className="v">{usd(scoped.spend)}</div></div>
           <div className="card pri"><div className="kh"><Icon name="external" />LinkedIn</div><div className="v">{num(scoped.resolved)}</div><div className="sub">{pctOf(scoped.resolved, scoped.people)}% resolved</div></div>
-          <div className="card"><div className="kh"><Icon name="trend" />Growing</div><div className="v" style={{ color: "var(--good)" }}>{num(scoped.growing)}</div><div className="sub">expanding, growing, rising or upgraded</div></div>
+          <div className="card"><div className="kh"><Icon name="trend" />Growing</div><div className="v" style={{ color: "var(--good)" }}>{num(scoped.growing)}</div><div className="sub">paying customers whose spend is up</div></div>
           <div className="card rec"><div className="kh"><Icon name="radio" />In our audience</div><div className="v">{num(scoped.inAudience)}</div></div>
           <div className="card"><div className="kh"><Icon name="check" />Creator pool</div><div className="v">{num((scoped.qualified || 0) + (scoped.candidate || 0))}</div><div className="sub">{num(scoped.qualified)} qualified · {num(scoped.candidate)} candidate</div></div>
         </div>

@@ -203,6 +203,7 @@ export async function importCreatorUsers(usersCsv = "") {
       slot_change_direction: co.slot_change_direction || null,
       domains_added_180d: co.domains_added_180d ?? null,
       mailboxes_added_180d: co.mailboxes_added_180d ?? null,
+      guard_flags: co.guard_flags || null,
       teams: [u.company_id].filter(Boolean),
     };
     Object.assign(row, growthOf(row));
@@ -293,34 +294,47 @@ export async function matchOwnAudience() {
 }
 
 // ── Growth ──────────────────────────────────────────────────────────────────────────────────────
-// The opposite of the churn signal, and the reason the Creator Programme has a core at all: an
-// account that is actively winning with the product is the one that will say so publicly.
+// Growth is a REVENUE fact, and it only exists where two things are true at once:
 //
-// The obvious cut — churn_band GROWING/EXPANDING — finds only 77 companies, and that badly
-// understates it: 1,678 paying companies are INSUFFICIENT_HISTORY, i.e. younger than the 6-month
-// window, so they CANNOT earn a growing band however fast they are scaling. Growth therefore has to
-// be read from the signals that do not need six months of history.
+//   1. The customer PAYS. A free account has $0 lifetime spend — there is no revenue to grow, so
+//      "a growing free signup" is a contradiction, not a segment.
+//   2. There is enough history to measure it. A customer younger than the 6-month window has empty
+//      early buckets simply because they did not exist yet, so a least-squares slope over those
+//      buckets comes out positive automatically. That is being NEW, not growing.
 //
-// Ranked strongest first. `growth` holds the strongest one that applies; `growth_reasons` holds all
-// of them, so a row can show "upgraded AND adding mailboxes" rather than just its headline.
+// Both guards were missing in the first cut and it produced nonsense: 25 "growing" people inside
+// P1_CHURN, and growth inside the free tiers.
 //
-// SCALING is deliberately NOT counted as growing on its own: adding a domain in six months is true
-// of 2,218 companies — nearly every paying account — so on its own it separates nobody. It is kept
-// as a visible reason because it is real corroboration next to a stronger signal.
-const GROWTH_RANK = ["EXPANDING", "GROWING", "RISING", "UPGRADED", "SCALING"];
-const GROWING_SET = new Set(["EXPANDING", "GROWING", "RISING", "UPGRADED"]);
+// Two signals were tried and REMOVED — do not add them back without re-checking the data:
+//
+//   * slot_change_direction === "UP" — not an upgrade signal. Only 594 companies have any
+//     slots_*_prev above zero, yet 766 read UP: every sampled case was 0 -> 10 or 0 -> 30, so UP
+//     mostly means "has slots recorded now", not "bought more". It was the sole source of the
+//     phantom growth in P1_CHURN (all 10 of those companies are RED/CHURNED, several at -100%)
+//     and of all growth in the free tiers.
+//   * domains/mailboxes added in 180d — real activity, but true of 2,218 companies and not revenue.
+//     Adding a domain is something a shrinking account does too.
+//
+// What survives is what the money actually supports: 134 companies, $1.36M, all of them P2_PAYING.
+const GROWTH_RANK = ["EXPANDING", "GROWING", "RISING"];
 
 export function growthOf(p) {
+  const paying = (p.lifetime_spend || 0) > 0;
+  // guard_flags carries INSUFFICIENT_HISTORY / ONE_TIME_BUYER / NO_WINDOW_SPEND — every case where
+  // the extract itself says the trend cannot be scored honestly. 1,327 of the 1,463 RISING
+  // companies carry INSUFFICIENT_HISTORY, i.e. nearly all of "rising" was young accounts.
+  const scorable = !String(p.guard_flags || "").trim();
+  if (!paying || !scorable) return { growth: "NONE", growth_reasons: [], is_growing: false };
+
   const reasons = [];
   if (p.churn_band === "EXPANDING") reasons.push("EXPANDING");
-  if (p.churn_band === "GROWING") reasons.push("GROWING");
-  // RISING is the mirror of the P1b state: the band says nothing is happening, the slope says the
-  // account is quietly climbing. 57 companies read STABLE + RISING, which no band alone surfaces.
-  if (p.trend_direction === "RISING" && !["RED", "ORANGE", "CHURNED"].includes(p.churn_band)) reasons.push("RISING");
-  if (p.slot_change_direction === "UP") reasons.push("UPGRADED");
-  if ((p.domains_added_180d || 0) > 0 || (p.mailboxes_added_180d || 0) > 0) reasons.push("SCALING");
+  else if (p.churn_band === "GROWING") reasons.push("GROWING");
+  // The quiet climber, and the exact mirror of P1b: the band says nothing is happening while the
+  // slope says the account is going up. 57 companies read STABLE + RISING and no band shows them.
+  else if (p.churn_band === "STABLE" && p.trend_direction === "RISING") reasons.push("RISING");
+
   const growth = GROWTH_RANK.find((g) => reasons.includes(g)) || "NONE";
-  return { growth, growth_reasons: reasons, is_growing: GROWING_SET.has(growth) };
+  return { growth, growth_reasons: reasons, is_growing: growth !== "NONE" };
 }
 
 // ── Creator gates ───────────────────────────────────────────────────────────────────────────────
