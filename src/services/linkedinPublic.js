@@ -19,7 +19,7 @@
 // must not be presented as exact.
 import axios from "axios";
 import { HttpsProxyAgent } from "https-proxy-agent";
-import { nextWorkingAgent, poolSize } from "../lib/proxies.js";
+import { nextWorkingAgent, poolSize, poolDebug } from "../lib/proxies.js";
 import { config } from "../config.js";
 import { log } from "../lib/logger.js";
 
@@ -53,7 +53,7 @@ export const hasProxies = () => !!ROTATING || poolSize() > 0;
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
 const stats = { ok: 0, blocked: 0, proxyErr: 0, miss: 0, noProxy: 0, bandwidth: 0, other: 0 };
-export const linkedinPublicStats = () => ({ ...stats, rotating: !!ROTATING && !rotatingDead, poolSize: poolSize() });
+export const linkedinPublicStats = () => ({ ...stats, rotating: !!ROTATING && !rotatingDead, poolSize: poolSize(), pool: poolDebug() });
 
 // "3K" -> 3000, "12M" -> 12000000, "1,234" -> 1234. LinkedIn rounds anything above a thousand, so
 // this is a band, not a measurement.

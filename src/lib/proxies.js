@@ -77,6 +77,22 @@ export function poolSize() {
   return PROXIES.length;
 }
 
+// What the process ACTUALLY loaded, for when the pool size disagrees with what is configured.
+// Credentials are masked — this is safe to expose on the dashboard.
+export function poolDebug() {
+  const mask = (u) => String(u).replace(/\/\/[^@]*@/, "//***:***@");
+  return {
+    size: PROXIES.length,
+    rawChars: (config.proxiesRaw || "").length,
+    rawSource: config.proxiesRaw ? "PROXIES env" : "proxies.txt",
+    rawCommas: (config.proxiesRaw || "").split(",").length - 1,
+    rawNewlines: (config.proxiesRaw || "").split(String.fromCharCode(10)).length - 1,
+    first: PROXIES[0] ? mask(PROXIES[0]) : null,
+    firstLen: PROXIES[0] ? PROXIES[0].length : 0,
+    last: PROXIES.length > 1 ? mask(PROXIES[PROXIES.length - 1]) : null,
+  };
+}
+
 // CLI: `npm run validate-proxies` — validate the whole pool once and report.
 if (process.argv.includes("--validate")) {
   const results = [];
